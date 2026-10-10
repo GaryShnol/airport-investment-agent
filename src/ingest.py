@@ -1,6 +1,7 @@
 """Offline ingest: raw files in RAW_DATA_DIR -> SQLite at DB_PATH. Idempotent.
 
-Run: `uv run python -m src.ingest`. The only module that writes to the DB.
+Run: `uv run python -m src.ingest`. The only module that writes to the DB (`--update`, in
+src/update.py, writes through the loaders here).
 """
 from __future__ import annotations
 
@@ -446,15 +447,45 @@ def check(settings: Settings) -> None:
         print(f"overall: {store.overall_freshness(store.meta_rows(conn))}")
 
 
+def update(settings: Settings, through: str | None, dry_run: bool, yes: bool) -> int:
+    """`--update`: download and load the missing On-Time and T-100 months (src/update.py)."""
+    from src import update as updater   # imports download code only for this command
+
+    if not settings.db_path.exists():
+        print(f"No database at {settings.db_path}: run `uv run python -m src.bootstrap` or `src.ingest` first")
+        return 1
+    with store.connect_rw(settings.db_path) as conn:
+        store.init_db(conn)
+        return updater.run(conn, settings, load_scoring(settings.weights_path), load_sources(settings.sources_path),
+                           through=through, dry_run=dry_run, yes=yes)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true",
                         help="compare loaded periods with upstream (stored in meta); no downloads")
+    parser.add_argument("--update", action="store_true",
+                        help="download and load the On-Time and T-100 months newer than the loaded ones (opt-in)")
+    parser.add_argument("--through", metavar="YYYY-MM", help="--update: last month to load (default: upstream latest)")
+    parser.add_argument("--dry-run", action="store_true", help="--update: print the plan, download nothing")
+    parser.add_argument("--yes", action="store_true", help="--update: do not ask for confirmation")
     args = parser.parse_args(argv)
+    if not args.update and (args.through or args.dry_run or args.yes):
+        parser.error("--through, --dry-run and --yes only apply to --update")
+    if args.check and args.update:
+        parser.error("use either --check or --update")
+    if args.through:
+        from src.update import period_arg
+        try:
+            period_arg(args.through)
+        except ValueError as exc:
+            parser.error(f"--through: {exc}")
     settings = get_settings()
     if args.check:
         check(settings)
         return
+    if args.update:
+        raise SystemExit(update(settings, args.through, args.dry_run, args.yes))
     with store.connect_rw(settings.db_path) as conn:
         store.init_db(conn)
         n = ingest_t100(conn, settings.raw_data_dir / "t100_segment")
