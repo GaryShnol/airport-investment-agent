@@ -1,0 +1,78 @@
+classDiagram
+    direction LR
+
+    class ChatUI {
+        <<Streamlit>>
+        +send(message, thread_id)
+        +data_banner()
+    }
+
+    class Settings {
+        <<src/config.py>>
+        +from_env() Settings
+        +load_scoring() ScoringConfig
+    }
+
+    class LLMFactory {
+        <<src/llm.py>>
+        +get_chat_model(settings) BaseChatModel
+    }
+
+    class OpenAIBackend {
+        <<openai or compatible via LLM_BASE_URL>>
+    }
+
+    class OllamaBackend {
+        <<local model>>
+    }
+
+    class ReActAgent {
+        -llm
+        -memory
+        +run(message, thread_id) Answer
+    }
+
+    class Tools {
+        <<6 tools>>
+        +data_status()
+        +resolve_airport(text)
+        +airport_metrics(airport)
+        +compare_airports(a, b)
+        +rank_airports(region)
+        +explain_demand_gap(airport)
+    }
+
+    class ScoringEngine {
+        <<deterministic, src/scoring.py>>
+        +score(metrics, weights) Score
+        +rank(region) Ranking
+        +rank_stability(region) Stability
+    }
+
+    class DataStore {
+        <<SQLite>>
+        +metrics(airport, window)
+        +delays(airport, window)
+        +airports_in(region)
+        +freshness() Report
+    }
+
+    class Ingest {
+        <<CLI, offline>>
+        +load_files()
+        +check() Report
+        +download_missing()
+    }
+
+    ChatUI --> ReActAgent
+    ReActAgent --> LLMFactory
+    LLMFactory --> OpenAIBackend
+    LLMFactory --> OllamaBackend
+    LLMFactory ..> Settings : reads .env
+    ReActAgent --> Tools : tool calls
+    Tools --> DataStore : local SQL
+    Tools --> ScoringEngine
+    ScoringEngine --> DataStore
+    ScoringEngine ..> Settings : weights.yaml
+    Ingest --> DataStore : writes aggregates and meta
+    Ingest ..> Settings : keys and paths

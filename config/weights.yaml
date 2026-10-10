@@ -1,0 +1,30 @@
+# Scoring methodology. Change here, not in code. Documented in docs/design.md.
+version: 1
+
+weights:               # must sum to 1.0
+  utilization: 0.30    # seat load factor (demand pressure proxy)
+  congestion: 0.30
+  long_haul: 0.15
+  growth: 0.15         # passenger growth, window vs previous 12 months
+  demand_context: 0.10 # metro population growth (Census)
+
+congestion:            # must sum to 1.0. Cancellations are shown but not scored (mostly weather).
+  dep_delay_rate: 0.40
+  taxi_out: 0.30
+  nas_delay_per_flight: 0.30
+
+long_haul_miles: 2500
+long_haul_sensitivity_miles: [1500, 2500, 3000]
+
+min_departures_per_year: 5000   # to be ranked
+
+unmet_demand:
+  target_load_factor: 0.80      # spill proxy: seats needed to bring dense routes down to this
+
+sensitivity:                    # rank stability under weight perturbation
+  runs: 20
+  weight_jitter: 0.25           # +/- relative change per weight, then renormalized
+  seed: 42
+
+regions:
+  new_england: [MA, CT, RI, NH, VT, ME]

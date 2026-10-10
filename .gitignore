@@ -1,0 +1,15 @@
+# raw and derived data (large, regenerable). seed/ is committed on purpose.
+data/
+*.zip
+
+# secrets
+.env
+*.credentials.json
+credentials.json
+
+# python
+__pycache__/
+.venv/
+venv/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,26 @@
+[project]
+name = "airport-investment-agent"
+version = "0.1.0"
+description = "ReAct agent over BTS and Census data with deterministic airport scoring"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph",
+    "langchain-core",
+    "langchain-openai",
+    "langchain-ollama",
+    "streamlit",
+    "pandas",
+    "pyyaml",
+    "python-dotenv",
+    "requests",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
