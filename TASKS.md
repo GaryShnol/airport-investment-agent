@@ -44,7 +44,7 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 ## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial) (current)
 - [x] P2.1 `src/store.py`: SQLite schema and queries (schema in `docs/plan.md`)
 - [x] P2.2 Ingest T-100 to `t100_route_month`; verify ANC 87,988 departures and the long-haul shares, and SFO load factor; re-baseline the acceptance values in `docs/plan.md` under the passenger-service definition
-- [ ] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
+- [x] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
 - [ ] P2.4 Scoring tests first: percentile, load factor, long-haul share, growth, renormalization when a component is missing
 - [ ] P2.5 `src/scoring.py` with the available components (utilization, scale, growth, long haul) and deterministic confidence
 - [ ] P2.6 Tool envelope and tools: `data_status`, `resolve_airport` (handles "LA" ambiguity), `airport_metrics`, `rank_airports`
