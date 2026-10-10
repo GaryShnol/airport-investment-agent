@@ -2,7 +2,7 @@
 Task status lives in `TASKS.md`. This file holds the design.
 
 ## Configuration (no hardcoded values)
-- `.env` (see `.env.example`) -> `src/config.py` `Settings.from_env()`: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_TEMPERATURE`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `CENSUS_API_KEY`, `DB_PATH`, `SEED_DB_PATH`, `RAW_DATA_DIR`, `WEIGHTS_PATH`, `LOG_LEVEL`. Secrets are hidden from `repr`. Relative paths resolve against the project root.
+- `.env` (see `.env.example`) -> `src/config.py` `Settings.from_env()`: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_TEMPERATURE`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `CENSUS_API_KEY`, `DB_PATH`, `SEED_DB_PATH`, `RAW_DATA_DIR`, `WEIGHTS_PATH`, `LOG_LEVEL`, `MAX_INPUT_CHARS` (input guard for the agent). Secrets are hidden from `repr`. Relative paths resolve against the project root.
 - `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles, minimum long-haul share and sensitivity list, min passengers, target load factor, sensitivity runs/jitter/seed, regions, metro aliases (ambiguous names such as LA, with the default airport).
 - Why split: env is per-deployment and secret; methodology is reviewable, versioned and part of the design doc.
 

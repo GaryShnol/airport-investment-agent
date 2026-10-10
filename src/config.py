@@ -42,6 +42,7 @@ class Settings:
     raw_data_dir: Path
     weights_path: Path
     log_level: str
+    max_input_chars: int
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -55,6 +56,12 @@ class Settings:
             temperature = float(get("LLM_TEMPERATURE", "0"))
         except ValueError as exc:
             raise ConfigError("LLM_TEMPERATURE must be a number") from exc
+        try:
+            max_input_chars = int(get("MAX_INPUT_CHARS", "2000"))
+        except ValueError as exc:
+            raise ConfigError("MAX_INPUT_CHARS must be a whole number") from exc
+        if max_input_chars <= 0:
+            raise ConfigError("MAX_INPUT_CHARS must be positive")
 
         return cls(
             llm_provider=get("LLM_PROVIDER", "ollama").lower(),
@@ -69,6 +76,7 @@ class Settings:
             raw_data_dir=_resolve(get("RAW_DATA_DIR", "data/raw")),
             weights_path=_resolve(get("WEIGHTS_PATH", "config/weights.yaml")),
             log_level=get("LOG_LEVEL", "INFO").upper(),
+            max_input_chars=max_input_chars,
         )
 
 
