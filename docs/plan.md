@@ -94,3 +94,23 @@ Re-baselined in P2.2 from `t100_route_month` under the Definitions above (passen
 - Long haul separates only the big hubs: 201 of 233 peer airports have no material long-haul share, so the component mainly adds a bonus for about 30 hubs (BOS in New England). It stays at 0.10 for that reason.
 - Exact score ties occur (19 of them) when all components are equal; they are broken by IATA code and should be reported as ties.
 - Scores are relative to the peer set, so adding or removing airports moves the percentiles. The rank-stability check (P3.5) shows how sensitive the ranking is to the weights: with the scenario `weights={"growth": 0.30}` (0.375 after renormalizing), PWM moves to first, BGR from fourth to second and BOS from first to third in New England.
+
+## Model comparison findings (lfm2.5:8b vs gpt-oss:20b, 2026-10-10)
+Same questions, same data, `OLLAMA_NUM_CTX=16384`, temperature 0, local Ollama on the development laptop.
+- Earlier UI testing (before P2.9c-P2.14): with both models the data cards were correct. The gaps were in the tools and the agent: answers to "which of these has the highest load factor?" depended on the model sorting numbers, scenario weights were re-weighted by the model in prose, "California" and unknown names gave bare errors, a passenger question showed long-haul rows, and an empty reply produced a blank commentary.
+- Design, now fixed in code and the same for any model: the headline and every figure (tools), sorting by a metric and scenario weights (`rank_airports`), match ranking, no-match suggestions and unsupported regions (`resolve_airport`, `rank_airports`), rows per topic (`airport_metrics`), compact history, empty-reply retry and fallback (`turn_guard`).
+- Still model-dependent: which tool and arguments the model picks (topic, `sort_by`, `weights`), whether it asks on ambiguity, and the quality of the commentary. These stay checked by tests with a scripted model only; P2.10 measures them on real models.
+- Latency, seconds per turn (agent loop incl. tool calls; a 13-of-16 run, stopped before the last three gpt-oss questions; tool choice and commentary were not recorded in this run):
+
+| Question | lfm2.5:8b | gpt-oss:20b |
+|---|---|---|
+| New England expansion candidates | 126 | 258 |
+| Follow-up: highest load factor among these | 121 | 58 |
+| Follow-up: what if growth weighs more | 99 | 172 |
+| Long-haul share out of Anchorage | 70 | 70 |
+| SFO passengers | 57 | 59 |
+| California ranking (unsupported region) | 110 | not run |
+| Load factor at Portland (ambiguous) | 70 | not run |
+| LA vs Santa Ana congestion (no congestion data) | 105 | not run |
+
+- Reading: both models take about one to four minutes per turn on this machine, so latency comes from the hardware and model size more than from the tools; gpt-oss:20b is slower on multi-step turns (ranking, scenario) and similar on single-tool turns. The P2.10 eval will record tool-choice accuracy and faithfulness per question.
