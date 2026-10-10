@@ -168,7 +168,16 @@ uv run streamlit run app.py
 ```
 Each answer shows the figures from the data tools first, then the model's commentary.
 
-Coming (see TASKS.md): `docker compose up` (ships with a prebuilt `seed/airport.db`).
+### Docker
+```bash
+cp .env.example .env     # choose the LLM (below); SEED_DB_URL already points to the seed release
+docker compose up --build
+```
+Then open http://localhost:8501 (`APP_PORT` in `.env`). The data is not in git or in the image: on first start the entrypoint (`python -m src.bootstrap`) downloads the seed DB from `SEED_DB_URL` (a GitHub Release asset), checks its sha256 and installs it in the `data` volume; later starts reuse it. It then runs `ingest --check` with a short timeout, so the sidebar can say whether newer data exists upstream (offline = "freshness unknown"; the app still starts). If no data can be obtained it stops with three options: set `SEED_DB_URL`, mount an existing `airport.db` at `/app/data/airport.db`, or run `uv run python -m src.ingest` with the raw files.
+
+LLM from the container, set in `.env` (there is no Ollama service in the compose file):
+- OpenAI: `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4o-mini`, `OPENAI_API_KEY=...`
+- Ollama on the host: `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://host.docker.internal:11434` (or `LLM_PROVIDER=openai` with `LLM_BASE_URL=http://host.docker.internal:11434/v1`). Docker Desktop resolves `host.docker.internal`; on Linux the `extra_hosts: host.docker.internal:host-gateway` line in `docker-compose.yml` does. Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0`) for the container to reach it on Linux.
 
 ## Testing
 - `uv run pytest`: unit and golden tests, no model and no network (CI runs them on every push). The golden tests (`tests/test_golden.py`) put the four exam questions and the edge cases (unknown airport, unsupported region, scenario weights, ambiguity) through the agent's tools on a small fixture database; agent tests use a scripted fake model.
@@ -179,6 +188,7 @@ Coming (see TASKS.md): `docker compose up` (ships with a prebuilt `seed/airport.
 ## Project layout
 ```
 app.py      Streamlit chat (data from tools first, model commentary second)
+Dockerfile, docker-compose.yml, docker/   container image, one-service compose, entrypoint
 src/        config, LLM provider registry, ingest, store, scoring, tools, render, agent
 config/     scoring methodology (weights.yaml)
 docs/       design plan (and later design.md)

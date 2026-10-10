@@ -1,0 +1,26 @@
+# secrets and data never go into the image (data comes from the seed DB at start)
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db.gz
+*.zip
+
+# VCS, environments, caches
+.git
+.github
+.venv
+venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.claude/
+
+# not needed at runtime
+tests/
+eval/
+scripts/
+docs/

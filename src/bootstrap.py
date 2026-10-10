@@ -38,9 +38,10 @@ class BootstrapError(RuntimeError):
 
 
 def safe_url(url: str) -> str:
-    """scheme://host/path, without credentials, query string or fragment."""
+    """scheme://host[:port]/path, without credentials, query string or fragment."""
     parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.hostname or ''}{parts.path}"
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{parts.hostname or ''}{port}{parts.path}"
 
 
 def checksum_url(url: str) -> str:

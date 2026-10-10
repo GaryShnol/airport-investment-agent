@@ -17,3 +17,9 @@ jobs:
           python-version-file: .python-version
       - run: uv sync --locked
       - run: uv run pytest
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --tag airport-investment-agent:ci .

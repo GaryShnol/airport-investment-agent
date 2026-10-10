@@ -205,6 +205,11 @@ def test_main_exits_cleanly_without_traceback(tmp_path, monkeypatch, capsys):
     assert exc.value.code == 1 and "Traceback" not in err and "SEED_DB_URL is not set" in err
 
 
+def test_safe_url_drops_credentials_and_query():
+    assert bootstrap.safe_url("https://user:pw@host.test:8443/a/seed.gz?sig=x#f") == "https://host.test:8443/a/seed.gz"
+    assert bootstrap.checksum_url("https://h.test/seed.gz?sig=x") == "https://h.test/seed.gz.sha256?sig=x"
+
+
 def test_bootstrap_settings_validation():
     from src.config import ConfigError
     with pytest.raises(ConfigError, match="SEED_DB_SHA256"):
