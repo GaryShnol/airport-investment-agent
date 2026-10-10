@@ -46,7 +46,7 @@ ONTIME_CHUNK_ROWS = 200_000      # a month is ~540k-640k flights; read it in a f
 # Data validation reference (docs/plan.md, Acceptance values): BTS row counts for the 2025 files.
 ONTIME_EXPECTED_ROWS = {"2025": 7_001_619, "2025-01": 539_747}
 
-CENSUS_SOURCE = "census"   # ingest_log period = vintage ('2024'); meta last_period = latest vintage loaded
+CENSUS_SOURCE = store.CENSUS_SOURCE   # ingest_log period = vintage ('2024'); meta last_period = latest vintage loaded
 
 # Geocoder: stop after this many failures in a row (the service or the network is down; the rest is
 # retried on the next run instead of waiting for a timeout per airport).

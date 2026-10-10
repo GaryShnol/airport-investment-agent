@@ -24,7 +24,7 @@ from typing import Callable, Literal, get_args
 
 from langchain_core.tools import BaseTool, tool
 
-from src import scoring, store
+from src import census, scoring, store
 from src.config import ScoringConfig
 
 CONFIDENCE_ORDER = ("high", "medium", "low")
@@ -102,7 +102,21 @@ def _window(conn: sqlite3.Connection) -> store.Window:
     return store.analysis_window(conn)
 
 
+def _scoring_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, window: store.Window):
+    return store.scoring_metrics(conn, window, cfg.long_haul_miles, (cfg.census_vintage, cfg.census_base_vintage))
+
+
 # --- data_status -------------------------------------------------------------------------
+
+def _sources_missing(conn: sqlite3.Connection, cfg: ScoringConfig) -> dict[str, str]:
+    """Components whose source is not loaded (scored without them, weights renormalized)."""
+    missing = {}
+    if not store.ontime_loaded(conn):
+        missing["congestion"] = scoring.ONTIME_NOT_LOADED
+    if not store.census_loaded(conn, (cfg.census_vintage, cfg.census_base_vintage)):
+        missing["demand_context"] = scoring.census_not_loaded(cfg)
+    return missing
+
 
 def data_status(conn: sqlite3.Connection, cfg: ScoringConfig) -> dict:
     """What data is loaded, the analysis window, freshness and the scoring setup."""
@@ -111,8 +125,7 @@ def data_status(conn: sqlite3.Connection, cfg: ScoringConfig) -> dict:
         "sources": store.meta_rows(conn),
         "months_in_window": window.months,
         "previous_window": f"{window.prev_start}..{window.prev_end} ({window.prev_months} months, for growth)",
-        "score_components_not_built": {**scoring.NOT_BUILT, **({} if store.ontime_loaded(conn)
-                                                               else {"congestion": scoring.ONTIME_NOT_LOADED})},
+        "score_components_unavailable": _sources_missing(conn, cfg),
         "weights_configured": cfg.weights,
         "regions": {name: list(states) for name, states in cfg.regions.items()},
     }
@@ -274,7 +287,7 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
     if threshold <= 0:
         return _error(conn, "threshold_mi must be a positive number of miles")
 
-    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    result = scoring.score(_scoring_metrics(conn, cfg, window), cfg, window)
     rows = result.table[result.table["iata"] == code]
     if rows.empty:
         return _error(conn, f"{code} has no passenger service in {window.label}")
@@ -299,6 +312,9 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
         assumptions.append(LOAD_FACTOR_PROXY)
         headlines.append(f"{code} in {window.label}: {data['passengers']:,} passengers on {data['seats']:,} seats "
                          f"(passenger service), load factor {_share(data['load_factor_pct'])}.")
+        data["demand_context"] = _metro_data(row, result)
+        facts += _metro_facts(data["demand_context"], cfg)
+        assumptions += _metro_assumptions(data["demand_context"], cfg)
 
     if shows["growth"]:
         data.update(growth_pct=_pct(row["growth"]), previous_passengers=int(row["prev_passengers"]))
@@ -348,6 +364,60 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
         headlines.append(_congestion_headline(code, window, data["congestion"]))
 
     return _envelope(conn, window, data, assumptions, row["confidence"], facts, headline=" ".join(headlines))
+
+
+def _census_label(cfg: ScoringConfig, vintage: int) -> str:
+    """'ACS 5-year 2020-2024' for acs/acs5, else the dataset path and vintage."""
+    if cfg.census_dataset == "acs/acs5":
+        return f"ACS 5-year {vintage - 4}-{vintage}"
+    return f"{cfg.census_dataset} {vintage}"
+
+
+def _metro_data(row, result: scoring.ScoreResult) -> dict:
+    """The airport's CBSA, metro population in both vintages, growth and its percentile. `status`:
+    ok, no_cbsa (outside every metro and micro area), no_base (CBSA code not in the base vintage)
+    or not_loaded (Census not loaded, or no airport geocoded)."""
+    if "demand_context" in result.unavailable:
+        return {"status": "not_loaded", "reason": result.unavailable["demand_context"]}
+    cbsa = row.get("cbsa")
+    if cbsa is None or cbsa != cbsa:
+        return {"status": "no_cbsa"}
+    growth_pct = _pct(row["metro_growth"])
+    return {"status": "ok" if growth_pct is not None else "no_base", "cbsa": cbsa, "cbsa_name": row.get("cbsa_name"),
+            "population": _count(row["metro_population"]), "population_base": _count(row["metro_population_base"]),
+            "growth_pct": growth_pct,
+            "percentile": _pct(row["pct_demand_context"], 0) if row["in_peer_set"] else None}
+
+
+def _metro_facts(m: dict, cfg: ScoringConfig) -> list[dict]:
+    """Card rows for the demand context (not required: context, not the answer)."""
+    if m["status"] == "not_loaded":
+        return [fact("Metro population (demand context)", f"not available: {m['reason']}")]
+    if m["status"] == "no_cbsa":
+        return [fact("Metro area (CBSA)", "none: the airport lies outside every metro and micro area "
+                                          "(demand context not scored for it)")]
+    name = m["cbsa_name"] or "name not in this vintage"
+    facts = [fact("Metro area (CBSA)", f"{name} ({m['cbsa']})"),
+             fact(f"Metro population ({_census_label(cfg, cfg.census_vintage)})",
+                  "n/a" if m["population"] is None else f"{m['population']:,}")]
+    base = _census_label(cfg, cfg.census_base_vintage)
+    if m["status"] == "no_base":
+        return facts + [fact("Metro population growth (demand context)",
+                             f"not available: CBSA {m['cbsa']} has no figure in {base} (delineation changed)")]
+    facts.append(fact(f"Metro population growth vs {base} (demand context)", _signed(m["growth_pct"])))
+    if m["percentile"] is not None:
+        facts.append(fact("Demand context percentile in the peer set", f"{m['percentile']:.0f}"))
+    return facts
+
+
+def _metro_assumptions(m: dict, cfg: ScoringConfig) -> list[str]:
+    if m["status"] == "not_loaded":
+        return []
+    return [f"demand context = population growth of the metro or micro area (CBSA) the airport lies in, "
+            f"{_census_label(cfg, cfg.census_vintage)} vs {_census_label(cfg, cfg.census_base_vintage)} "
+            "(non-overlapping periods); CBSA from the airport's coordinates (Census Geocoder); context for "
+            "demand, not a measure of air travel demand",
+            census.ATTRIBUTION]
 
 
 def _num(value, digits: int = 1) -> float | None:
@@ -477,7 +547,7 @@ def scenario_weights(cfg: ScoringConfig, weights: dict | None) -> tuple[dict[str
 
 
 def _rank_table(conn: sqlite3.Connection, cfg: ScoringConfig, key: str, window: store.Window):
-    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    result = scoring.score(_scoring_metrics(conn, cfg, window), cfg, window)
     return result, scoring.rank(result, key, cfg)
 
 
@@ -529,7 +599,8 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         raw = {"utilization": {"load_factor_pct": _pct(r["load_factor"])},
                "scale": {"passengers": int(r["passengers"])},
                "growth": {"growth_pct": _pct(r["growth"])},
-               "long_haul": {"share_pct": _pct(r["long_haul_share"])}}
+               "long_haul": {"share_pct": _pct(r["long_haul_share"])},
+               "demand_context": {"metro_growth_pct": _pct(r.get("metro_growth"))}}
         if "congestion" in components:
             raw["congestion"] = {"dep_delay_rate_pct": _pct(r["dep_delay_rate"]),
                                  "taxi_out_min": _num(r["taxi_out_min"]),
@@ -544,7 +615,8 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         if scenario:
             item["base_rank"] = int(base_rank[r["iata"]])
         if found := scoring.drivers(r, components):
-            item["drivers"] = {k: {"component": c, "percentile": _pct(p, 0)} for k, (c, p) in found.items()}
+            item["drivers"] = {k: None if cp is None else {"component": cp[0], "percentile": _pct(cp[1], 0)}
+                               for k, cp in found.items()}
         s = stability[r["iata"]]
         item["stability"] = {"top_n": s["top_n"], "in_top_n_pct": _pct(s["in_top_n"] / s["runs"], 0),
                              "first": s["first"], "runs": s["runs"], "min_rank": s["min_rank"],
@@ -597,8 +669,9 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
     if sort_by != "score":
         assumptions.insert(0, f"sorted by {SORT_LABELS[sort_by]} (highest first), not by the expansion score")
     assumptions.append("drivers = each airport's highest and lowest component percentile; tied values share one "
-                       "percentile, so airports with no material long-haul service all get the same middling "
-                       "long-haul percentile, which can show up as a 'strongest' component")
+                       "percentile, so airports at the lowest value of a component shared by several airports (no "
+                       "material long-haul service) get a middling percentile; such a component is never reported "
+                       "as an airport's strongest")
     if int(top_n) > shown and len(ranking.ranked) > shown:
         assumptions.append(f"list capped at {cfg.max_ranked} airports")
     levels = [x["confidence"] for x in ranked] or ["low"]
@@ -649,10 +722,12 @@ def _ranking_headline(data: dict, key: str, sort_by: str, scenario: bool) -> str
 
 COMPONENT_LABELS = {"utilization": "utilization (load factor)", "scale": "scale (annual passengers)",
                     "growth": "growth (passengers vs previous 12 months)", "long_haul": "long-haul share",
-                    "congestion": "congestion"}
+                    "congestion": "congestion", "demand_context": "demand context (metro population growth)"}
 
 
-def _driver(d: dict) -> str:
+def _driver(d: dict | None) -> str:
+    if d is None:
+        return "none (every component at the lowest value shared by several airports)"
     return f"{COMPONENT_LABELS.get(d['component'], d['component'])}, percentile {d['percentile']:.0f}"
 
 
@@ -762,7 +837,7 @@ def compare_airports(conn: sqlite3.Connection, cfg: ScoringConfig, a: str, b: st
     if codes[0] == codes[1]:
         return _error(conn, f"Both names resolve to {codes[0]}; name two different airports")
     window = _window(conn)
-    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    result = scoring.score(_scoring_metrics(conn, cfg, window), cfg, window)
     table = result.table.set_index("iata")
     missing = [c for c in codes if c not in table.index]
     if missing:
@@ -886,7 +961,7 @@ def explain_demand_gap(conn: sqlite3.Connection, cfg: ScoringConfig, airport: st
     if err:
         return err
     window = _window(conn)
-    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    result = scoring.score(_scoring_metrics(conn, cfg, window), cfg, window)
     rows = result.table[result.table["iata"] == code]
     routes = store.route_months(conn, code, window)
     if rows.empty or routes.empty:

@@ -180,12 +180,10 @@ def test_confidence_is_at_most_medium_while_components_are_not_built(metrics, cf
     assert all("renormalized without congestion, demand_context" in r[0] for r in t["confidence_reasons"])
 
 
-def test_confidence_high_when_every_component_is_available(metrics, cfg, monkeypatch):
-    # Simulate the finished formula: pretend demand_context is built; congestion comes from On-Time.
-    monkeypatch.setattr(scoring, "NOT_BUILT", {})
-    monkeypatch.setitem(scoring.RAW_COLUMN, "demand_context", "demand_context")
+def test_confidence_high_when_every_component_is_available(metrics, cfg):
+    # The full formula: congestion from On-Time, demand_context from metro population (Census).
     full = with_ontime(metrics, {i: (1000, 200, 15.0, 3.0, 10) for i in metrics["iata"]})
-    full = full.assign(demand_context=range(len(metrics)))
+    full = full.assign(metro_population=[1000 + i for i in range(len(metrics))], metro_population_base=1000)
     t = scoring.score(full, cfg, FULL).table.set_index("iata")
     assert t.at["BIG", "confidence"] == "high"
     assert t.at["SUN", "confidence"] == "medium"  # partial coverage: service in 8 of 12 months
@@ -445,3 +443,63 @@ def test_drivers_ties_go_to_the_first_component_and_none_without_data():
     assert scoring.drivers(row, ["utilization", "scale"]) == {"strongest": ("utilization", 0.5),
                                                               "weakest": ("utilization", 0.5)}
     assert scoring.drivers({"pct_growth": float("nan")}, ["growth"]) is None
+
+
+# --- demand_context (P4.3) and the tie floor ---------------------------------------------------
+
+def with_census(metrics, populations):
+    """Metro columns as store.scoring_metrics adds them: iata -> (population, base) or None (no CBSA)."""
+    pops = [populations.get(i) for i in metrics["iata"]]
+    return metrics.assign(cbsa=[f"C{i}" if p else None for i, p in zip(metrics["iata"], pops)],
+                          metro_population=[p[0] if p else None for p in pops],
+                          metro_population_base=[p[1] if p else None for p in pops])
+
+
+def test_demand_context_unavailable_until_census_is_loaded(metrics, cfg):
+    result = scoring.score(metrics, cfg, FULL)
+    assert "Census population not loaded" in result.unavailable["demand_context"]
+    assert "demand_context" not in result.weights_used
+
+
+def test_demand_context_unavailable_when_no_airport_has_a_cbsa(metrics, cfg):
+    result = scoring.score(with_census(metrics, {}), cfg, FULL)
+    assert result.unavailable["demand_context"] == scoring.NO_CBSA
+
+
+def test_demand_context_is_metro_growth_percentile(metrics, cfg):
+    pops = {"BIG": (1100, 1000), "MID": (990, 1000), "HOT": (1300, 1000), "SUN": (1050, 1000), "NEW": (1000, 1000)}
+    result = scoring.score(with_census(metrics, pops), cfg, FULL)
+    t = result.table.set_index("iata")
+    assert "demand_context" in result.weights_used and "demand_context" not in result.unavailable
+    assert t.at["HOT", "metro_growth"] == pytest.approx(0.30)
+    assert t.at["MID", "metro_growth"] == pytest.approx(-0.01)
+    # percentile inside the peer set: HOT highest, MID lowest of five
+    assert t.at["HOT", "pct_demand_context"] == 1.0 and t.at["MID", "pct_demand_context"] == pytest.approx(0.2)
+
+
+def test_missing_cbsa_renormalizes_that_airport_and_lowers_confidence(metrics, cfg):
+    pops = {"BIG": (1100, 1000), "MID": (990, 1000), "NEW": (1000, 1000), "SUN": (1050, 1000)}  # HOT: rural
+    full = with_ontime(with_census(metrics, pops), {i: (1000, 200, 15.0, 3.0, 10) for i in metrics["iata"]})
+    t = scoring.score(full, cfg, FULL).table.set_index("iata")
+    assert t.at["HOT", "missing"] == ["demand_context"]
+    assert t.at["HOT", "confidence"] == "medium"
+    assert "missing for this airport: demand_context" in t.at["HOT", "confidence_reasons"]
+    assert "demand_context" not in t.at["HOT", "weights_used"]
+    assert sum(t.at["HOT", "weights_used"].values()) == pytest.approx(1.0)
+    assert t.at["BIG", "confidence"] == "high"
+
+
+def test_tie_floor_marks_the_shared_minimum_only(metrics, cfg):
+    t = scoring.score(metrics, cfg, FULL).table.set_index("iata")
+    # MID, NEW, HOT have no long haul: one shared lowest value
+    assert {i for i in ("BIG", "MID", "NEW", "HOT", "SUN") if "long_haul" in t.at[i, "at_floor"]} == {"MID", "NEW", "HOT"}
+    assert t.at["MID", "pct_long_haul"] == pytest.approx(0.4)  # mean rank of the three tied, not the bottom
+    assert t.at["TNY", "at_floor"] == []  # outside the peer set
+
+
+def test_drivers_never_report_a_floor_component_as_strongest():
+    row = {"pct_utilization": 0.20, "pct_scale": 0.10, "pct_long_haul": 0.43, "at_floor": ["long_haul"]}
+    d = scoring.drivers(row, ["utilization", "scale", "long_haul"])
+    assert d["strongest"] == ("utilization", 0.20) and d["weakest"] == ("scale", 0.10)
+    only_floor = scoring.drivers({"pct_long_haul": 0.43, "at_floor": ["long_haul"]}, ["long_haul"])
+    assert only_floor == {"strongest": None, "weakest": ("long_haul", 0.43)}

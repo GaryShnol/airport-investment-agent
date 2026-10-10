@@ -330,14 +330,40 @@ def unmatched_ontime_airports(conn: sqlite3.Connection) -> list[str]:
     return [r[0] for r in rows]
 
 
-def scoring_metrics(conn: sqlite3.Connection, window: Window, long_haul_miles: int) -> pd.DataFrame:
-    """`airport_metrics` plus the On-Time columns of `ontime_metrics` (left join on IATA) once
-    On-Time is loaded; airports without On-Time rows get missing values. Without On-Time the
-    columns are absent and scoring treats congestion as unavailable."""
+CENSUS_SOURCE = "census"
+
+
+def census_loaded(conn: sqlite3.Connection, vintages: Iterable[int]) -> bool:
+    """True when every given Census vintage is in ingest_log."""
+    return {str(v) for v in vintages} <= loaded_periods(conn, CENSUS_SOURCE)
+
+
+def metro_metrics(conn: sqlite3.Connection, vintage: int, base_vintage: int) -> pd.DataFrame:
+    """One row per airport: its CBSA (`airports.cbsa`, from the Geocoder cache), the CBSA name and
+    population in `vintage` and in `base_vintage`. Missing where the airport has no CBSA, or the
+    CBSA code has no row in that vintage (delineations change between vintages)."""
+    sql = """
+        SELECT a.iata, a.cbsa, c.name AS cbsa_name, c.population AS metro_population,
+               b.population AS metro_population_base
+        FROM airports a
+        LEFT JOIN census_metro c ON c.cbsa = a.cbsa AND c.year = :vintage
+        LEFT JOIN census_metro b ON b.cbsa = a.cbsa AND b.year = :base
+    """
+    return pd.read_sql_query(sql, conn, params={"vintage": vintage, "base": base_vintage})
+
+
+def scoring_metrics(conn: sqlite3.Connection, window: Window, long_haul_miles: int,
+                    census_vintages: tuple[int, int] | None = None) -> pd.DataFrame:
+    """`airport_metrics` plus, once loaded, the On-Time columns of `ontime_metrics` and the metro
+    columns of `metro_metrics` for `census_vintages` (vintage, base vintage), left-joined on IATA;
+    airports without such rows get missing values. A source not loaded leaves its columns out and
+    scoring treats its component as unavailable."""
     metrics = airport_metrics(conn, window, long_haul_miles)
-    if not ontime_loaded(conn):
-        return metrics
-    return metrics.merge(ontime_metrics(conn, window), on="iata", how="left")
+    if ontime_loaded(conn):
+        metrics = metrics.merge(ontime_metrics(conn, window), on="iata", how="left")
+    if census_vintages and census_loaded(conn, census_vintages):
+        metrics = metrics.merge(metro_metrics(conn, *census_vintages), on="iata", how="left")
+    return metrics
 
 
 def meta_rows(conn: sqlite3.Connection) -> list[dict]:

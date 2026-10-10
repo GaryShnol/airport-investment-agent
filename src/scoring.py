@@ -67,11 +67,16 @@ def renormalize(weights: Mapping[str, float], available: Iterable[str]) -> dict[
     return {k: w / total for k, w in kept.items()}
 
 
-# Components not built yet, with the reason reported in every result. Remove an entry when the
-# component is added (demand_context in M4 from Census).
-NOT_BUILT = {
-    "demand_context": "Census data not loaded yet (milestone M4)",
-}
+# demand_context needs Census population for the configured vintages: without the metro columns in
+# the metrics it is unavailable for every airport and the weights are renormalized, like congestion.
+METRO_COLUMNS = ("metro_population", "metro_population_base")
+NO_CBSA = "no airport has a CBSA yet (the Census Geocoder step of `uv run python -m src.ingest`)"
+
+
+def census_not_loaded(cfg: ScoringConfig) -> str:
+    return (f"Census population not loaded for vintages {cfg.census_vintage} and {cfg.census_base_vintage} "
+            "(run `uv run python -m src.ingest` with CENSUS_API_KEY set)")
+
 # Congestion is built but needs On-Time data: without the On-Time columns in the metrics it is
 # unavailable for every airport and the weights are renormalized, as for a component not built.
 ONTIME_NOT_LOADED = "On-Time data not loaded (run `uv run python -m src.ingest`)"
@@ -91,7 +96,8 @@ SCORE_DECIMALS = 9
 # long_haul is ranked on the floored share (`long_haul_share_scored`); the true share is shown too.
 # congestion is ranked on `congestion_index`, the weighted mean of its sub-metric percentiles.
 RAW_COLUMN = {"utilization": "load_factor", "scale": "passengers", "growth": "growth",
-              "long_haul": "long_haul_share_scored", "congestion": "congestion_index"}
+              "long_haul": "long_haul_share_scored", "congestion": "congestion_index",
+              "demand_context": "metro_growth"}
 
 
 def weighted_mean(values: pd.DataFrame, weights: Mapping[str, float]) -> pd.Series:
@@ -184,22 +190,41 @@ def weighted_score(pct: pd.DataFrame, weights: Mapping[str, float], peer: pd.Ser
     return ((pct * w).sum(axis=1) / present.where(peer & (present > 0))).round(SCORE_DECIMALS), present
 
 
+def tie_floor(t: pd.DataFrame, components: Iterable[str], peer: pd.Series) -> list[list[str]]:
+    """Per row, the components whose raw value is the lowest in the peer set and shared by several
+    airports. Tied values get the mean of their ranks, so a large tie at the bottom sits at a middling
+    percentile (airports under the long-haul floor: 43) that says nothing good about them."""
+    floors = {}
+    for c in components:
+        raw = t.loc[peer, RAW_COLUMN[c]].astype(float)
+        lowest = raw.min()
+        if raw.notna().any() and (raw == lowest).sum() > 1:
+            floors[c] = peer & (t[RAW_COLUMN[c]].astype(float) == lowest)
+    return [[c for c, mask in floors.items() if mask[i]] for i in t.index]
+
+
 def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreResult:
     """Score every peer-set airport; `metrics` has the columns of `store.airport_metrics`.
 
     Peer set = airports with a US state (`state`, from `airports`) and at least
     `min_passengers_per_year` passenger-service passengers. Each component is a percentile inside
-    the peer set. Components not built yet (NOT_BUILT), and congestion when `metrics` has no
-    On-Time columns (`store.scoring_metrics` adds them once On-Time is loaded), are dropped and
-    the remaining weights renormalized. An airport missing a component (e.g. no previous-year
-    passengers, so no growth; no On-Time data or fewer than `min_ontime_flights`, so no
-    congestion) is scored on the components it has, with its own renormalized weights and
-    medium confidence. Ties in the score are broken by IATA code.
+    the peer set. Congestion when `metrics` has no On-Time columns, and demand_context when it has
+    no metro columns (`store.scoring_metrics` adds both once loaded) or no airport has a CBSA, are
+    dropped and the remaining weights renormalized. An airport missing a component (e.g. no
+    previous-year passengers, so no growth; no On-Time data or fewer than `min_ontime_flights`, so no
+    congestion; no CBSA, so no demand context) is scored on the components it has, with its own
+    renormalized weights and medium confidence. Ties in the score are broken by IATA code.
+    `at_floor` lists the components each airport shares the peer-set minimum of (see `tie_floor`).
     """
-    unavailable = dict(NOT_BUILT)
+    unavailable = {}
     has_ontime = all(c in metrics.columns for c in ONTIME_COLUMNS)
     if not has_ontime:
         unavailable["congestion"] = ONTIME_NOT_LOADED
+    has_census = all(c in metrics.columns for c in METRO_COLUMNS)
+    if not has_census:
+        unavailable["demand_context"] = census_not_loaded(cfg)
+    elif metrics["metro_population"].isna().all():
+        unavailable["demand_context"] = NO_CBSA
     if window.prev_months < WINDOW_MONTHS:
         unavailable["growth"] = (f"previous 12 months only partly loaded "
                                  f"({window.prev_months} of {WINDOW_MONTHS})")
@@ -213,6 +238,8 @@ def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreRes
     t["long_haul_share"] = long_haul_share(t["long_haul_departures"], t["departures"])
     t["long_haul_share_scored"] = floor_share(t["long_haul_share"], cfg.long_haul_min_share)
     t["growth"] = growth(t["passengers"], t["prev_passengers"])
+    if has_census:  # metro population growth between the two Census vintages
+        t["metro_growth"] = growth(t["metro_population"], t["metro_population_base"])
     t["in_peer_set"] = in_peer_set(t, cfg)
 
     peer = t["in_peer_set"]
@@ -227,6 +254,8 @@ def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreRes
         t["congestion_index"] = weighted_mean(subs, cfg.congestion_weights)
     for component in available:
         t[f"pct_{component}"] = percentile_rank(t.loc[peer, RAW_COLUMN[component]].astype(float))
+
+    t["at_floor"] = tie_floor(t, available, peer)
 
     pct = t[[f"pct_{c}" for c in available]].set_axis(available, axis=1)
     t["score"], present_weight = weighted_score(pct, weights_used, peer)
@@ -268,15 +297,19 @@ def rank(result: ScoreResult, region: str, cfg: ScoringConfig) -> RegionRanking:
 
 # --- drivers (rank_airports) -------------------------------------------------------------------
 
-def drivers(row: Mapping, components: Iterable[str]) -> dict[str, tuple[str, float]] | None:
+def drivers(row: Mapping, components: Iterable[str]) -> dict[str, tuple[str, float] | None] | None:
     """An airport's strongest and weakest component by national percentile (`pct_<component>`),
     over the components it has. Ties go to the component listed first (the order of the weights in
-    config/weights.yaml). None when it has no component percentile."""
+    config/weights.yaml). A component on the tie floor (`at_floor`: the lowest value, shared by
+    several airports) is never the strongest, however middling its percentile; strongest is None if
+    every component is on the floor. None when it has no component percentile."""
     present = [(c, float(row[f"pct_{c}"])) for c in components
                if f"pct_{c}" in row and row[f"pct_{c}"] is not None and row[f"pct_{c}"] == row[f"pct_{c}"]]
     if not present:
         return None
-    strongest = max(present, key=lambda cp: cp[1])   # max/min keep the first of equal values
+    floor = set(row["at_floor"]) if "at_floor" in row and isinstance(row["at_floor"], list) else set()
+    above = [cp for cp in present if cp[0] not in floor]
+    strongest = max(above, key=lambda cp: cp[1]) if above else None   # max/min keep the first of equal values
     weakest = min(present, key=lambda cp: cp[1])
     return {"strongest": strongest, "weakest": weakest}
 
