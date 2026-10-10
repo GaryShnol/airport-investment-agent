@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from src import tools
-from tests.conftest import seed_analysis_db
+from tests.conftest import seed_analysis_db, seed_ontime
 
 ENVELOPE_KEYS = {"facts", "data", "data_period", "freshness", "assumptions", "confidence"}
 
@@ -144,9 +144,10 @@ def test_airport_metrics_topic_all_is_the_union(db, scoring_cfg):
         r = tools.airport_metrics(db, scoring_cfg, "ANC", topic=topic)
         return set(required(r) if only_required else facts(r))
     every = labels("all", True)
-    assert every == labels("long_haul", True) | labels("demand", True) | labels("growth", True)
+    assert every == (labels("long_haul", True) | labels("demand", True) | labels("growth", True)
+                     | labels("congestion", True))
     # growth's passenger row is folded into the demand row when both are shown
-    assert labels("all") == labels("long_haul") | labels("demand") | labels("growth") - {
+    assert labels("all") == (labels("long_haul") | labels("demand") | labels("growth") | labels("congestion")) - {
         "Passengers 2025-01..2025-12 (passenger service)"}
 
 
@@ -406,3 +407,67 @@ def test_national_ranking_covers_the_whole_peer_set(db, scoring_cfg):
     assert d["region"] == "national" and d["states"] == "all US states and territories"
     assert d["ranked_total"] == d["peer_set_size"] == 8  # the 9 seeded origins except HYA
     assert d["excluded"] == [e for e in d["excluded"] if e.startswith("HYA")]
+
+
+# --- congestion (On-Time loaded) -----------------------------------------------------------
+
+@pytest.fixture
+def db_ontime(db):
+    seed_ontime(db)
+    return db
+
+
+def test_congestion_topic_required_facts_and_headline(db_ontime, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db_ontime, scoring_cfg, "SNA", topic="congestion"))
+    assert required(r) == {
+        "Departures delayed >= 15 min": f"{round(40 / 198 * 100, 1)}%",
+        "Mean taxi-out (departures)": "16.0 min",
+        "NAS-delay minutes per arriving flight": "1.5",
+        "Cancelled departures (shown, not scored)": "1.0% (24 of 2,400)",
+        "Data period": "2025-01..2025-12",
+        "Confidence": "medium",
+    }
+    assert r["headline"] == ("SNA in 2025-01..2025-12: 20.2% of departures delayed >= 15 min, mean taxi-out "
+                             "16.0 min, 1.5 NAS-delay minutes per arriving flight; 1.0% of departures cancelled "
+                             "(not scored).")
+    assert "Passengers (passenger service)" not in facts(r)   # congestion topic only
+    assert any("large reporting carriers" in a for a in r["assumptions"])
+    assert any("arrivals" in a and "departures" in a for a in r["assumptions"])
+    c = r["data"]["congestion"]
+    assert c["status"] == "ok" and c["departures_reported"] == 2400 and c["arrivals_reported"] == 2376
+    assert set(c["percentiles"]) == {"dep_delay_rate", "taxi_out", "nas_delay_per_arrival", "congestion"}
+
+
+def test_congestion_topic_without_enough_flights(db_ontime, scoring_cfg):
+    r = tools.airport_metrics(db_ontime, scoring_cfg, "BTV", topic="congestion")
+    assert required(r)["Congestion"] == "not available: 600 reported departures, below the 1,000 minimum"
+    r = tools.airport_metrics(db_ontime, scoring_cfg, "ANC", topic="congestion")
+    assert required(r)["Congestion"] == "not available: no flights of the On-Time reporting carriers"
+    assert "no data" in r["headline"]
+
+
+def test_congestion_topic_before_ontime_is_loaded(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "SNA", topic="congestion")
+    assert required(r)["Congestion"] == "not available: On-Time data not loaded"
+
+
+def test_rank_with_ontime_uses_the_congestion_weight(db_ontime, scoring_cfg):
+    r = tools.rank_airports(db_ontime, scoring_cfg, "new_england")
+    d = r["data"]
+    assert set(d["weights_used"]) == {"utilization", "congestion", "scale", "growth", "long_haul"}
+    assert set(d["components_unavailable"]) == {"demand_context"}
+    assert facts(r)["Weights used (renormalized without demand_context)"]["value"] == (
+        "utilization 0.278, congestion 0.278, scale 0.167, growth 0.167, long_haul 0.111")
+    by = {x["iata"]: x for x in d["ranked"]}
+    assert by["BOS"]["components"]["congestion"]["dep_delay_rate_pct"] == round(200 / 780 * 100, 1)
+    # BTV has too few On-Time flights: congestion missing, scored on the other components
+    assert by["BTV"]["missing"] == ["congestion"] and "congestion" not in by["BTV"]["weights_used"]
+    assert any("large reporting carriers" in a for a in r["assumptions"])
+    assert any("cancellations are shown, not scored" in a for a in r["assumptions"])
+    assert "congestion (delayed departures" in facts(r)["#1 " + f"{d['ranked'][0]['iata']} ({d['ranked'][0]['name']})"]["value"]
+
+
+def test_data_status_lists_congestion_only_until_ontime_is_loaded(db, scoring_cfg):
+    assert "congestion" in tools.data_status(db, scoring_cfg)["data"]["score_components_not_built"]
+    seed_ontime(db)
+    assert "congestion" not in tools.data_status(db, scoring_cfg)["data"]["score_components_not_built"]

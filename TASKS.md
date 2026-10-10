@@ -2,11 +2,11 @@
 
 Task board for the Airport Investment Intelligence Agent (Deloitte Digital FDE exam, 24h budget).
 Legend: [x] done · [~] written, not yet verified · [ ] todo · (stretch) only if time allows.
-Last updated: 2026-10-10. Current milestone: **M2**.
+Last updated: 2026-10-10. Current milestone: **M3**.
 
 ## Working agreements
 - Build in vertical slices: after M2 the app already answers questions end to end; later milestones add data and depth.
-- One branch per milestone (`m2-vertical-slice`), merged into `main` by pull request. `main` stays green: CI runs `pytest`.
+- One branch per milestone or slice (`m2-vertical-slice`, `m3a-ontime-congestion`), merged into `main` by pull request. `main` stays green: CI runs `pytest`.
 - Commit per task, message prefixed with the task id (for example `P2.2: T-100 ingest`). Tick the task here in the same commit.
 - Tests first for scoring. No hardcoded values: `.env` through `src/config.py`, methodology in `config/weights.yaml`.
 
@@ -41,7 +41,7 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [x] P1.7 Create the real `.env`; smoke-test `get_chat_model` with a local Ollama model (works; finding: the reply contained a `<think>` block, handled in P2.7 and P2.10)
 - [x] P1.8 Check which agent constructor the installed LangGraph/LangChain version provides
 
-## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial) (current)
+## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial)
 - [x] P2.1 `src/store.py`: SQLite schema and queries (schema in `docs/plan.md`)
 - [x] P2.2 Ingest T-100 to `t100_route_month`; verify ANC 87,988 departures and the long-haul shares, and SFO load factor; re-baseline the acceptance values in `docs/plan.md` under the passenger-service definition
 - [x] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
@@ -61,9 +61,11 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [x] P2.14 Agent robustness: check ToolMessages across turns (report); empty model reply -> one retry, then a deterministic message; `OLLAMA_NUM_CTX` in `.env` with a warning near the limit; prompt rules (comment, do not repeat the card; only figures from the card; no unsupported conclusions; always resolve airport names; ask when several match)
 - [ ] P2.10 Small eval (8-10 fixed questions with the expected tool) on local models (qwen3:4b-instruct-2507, lfm2.5:8b, gpt-oss:20b); record tool-choice accuracy and latency; set `num_ctx` in config; decide the reasoning setting (`reasoning` parameter of ChatOllama, verify it exists in the installed version); also change the prompt to "comment on the data, do not repeat it" and measure faithfulness (commentary that contradicts the data card, for example the sign of a growth rate), with and without the change
 
-## M3 - Congestion and depth (Q2 complete, Q4 complete)
-- [ ] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
-- [ ] P3.2 Congestion component (delay rate, taxi-out, NAS delay per arriving flight) in scoring, with tests
+## M3 - Congestion and depth (Q2 complete, Q4 complete) (current)
+- [x] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
+  - Verified: 7,001,619 flights for 2025 and 539,747 for January (exact); 352 airports, all matched in `airports`; 1.47% cancelled. Idempotent by file sha256 (rerun reads nothing); a changed file reloads its month only
+- [x] P3.2 Congestion component (delay rate, taxi-out, NAS delay per arriving flight) in scoring, with tests
+  - Weight 0.25 restored when On-Time is loaded (renormalized only without demand_context); `airport_metrics(topic="congestion")` with required facts and a headline; congestion in `rank_airports` weights, ranked summaries, the rendered table (delayed departures) and assumptions; `min_ontime_flights: 1000`. New England top 5: BOS, BTV, BGR, PWM, HVN (was BOS, PWM, BTV, BGR)
 - [ ] P3.3 `compare_airports` (LAX vs SNA, normalized)
 - [ ] P3.4 `explain_demand_gap` for SFO: peak months, dense routes, spill proxy, delay-cause mix; confidence capped at medium
 - [ ] P3.5 Rank stability under weight perturbation (seeded)
@@ -108,11 +110,16 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 | UI shows the data rendered from tool envelopes first, the model text second as commentary | Numbers on screen never depend on the model copying them; the model's text is clearly labeled | Some repetition when the model restates figures |
 | Agent in `st.cache_resource`, SQLite opened read-only per call | Streamlit reruns the script per message; keeps memory and avoids thread errors | None |
 | Scenario weights in `rank_airports(weights=...)`: keys given replace the configured weight, the others keep it, then all are renormalized over the built components; validated against `config/weights.yaml` keys, non-negative; result labeled "scenario" with base rank next to scenario rank | "What if growth weighs more?" is answered by the scoring code, not by the model re-weighting numbers; "growth 0.30" reads as "growth 0.30 instead of 0.15, all else as configured", the simplest rule to explain; the base rank keeps the configured methodology visible | Values need not sum to 1, so 0.30 is not the final weight (here 0.375 after renormalizing); the envelope shows the weights actually used. Defaults stay only in the YAML |
+| `min_ontime_flights: 1000` scheduled On-Time departures in the window to score congestion | On-Time covers only large reporting carriers. Peer-set delay rates have an interquartile range of 17.5% to 22.3% (4.8 points); at 1,000 flights the 95% margin on a 20% rate is about 2.5 points, at 365 flights (one a day) about 4.1 points, as wide as the whole range. 1,000 is about three reported departures a day | 13 of 233 peer airports lose congestion (scored on the rest, medium confidence), including GUM (969k passengers, 732 reported departures) and ORH (962) |
+| Congestion index = weighted mean of the three sub-metric percentiles, then ranked again in the peer set | Same scale as every other component; a mean of percentiles is squeezed toward the middle, which would quietly give congestion less than its 0.25 | The final value is a percentile of an index, one step more to explain; the sub-percentiles are shown in the card |
+| On-Time ingest keyed by file sha256; previous-window coverage checked only for T-100 | A republished month reloads alone, a rerun reads nothing; On-Time has no 2024, which must not switch growth off | Hash column in `ingest_log`; T-100 keeps month-based idempotency |
+| Cancelled flights in On-Time: counted as scheduled departures (cancellation rate), never as arrivals; empty delay or taxi-out fields are skipped (empty is not zero); the 4,285 cancelled flights with a departure-delay value and 693 with a taxi-out time (2025) are kept as reported, not zeroed or dropped. Column definitions: `ontime_airport_month` in the SQLite schema of `docs/plan.md` | BTS fills these fields only when the event happened (e.g. pushback before a cancellation); zeroing would invent on-time flights, dropping would discard real delays. The delay rate divides by `dep_del15_n` (departures that report DEP_DEL15), so it stays consistent either way | A few cancelled flights add to the delay and taxi-out figures (0.06% of 2025 flights) |
+| On-Time source format: the ingested files are TranStats custom downloads (`T_ONTIME_REPORTING.csv`, upper-case columns such as `DEP_DEL15`); `CLAUDE.md` and `docs/plan.md` (Traps, `--download`) still describe the PREZIP files, which use different column names. Whether to read PREZIP with a column mapping or ship a prebuilt seed DB is decided in M4 | The custom downloads were already on disk and carry exactly the needed columns; the decision depends on how M4 refreshes data (P4.3-P4.5) | Until M4, a PREZIP file dropped into `data/raw/ontime` would fail the column check instead of loading |
 | Agent constructor: `create_agent` from `langchain.agents` (add the `langchain` package in P2.7) | Installed LangGraph 1.2.14 still ships `create_react_agent`, but it warns it is deprecated since V1.0 and removed in V2.0, moved to `langchain.agents` | One more dependency (`langchain`) |
 
 ## Demo script
 1. Which airports in New England are strong candidates for terminal expansion? (ranking, weights, stability, confidence)
-   - Follow-up: why is PWM second (highest load factor in the region, 82.4%, plus 5.3% growth), and what changes if growth weighs more? (scenario `weights={"growth": 0.30}`: PWM first, BGR second from fourth, BOS third from first)
+   - Follow-up: why did PWM drop from second to fourth once congestion was scored (highest load factor in the region, 82.4%, but low congestion: 18.3% delayed departures, percentile 36), and what changes if growth weighs more? (scenario `weights={"growth": 0.30}`: top 3 unchanged, BOS, BTV, BGR)
 2. Compare LA and Santa Ana congestion. (agent states LA = LAX, offers BUR/LGB/ONT)
 3. What percentage of long-haul flights leave Anchorage? (both numbers, thresholds, cargo explanation)
 4. What is the unmet demand at SFO and why? (proxy, peak months, dense routes, delay causes, confidence capped at medium)

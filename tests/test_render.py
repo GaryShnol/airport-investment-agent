@@ -115,3 +115,16 @@ def test_scenario_ranking_shows_base_rank_column():
     lines = render_ranking(env).splitlines()
     assert lines[0] == "| Rank | Base rank | Airport | Name | Score | Passengers | Load factor | Growth | Confidence |"
     assert lines[2].startswith("| 1 | 2 | BOS |")
+
+
+def test_ranking_shows_delayed_departures_when_congestion_is_scored():
+    ranked = [{**r, "components": {**r["components"],
+                                   **({"congestion": {"dep_delay_rate_pct": 22.8, "taxi_out_min": 21.2,
+                                                      "nas_min_per_arrival": 6.96, "percentile": 95.0}}
+                                      if r["iata"] == "BOS" else {})}}
+              for r in RANKING["data"]["ranked"]]
+    lines = render_ranking({**RANKING, "data": {**RANKING["data"], "ranked": ranked}}).splitlines()
+    assert lines[0] == ("| Rank | Airport | Name | Score | Passengers | Load factor | Growth | Delayed departures "
+                        "| Confidence |")
+    assert lines[2].endswith("| +2.5% | 22.8% | medium |")
+    assert lines[3].endswith("| -1.0% | n/a | low |")  # PWM without On-Time data

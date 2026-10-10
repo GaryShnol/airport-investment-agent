@@ -65,7 +65,7 @@ ALL_2024_2025 = [f"{y}-{m:02d}" for y in (2024, 2025) for m in range(1, 13)]
 
 
 def _log(conn, source, periods):
-    conn.executemany("INSERT INTO ingest_log VALUES (?, ?, 1, 'now')", [(source, p) for p in periods])
+    conn.executemany("INSERT INTO ingest_log (source, period, rows, loaded_at) VALUES (?, ?, 1, 'now')", [(source, p) for p in periods])
     conn.execute("INSERT INTO meta (source, last_period) VALUES (?, ?)", (source, max(periods)))
 
 
@@ -102,6 +102,23 @@ def test_window_ends_at_the_slowest_source(mem):
     w = store.analysis_window(mem)
     assert (w.start, w.end, w.prev_start, w.prev_end) == ("2024-11", "2025-10", "2023-11", "2024-10")
     assert w.months == 10  # on-time has only 2025-01..2025-10 inside the window
+
+
+def test_window_previous_year_counts_only_growth_sources(mem):
+    # On-Time has no 2024: growth (T-100) must keep its previous 12 months.
+    _log(mem, "ontime", [f"2025-{m:02d}" for m in range(1, 13)])
+    w = store.analysis_window(mem)
+    assert (w.months, w.prev_months) == (12, 12)
+
+
+def test_ontime_metrics_sums_the_window(mem):
+    rows = [("LAX", 2025, m, 10, 2, 1, 150.0, 9, 10, 3, 5.0, 1.0, 20.0, 0.0, 4.0, 9) for m in (1, 2)]
+    rows.append(("LAX", 2024, 12, 99, 99, 99, 99.0, 99, 99, 99, 99.0, 99.0, 99.0, 99.0, 99.0, 99))  # outside
+    mem.executemany("INSERT INTO ontime_airport_month (airport, year, month, dep_flights, dep_del15, dep_cancelled, "
+                    "taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, nas_min, "
+                    "security_min, late_aircraft_min, dep_del15_n) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    lax = store.ontime_metrics(mem, store.analysis_window(mem)).set_index("iata").loc["LAX"]
+    assert (lax["ontime_months"], lax["dep_flights"], lax["dep_del15_n"], lax["nas_min"]) == (2, 20, 18, 40.0)
 
 
 def test_window_requires_data():

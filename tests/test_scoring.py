@@ -86,7 +86,7 @@ def cfg():
         weights=dict(WEIGHTS),
         congestion_weights={"dep_delay_rate": 0.4, "taxi_out": 0.3, "nas_delay_per_arrival": 0.3},
         long_haul_miles=2500, long_haul_sensitivity_miles=(1500, 2500, 3000),
-        long_haul_min_share=0.02, min_passengers_per_year=5_000, target_load_factor=0.8,
+        long_haul_min_share=0.02, min_passengers_per_year=5_000, min_ontime_flights=100, target_load_factor=0.8,
         sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1,
         regions={"north": ("AA", "BB"), "south": ("CC",)}, max_ranked=25,
     )
@@ -177,11 +177,11 @@ def test_confidence_is_at_most_medium_while_components_are_not_built(metrics, cf
 
 
 def test_confidence_high_when_every_component_is_available(metrics, cfg, monkeypatch):
-    # Simulate the finished formula: pretend congestion and demand_context are built.
+    # Simulate the finished formula: pretend demand_context is built; congestion comes from On-Time.
     monkeypatch.setattr(scoring, "NOT_BUILT", {})
-    monkeypatch.setitem(scoring.RAW_COLUMN, "congestion", "congestion")
     monkeypatch.setitem(scoring.RAW_COLUMN, "demand_context", "demand_context")
-    full = metrics.assign(congestion=range(len(metrics)), demand_context=range(len(metrics)))
+    full = with_ontime(metrics, {i: (1000, 200, 15.0, 3.0, 10) for i in metrics["iata"]})
+    full = full.assign(demand_context=range(len(metrics)))
     t = scoring.score(full, cfg, FULL).table.set_index("iata")
     assert t.at["BIG", "confidence"] == "high"
     assert t.at["SUN", "confidence"] == "medium"  # partial coverage: service in 8 of 12 months
@@ -258,3 +258,94 @@ def test_custom_weights_change_the_ranking(metrics, cfg):
     assert custom.iloc[0]["iata"] == "HOT"
     # NEW has no growth and every other built weight is zero: no score, listed last, not an error
     assert custom.iloc[-1]["iata"] == "NEW" and math.isnan(custom.iloc[-1]["score"])
+
+
+# --- congestion (On-Time) ------------------------------------------------------------------
+
+def with_ontime(metrics, values):
+    """Add On-Time columns: iata -> (scheduled departures, delayed >= 15, mean taxi-out,
+    NAS minutes per arrival, cancelled). Airports not listed have no On-Time rows (missing)."""
+    rows = []
+    for iata in metrics["iata"]:
+        if iata not in values:
+            rows.append({c: float("nan") for c in scoring.ONTIME_COLUMNS})
+            continue
+        dep, del15, taxi, nas, cancelled = values[iata]
+        flown = dep - cancelled
+        rows.append({"dep_flights": dep, "dep_cancelled": cancelled, "dep_del15": del15, "dep_del15_n": flown,
+                     "taxi_out_sum": taxi * flown, "taxi_out_n": flown, "arr_flights": flown, "nas_min": nas * flown})
+    return pd.concat([metrics.reset_index(drop=True), pd.DataFrame(rows)], axis=1)
+
+
+ONTIME = {  # peer airports: BIG, MID, NEW, HOT, SUN; TNY and YVR are outside the peer set
+    "BIG": (1000, 300, 20.0, 6.0, 10),   # worst on every sub-metric
+    "MID": (1000, 200, 15.0, 3.0, 50),   # many cancellations: must not matter
+    "HOT": (1000, 100, 10.0, 1.0, 0),    # best on every sub-metric
+    "SUN": (1000, 200, 25.0, 1.0, 0),    # mixed
+    "TNY": (50, 40, 40.0, 9.0, 0),       # few flights
+}
+
+
+def test_congestion_sub_metrics_come_from_counts(metrics, cfg):
+    t = scoring.score(with_ontime(metrics, ONTIME), cfg, FULL).table.set_index("iata")
+    assert t.at["MID", "dep_delay_rate"] == pytest.approx(200 / 950)   # among departures reporting DEP_DEL15
+    assert t.at["MID", "taxi_out_min"] == pytest.approx(15.0)
+    assert t.at["MID", "nas_min_per_arrival"] == pytest.approx(3.0)
+    assert t.at["MID", "cancellation_rate"] == pytest.approx(0.05)
+
+
+def test_congestion_weight_is_used_when_ontime_is_loaded(metrics, cfg):
+    result = scoring.score(with_ontime(metrics, ONTIME), cfg, FULL)
+    assert "congestion" not in result.unavailable
+    assert set(result.unavailable) == {"demand_context"}
+    assert result.weights_used["congestion"] == pytest.approx(0.25 / 0.9)
+
+
+def test_congestion_is_the_weighted_mean_of_sub_percentiles_then_ranked(metrics, cfg):
+    t = scoring.score(with_ontime(metrics, ONTIME), cfg, FULL).table.set_index("iata")
+    # sub-metric percentiles among the 4 peer airports with On-Time data (NEW has none)
+    assert t.at["BIG", "pct_dep_delay_rate"] == 1.0 and t.at["HOT", "pct_dep_delay_rate"] == 0.25
+    assert t.at["SUN", "pct_taxi_out"] == 1.0 and t.at["SUN", "pct_nas_delay_per_arrival"] == pytest.approx(0.375)
+    expected = 0.4 * t.at["SUN", "pct_dep_delay_rate"] + 0.3 * 1.0 + 0.3 * 0.375
+    assert t.at["SUN", "congestion_index"] == pytest.approx(expected)
+    # the index is ranked like every other component: BIG most congested, HOT least
+    assert t.at["BIG", "pct_congestion"] == 1.0 and t.at["HOT", "pct_congestion"] == 0.25
+
+
+def test_cancellations_are_shown_but_not_scored(metrics, cfg):
+    data = with_ontime(metrics, ONTIME)
+    base = scoring.score(data, cfg, FULL).table.set_index("iata")
+    hot = data["iata"] == "HOT"
+    data.loc[hot, ["dep_flights", "dep_cancelled"]] = [1400, 400]   # 400 more cancellations, same operated flights
+    other = scoring.score(data, cfg, FULL).table.set_index("iata")
+    assert other.at["HOT", "cancellation_rate"] == pytest.approx(400 / 1400)
+    assert other["score"].equals(base["score"])
+
+
+def test_airport_without_ontime_is_renormalized_with_medium_confidence(metrics, cfg):
+    t = scoring.score(with_ontime(metrics, ONTIME), cfg, FULL).table.set_index("iata")
+    assert t.at["NEW", "ontime_status"] == "no_data"
+    assert "congestion" in t.at["NEW", "missing"]
+    assert "congestion" not in t.at["NEW", "weights_used"]
+    assert sum(t.at["NEW", "weights_used"].values()) == pytest.approx(1.0)
+    assert t.at["NEW", "confidence"] == "medium"
+    assert any("congestion" in r for r in t.at["NEW", "confidence_reasons"])
+    assert t.at["BIG", "missing"] == [] and "congestion" in t.at["BIG", "weights_used"]
+
+
+def test_min_ontime_flights_leaves_congestion_missing(metrics, cfg):
+    small = replace(cfg, min_passengers_per_year=2_000)    # TNY joins the peer set
+    t = scoring.score(with_ontime(metrics, ONTIME), small, FULL).table.set_index("iata")
+    assert t.at["TNY", "ontime_status"] == "too_few_flights"
+    assert math.isnan(t.at["TNY", "dep_delay_rate"]) and "congestion" in t.at["TNY", "missing"]
+    # TNY's noisy 80% delay rate does not enter the other airports' percentiles
+    assert t.at["BIG", "pct_dep_delay_rate"] == 1.0
+    t = scoring.score(with_ontime(metrics, ONTIME), replace(small, min_ontime_flights=10), FULL).table.set_index("iata")
+    assert t.at["TNY", "ontime_status"] == "ok" and t.at["TNY", "pct_dep_delay_rate"] == 1.0
+
+
+def test_congestion_changes_the_ranking_only_when_loaded(metrics, cfg):
+    without = scoring.score(metrics, cfg, FULL)
+    with_data = scoring.score(with_ontime(metrics, ONTIME), cfg, FULL)
+    assert "pct_congestion" not in without.table.columns
+    assert with_data.table.set_index("iata").at["BIG", "score"] != without.table.set_index("iata").at["BIG", "score"]

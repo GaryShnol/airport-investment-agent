@@ -14,6 +14,10 @@ congestion:            # must sum to 1.0. Cancellations are shown but not scored
   taxi_out: 0.30             # mean taxi-out minutes, at the origin airport
   nas_delay_per_arrival: 0.30  # NAS-caused delay minutes per arriving flight (BTS records causes for arrivals)
 
+min_ontime_flights: 1000     # On-Time departures (scheduled, in the window) needed to score congestion.
+                             # On-Time covers only large reporting carriers; fewer flights -> congestion
+                             # missing for that airport (renormalized, medium confidence). See the decision log.
+
 long_haul_miles: 2500
 long_haul_min_share: 0.02     # share below this counts as 0 for the long_haul component (a few charters are not a signal)
 long_haul_sensitivity_miles: [1500, 2500, 3000]

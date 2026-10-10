@@ -33,13 +33,18 @@ PASSENGER_SERVICE = "passenger service = aircraft config passenger or combi (BTS
 MAX_LISTED = 5
 # airport_metrics `topic`: which facts, data and assumptions are returned, and which facts are
 # required (ensure_facts appends them if the answer omits them). demand = passengers, seats, load factor.
-Topic = Literal["long_haul", "demand", "growth", "all"]
+Topic = Literal["long_haul", "demand", "growth", "congestion", "all"]
 TOPIC_VALUES = get_args(Topic)
 # resolve_airport suggestions: difflib ratio needed to suggest an airport for an unmatched name.
 SUGGEST_MIN_SIMILARITY = 0.6
 # Ranked airports named in a ranking headline; the table lists the rest.
 HEADLINE_TOP = 3
 LOAD_FACTOR_PROXY = "load factor = passengers / seats on passenger service: a demand-pressure proxy, not terminal utilization"
+ONTIME_COVERAGE = ("On-Time covers domestic flights of the large reporting carriers only, not every flight at the "
+                   "airport; airports with few reported flights get no congestion value")
+CONGESTION_SIDES = ("departure delay rate (>= 15 min), taxi-out and cancellations are measured on departures from "
+                    "the airport; NAS-delay minutes on arrivals to it (BTS records delay causes for arrivals)")
+CANCELLATIONS_NOT_SCORED = "cancellations are shown, not scored (mostly weather, not a capacity signal)"
 
 
 def _pct(value, digits: int = 1) -> float | None:
@@ -106,7 +111,8 @@ def data_status(conn: sqlite3.Connection, cfg: ScoringConfig) -> dict:
         "sources": store.meta_rows(conn),
         "months_in_window": window.months,
         "previous_window": f"{window.prev_start}..{window.prev_end} ({window.prev_months} months, for growth)",
-        "score_components_not_built": dict(scoring.NOT_BUILT),
+        "score_components_not_built": {**scoring.NOT_BUILT, **({} if store.ontime_loaded(conn)
+                                                               else {"congestion": scoring.ONTIME_NOT_LOADED})},
         "weights_configured": cfg.weights,
         "regions": {name: list(states) for name, states in cfg.regions.items()},
     }
@@ -268,7 +274,7 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
     if threshold <= 0:
         return _error(conn, "threshold_mi must be a positive number of miles")
 
-    result = scoring.score(store.airport_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
     rows = result.table[result.table["iata"] == code]
     if rows.empty:
         return _error(conn, f"{code} has no passenger service in {window.label}")
@@ -334,7 +340,72 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
                         f"long haul = segment distance >= {threshold} mi, share of departures"]
         headlines.append(_long_haul_headline(code, data["long_haul"]))
 
+    if shows["congestion"]:
+        data["congestion"] = _congestion_data(row, result)
+        facts += _congestion_facts(data["congestion"], cfg)
+        assumptions += [CONGESTION_SIDES, CANCELLATIONS_NOT_SCORED, ONTIME_COVERAGE,
+                        f"congestion needs >= {cfg.min_ontime_flights:,} On-Time departures in the window"]
+        headlines.append(_congestion_headline(code, window, data["congestion"]))
+
     return _envelope(conn, window, data, assumptions, row["confidence"], facts, headline=" ".join(headlines))
+
+
+def _num(value, digits: int = 1) -> float | None:
+    """Rounded number; None for missing."""
+    return None if value is None or value != value else round(float(value), digits)
+
+
+def _count(value) -> int | None:
+    return None if value is None or value != value else int(value)
+
+
+def _congestion_data(row, result: scoring.ScoreResult) -> dict:
+    """Raw congestion values, counts and percentiles for one scored row. `status`: ok, too_few_flights
+    (below min_ontime_flights), no_data (no On-Time flights) or not_loaded (no On-Time at all)."""
+    if "congestion" in result.unavailable:
+        return {"status": "not_loaded", "reason": result.unavailable["congestion"]}
+    data = {"status": row["ontime_status"],
+            "departures_reported": _count(row["dep_flights"]), "arrivals_reported": _count(row["arr_flights"]),
+            "dep_delay_rate_pct": _pct(row["dep_delay_rate"]), "taxi_out_min": _num(row["taxi_out_min"]),
+            "nas_min_per_arrival": _num(row["nas_min_per_arrival"], 2),
+            "cancellation_rate_pct": _pct(row["cancellation_rate"]), "cancelled": _count(row["dep_cancelled"])}
+    if row["ontime_status"] == "ok" and row["in_peer_set"]:
+        data["percentiles"] = {k: _pct(row[f"pct_{k}"], 0) for k in [*scoring.CONGESTION_COLUMN, "congestion"]}
+    return data
+
+
+def _congestion_facts(c: dict, cfg: ScoringConfig) -> list[dict]:
+    """Required congestion facts (cancellations included, marked as not scored), or one required
+    fact saying why there are none."""
+    if c["status"] != "ok":
+        why = {"not_loaded": "On-Time data not loaded",
+               "no_data": "no flights of the On-Time reporting carriers",
+               "too_few_flights": f"{c.get('departures_reported') or 0:,} reported departures, "
+                                  f"below the {cfg.min_ontime_flights:,} minimum"}[c["status"]]
+        return [fact("Congestion", f"not available: {why}", True)]
+    facts = [
+        fact("Departures delayed >= 15 min", _share(c["dep_delay_rate_pct"]), True),
+        fact("Mean taxi-out (departures)", f"{c['taxi_out_min']} min", True),
+        fact("NAS-delay minutes per arriving flight", f"{c['nas_min_per_arrival']}", True),
+        fact("Cancelled departures (shown, not scored)",
+             f"{_share(c['cancellation_rate_pct'])} ({c['cancelled']:,} of {c['departures_reported']:,})", True),
+        fact("On-Time flights reported (large carriers only)",
+             f"{c['departures_reported']:,} departures, {c['arrivals_reported']:,} arrivals"),
+    ]
+    if "percentiles" in c:
+        p = c["percentiles"]
+        facts.append(fact("Congestion percentile in the peer set",
+                          f"{p['congestion']:.0f} (delay rate {p['dep_delay_rate']:.0f}, taxi-out {p['taxi_out']:.0f}, "
+                          f"NAS delay {p['nas_delay_per_arrival']:.0f})"))
+    return facts
+
+
+def _congestion_headline(code: str, window: store.Window, c: dict) -> str:
+    if c["status"] != "ok":
+        return f"{code}: no congestion figures for {window.label} ({c['status'].replace('_', ' ')})."
+    return (f"{code} in {window.label}: {_share(c['dep_delay_rate_pct'])} of departures delayed >= 15 min, "
+            f"mean taxi-out {c['taxi_out_min']} min, {c['nas_min_per_arrival']} NAS-delay minutes per arriving "
+            f"flight; {_share(c['cancellation_rate_pct'])} of departures cancelled (not scored).")
 
 
 def _of(counts: dict, threshold: int) -> str:
@@ -406,7 +477,7 @@ def scenario_weights(cfg: ScoringConfig, weights: dict | None) -> tuple[dict[str
 
 
 def _rank_table(conn: sqlite3.Connection, cfg: ScoringConfig, key: str, window: store.Window):
-    result = scoring.score(store.airport_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
     return result, scoring.rank(result, key, cfg)
 
 
@@ -458,6 +529,10 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
                "scale": {"passengers": int(r["passengers"])},
                "growth": {"growth_pct": _pct(r["growth"])},
                "long_haul": {"share_pct": _pct(r["long_haul_share"])}}
+        if "congestion" in components:
+            raw["congestion"] = {"dep_delay_rate_pct": _pct(r["dep_delay_rate"]),
+                                 "taxi_out_min": _num(r["taxi_out_min"]),
+                                 "nas_min_per_arrival": _num(r["nas_min_per_arrival"], 2)}
         item = {"rank": position, "iata": r["iata"], "name": r["name"], "score": round(float(r["score"]), 3),
                 "components": {c: {**raw[c], "percentile": _pct(r[f"pct_{c}"], 0)} for c in components},
                 "confidence": r["confidence"]}
@@ -500,6 +575,10 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         f"long haul >= {cfg.long_haul_miles} mi; shares under {_pct(cfg.long_haul_min_share)}% count as 0 in the score",
         *result.notes,
     ]
+    if "congestion" in result.weights_used:
+        assumptions += [f"congestion = {_weights_text(cfg.congestion_weights)} (percentiles in the peer set); "
+                        + CANCELLATIONS_NOT_SCORED, CONGESTION_SIDES,
+                        f"{ONTIME_COVERAGE} (minimum {cfg.min_ontime_flights:,} departures)"]
     if scenario:
         ignored = sorted(k for k, v in weights.items() if k in result.unavailable and v > 0)
         assumptions.insert(0, "scenario: weights changed by the user, not the configured methodology; "
@@ -539,16 +618,23 @@ def _ranking_headline(data: dict, key: str, sort_by: str, scenario: bool) -> str
 
 
 COMPONENT_LABELS = {"utilization": "utilization (load factor)", "scale": "scale (annual passengers)",
-                    "growth": "growth (passengers vs previous 12 months)", "long_haul": "long-haul share"}
+                    "growth": "growth (passengers vs previous 12 months)", "long_haul": "long-haul share",
+                    "congestion": "congestion"}
 
 
 def _ranked_summary(item: dict) -> str:
     """One line per ranked airport: score, then each component's raw value and percentile."""
     parts = [f"score {item['score']}"]
     for c, v in item["components"].items():
+        pct = "n/a" if v["percentile"] is None else f"{v['percentile']:.0f}"
+        if c == "congestion":
+            taxi = "n/a" if v["taxi_out_min"] is None else f"{v['taxi_out_min']} min"
+            nas = "n/a" if v["nas_min_per_arrival"] is None else f"{v['nas_min_per_arrival']} min"
+            parts.append(f"congestion (delayed departures {_share(v['dep_delay_rate_pct'])}, taxi-out {taxi}, "
+                         f"NAS delay {nas} per arrival), percentile {pct}")
+            continue
         raw = next(val for key, val in v.items() if key != "percentile")
         shown = f"{raw:,}" if isinstance(raw, int) else _share(raw)
-        pct = "n/a" if v["percentile"] is None else f"{v['percentile']:.0f}"
         parts.append(f"{COMPONENT_LABELS.get(c, c)} {shown}, percentile {pct}")
     return "; ".join(parts)
 
@@ -584,7 +670,8 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
         """Metrics for one airport (IATA code or name). Set topic to what the question asks about:
         long_haul (share of departures >= threshold, all flights and passenger service, with
         sensitivity), demand (passengers, seats, load factor), growth (passengers vs the previous
-        12 months); all when it asks for several. threshold_mi only for long_haul (default from config)."""
+        12 months), congestion (departure delay rate, taxi-out, NAS delay per arrival, cancellations);
+        all when it asks for several. threshold_mi only for long_haul (default from config)."""
         return run(airport_metrics, airport, threshold_mi, topic)
 
     @tool("rank_airports", description=(

@@ -65,11 +65,18 @@ def renormalize(weights: Mapping[str, float], available: Iterable[str]) -> dict[
 
 
 # Components not built yet, with the reason reported in every result. Remove an entry when the
-# component is added (congestion in M3 from On-Time, demand_context in M4 from Census).
+# component is added (demand_context in M4 from Census).
 NOT_BUILT = {
-    "congestion": "On-Time data not loaded yet (milestone M3)",
     "demand_context": "Census data not loaded yet (milestone M4)",
 }
+# Congestion is built but needs On-Time data: without the On-Time columns in the metrics it is
+# unavailable for every airport and the weights are renormalized, as for a component not built.
+ONTIME_NOT_LOADED = "On-Time data not loaded (run `uv run python -m src.ingest`)"
+ONTIME_COLUMNS = ("dep_flights", "dep_cancelled", "dep_del15", "dep_del15_n", "taxi_out_sum", "taxi_out_n",
+                  "arr_flights", "nas_min")
+# Congestion sub-metric (config/weights.yaml `congestion` keys) -> raw column in the table.
+CONGESTION_COLUMN = {"dep_delay_rate": "dep_delay_rate", "taxi_out": "taxi_out_min",
+                     "nas_delay_per_arrival": "nas_min_per_arrival"}
 
 # Region name for a ranking over every US airport in the peer set (no state filter).
 NATIONAL = "national"
@@ -79,8 +86,38 @@ SCORE_DECIMALS = 9
 
 # Raw value behind each component: the column shown next to its percentile.
 # long_haul is ranked on the floored share (`long_haul_share_scored`); the true share is shown too.
+# congestion is ranked on `congestion_index`, the weighted mean of its sub-metric percentiles.
 RAW_COLUMN = {"utilization": "load_factor", "scale": "passengers", "growth": "growth",
-              "long_haul": "long_haul_share_scored"}
+              "long_haul": "long_haul_share_scored", "congestion": "congestion_index"}
+
+
+def weighted_mean(values: pd.DataFrame, weights: Mapping[str, float]) -> pd.Series:
+    """Row-wise weighted mean over the columns present (not missing), weights renormalized per row;
+    missing when no weighted column is present."""
+    w = pd.Series(weights, dtype=float)
+    present = values.notna().mul(w).sum(axis=1)
+    return (values * w).sum(axis=1) / present.where(present > 0)
+
+
+def congestion_metrics(t: pd.DataFrame, min_flights: int) -> pd.DataFrame:
+    """Congestion raw values from On-Time counts (columns ONTIME_COLUMNS).
+
+    dep_delay_rate = DEP_DEL15 / departures reporting it; taxi_out_min = mean taxi-out (origin
+    side); nas_min_per_arrival = NAS-delay minutes / arrivals operated (destination side, where BTS
+    records causes); cancellation_rate = cancelled / scheduled departures (shown, never scored).
+    Airports with fewer than `min_flights` scheduled departures in the window get no congestion
+    values: On-Time covers only large reporting carriers, and a rate on a few flights is noise.
+    `ontime_status` says which case applies: ok, too_few_flights or no_data.
+    """
+    dep = t["dep_flights"].fillna(0)
+    enough = dep >= min_flights
+    out = pd.DataFrame(index=t.index)
+    out["ontime_status"] = ["ok" if ok else ("too_few_flights" if n > 0 else "no_data") for ok, n in zip(enough, dep)]
+    out["dep_delay_rate"] = _ratio(t["dep_del15"], t["dep_del15_n"]).where(enough)
+    out["taxi_out_min"] = _ratio(t["taxi_out_sum"], t["taxi_out_n"]).where(enough)
+    out["nas_min_per_arrival"] = _ratio(t["nas_min"], t["arr_flights"]).where(enough)
+    out["cancellation_rate"] = _ratio(t["dep_cancelled"], t["dep_flights"]).where(enough)
+    return out
 
 
 @dataclass(frozen=True)
@@ -131,12 +168,18 @@ def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreRes
     """Score every peer-set airport; `metrics` has the columns of `store.airport_metrics`.
 
     Peer set = airports with a US state (`state`, from `airports`) and at least
-    `min_passengers_per_year` passenger-service passengers. Each component is a percentile inside the peer set. Components not built yet
-    (NOT_BUILT) are dropped and the remaining weights renormalized. An airport missing a
-    component (e.g. no previous-year passengers, so no growth) is scored on the components it
-    has, with its own renormalized weights. Ties in the score are broken by IATA code.
+    `min_passengers_per_year` passenger-service passengers. Each component is a percentile inside
+    the peer set. Components not built yet (NOT_BUILT), and congestion when `metrics` has no
+    On-Time columns (`store.scoring_metrics` adds them once On-Time is loaded), are dropped and
+    the remaining weights renormalized. An airport missing a component (e.g. no previous-year
+    passengers, so no growth; no On-Time data or fewer than `min_ontime_flights`, so no
+    congestion) is scored on the components it has, with its own renormalized weights and
+    medium confidence. Ties in the score are broken by IATA code.
     """
     unavailable = dict(NOT_BUILT)
+    has_ontime = all(c in metrics.columns for c in ONTIME_COLUMNS)
+    if not has_ontime:
+        unavailable["congestion"] = ONTIME_NOT_LOADED
     if window.prev_months < WINDOW_MONTHS:
         unavailable["growth"] = (f"previous 12 months only partly loaded "
                                  f"({window.prev_months} of {WINDOW_MONTHS})")
@@ -153,6 +196,15 @@ def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreRes
     t["in_peer_set"] = t["state"].notna() & (t["passengers"] >= cfg.min_passengers_per_year)
 
     peer = t["in_peer_set"]
+    if has_ontime:
+        t = t.join(congestion_metrics(t, cfg.min_ontime_flights))
+        # Each sub-metric is a percentile in the peer set; the index is their weighted mean
+        # (renormalized when one is missing), then ranked like every other component below.
+        subs = pd.DataFrame({k: percentile_rank(t.loc[peer, col].astype(float))
+                             for k, col in CONGESTION_COLUMN.items()}).reindex(t.index)
+        for k in CONGESTION_COLUMN:
+            t[f"pct_{k}"] = subs[k]
+        t["congestion_index"] = weighted_mean(subs, cfg.congestion_weights)
     for component in available:
         t[f"pct_{component}"] = percentile_rank(t.loc[peer, RAW_COLUMN[component]].astype(float))
 
