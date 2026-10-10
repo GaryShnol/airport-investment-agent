@@ -4,8 +4,12 @@
 #   question  asked as is
 #   group     optional: questions with the same group run in order in one conversation (follow-ups)
 #   tools     optional: tools that must be called ([] = no tool may be called); omitted = not checked
+#   tool_args optional: {tool: {arg: value}}; at least one call of that tool must have these arguments
 #   must_have optional: fact labels (substrings) that must appear in this turn's tool results
-#   must_not  optional: text the model must not write (checked in the commentary and in removed sentences)
+#   must_not  optional: text the user must not see (rendered cards and the commentary after the figure
+#             check); a match only in sentences the figure check removed is a note, not a failure
+#   answer_from_card optional: true = an answer with no tool call also passes (tools and must_have not
+#             checked) when it has figures and all of them are in an earlier card of the conversation
 
 - id: q1_new_england
   group: new_england
@@ -27,7 +31,9 @@
   group: new_england
   question: Which of these airports has the highest load factor?
   tools: [rank_airports]
+  tool_args: {rank_airports: {sort_by: load_factor}}
   must_have: ["Sorted by"]
+  answer_from_card: true
 
 - id: q2_la_vs_santa_ana
   question: Compare LA and Santa Ana airport congestion levels.
