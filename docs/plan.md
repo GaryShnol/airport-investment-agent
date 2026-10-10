@@ -3,7 +3,7 @@ Task status lives in `TASKS.md`. This file holds the design.
 
 ## Configuration (no hardcoded values)
 - `.env` (see `.env.example`) -> `src/config.py` `Settings.from_env()`: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_TEMPERATURE`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `CENSUS_API_KEY`, `DB_PATH`, `SEED_DB_PATH`, `RAW_DATA_DIR`, `WEIGHTS_PATH`, `LOG_LEVEL`. Secrets are hidden from `repr`. Relative paths resolve against the project root.
-- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles, minimum long-haul share and sensitivity list, min passengers, target load factor, sensitivity runs/jitter/seed, regions.
+- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles, minimum long-haul share and sensitivity list, min passengers, target load factor, sensitivity runs/jitter/seed, regions, metro aliases (ambiguous names such as LA, with the default airport).
 - Why split: env is per-deployment and secret; methodology is reviewable, versioned and part of the design doc.
 
 ## LLM provider
@@ -12,7 +12,7 @@ Task status lives in `TASKS.md`. This file holds the design.
 ## SQLite schema
 - `meta(source, last_period, upstream_latest, checked_at, fetched_at)`  one row per source (freshness summary)
 - `ingest_log(source, period, rows, loaded_at)`  one row per loaded (source, month); makes ingest idempotent
-- `airports(iata, name, state, region, cbsa, lat, lon)`
+- `airports(iata, name, state, region, cbsa, lat, lon, municipality)`  municipality = city served, used by `resolve_airport`
 - `t100_route_month(origin, origin_state, dest, year, month, config, distance, departures, seats, passengers)`  origin_state = ORIGIN_STATE_ABR (peer-set filter)  config = pax | cargo | combi | unknown
 - `ontime_airport_month(airport, year, month, dep_flights, dep_del15, dep_cancelled, taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, nas_min, security_min, late_aircraft_min)`  departure side at the origin airport; arrival side and cause minutes at the destination airport
 - `census_metro(cbsa, year, population, fetched_at)`
@@ -34,7 +34,8 @@ Every tool returns:
 - `compare_airports(a, b)`: side by side with normalized metrics.
 - `rank_airports(region, top_n)`: scores, component breakdown, weights, rank stability.
 - `explain_demand_gap(airport)`: peak months, highest load-factor routes, spill proxy (seats needed to bring dense routes to the target load factor), delay-cause mix.
-- `resolve_airport(text)`: name or city -> IATA; ambiguity returns candidates for the agent to ask about.
+- `resolve_airport(text)`: configured metro alias (ambiguous, with a default: LA = LAX), then exact IATA, airport name, municipality; name and city matches count only airports with passenger service in the window. Ambiguity returns candidates for the agent to ask about.
+- Errors come back as an envelope with `data` null, `error` and `candidates`; tools never raise to the model. Lists are capped (`MAX_LISTED`) to fit short local-model contexts.
 
 ## Definitions (fixed; used by ingest, scoring and tools)
 - Passenger service: T-100 rows with AIRCRAFT_CONFIG 1 (passenger) or 3 (combi) and DEPARTURES_PERFORMED > 0. Cargo (2) and undocumented (4) are excluded from passenger metrics; they count only in "all flights" figures.

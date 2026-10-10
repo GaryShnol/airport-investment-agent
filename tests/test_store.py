@@ -85,7 +85,8 @@ def mem():
         ("YVR", None, "BOS", 2025, 1, "pax", 2000, 1, 100, 90),     # foreign origin
         ("YYZ", "ON", "BOS", 2025, 1, "pax", 500, 1, 100, 90),      # T-100 gives Canadian provinces a state
     ])
-    conn.execute("INSERT INTO airports VALUES ('BOS', 'Logan', 'MA', 'new_england', NULL, 0, 0)")
+    conn.execute("INSERT INTO airports (iata, name, state, region, cbsa, lat, lon) "
+                 "VALUES ('BOS', 'Logan', 'MA', 'new_england', NULL, 0, 0)")
     _log(conn, "t100", ALL_2024_2025)
     yield conn
     conn.close()
@@ -120,3 +121,22 @@ def test_airport_metrics(mem):
     assert (bos["state"], bos["region"], bos["name"]) == ("MA", "new_england", "Logan")
     assert df.loc[["YVR", "YYZ"], "state"].isna().all()  # foreign: never in the peer set
     assert df.loc["YVR", "prev_passengers"] == 0
+
+
+def test_init_db_adds_municipality_to_an_older_airports_table():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE airports (iata TEXT PRIMARY KEY, name TEXT, state TEXT, region TEXT, "
+                 "cbsa TEXT, lat REAL, lon REAL)")
+    store.init_db(conn)
+    assert "municipality" in {r[1] for r in conn.execute("PRAGMA table_info(airports)")}
+
+
+def test_find_airports_and_long_haul_counts(mem):
+    w = store.analysis_window(mem)
+    assert store.find_airports(mem, "name", "log", w) == [
+        {"iata": "BOS", "name": "Logan", "state": "MA", "municipality": None, "passengers": 1350}]
+    assert store.find_airports(mem, "name", "%", w) == []  # wildcards are literal
+    every = store.long_haul_counts(mem, "BOS", w, [2500, 3000])
+    pax = store.long_haul_counts(mem, "BOS", w, [2500, 3000], store.PASSENGER_CONFIGS)
+    assert every == {"departures": 24, "long_haul": {2500: 19, 3000: 7}}
+    assert pax == {"departures": 17, "long_haul": {2500: 12, 3000: 0}}

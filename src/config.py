@@ -85,6 +85,8 @@ class ScoringConfig:
     sensitivity_jitter: float
     sensitivity_seed: int
     regions: dict[str, tuple[str, ...]]
+    # name -> {"default": IATA, "candidates": (IATA, ...)}; e.g. LA -> LAX by default
+    metro_aliases: dict[str, dict] = field(default_factory=dict)
 
 
 _WEIGHT_KEYS = {"utilization", "congestion", "scale", "growth", "long_haul", "demand_context"}
@@ -121,6 +123,8 @@ def load_scoring(path: Path) -> ScoringConfig:
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),
             sensitivity_seed=int(raw["sensitivity"]["seed"]),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
+            metro_aliases={k.upper(): {"default": v["default"], "candidates": tuple(v["candidates"])}
+                           for k, v in (raw.get("metro_aliases") or {}).items()},
         )
     except KeyError as exc:
         raise ConfigError(f"Missing key in {path}: {exc}") from exc

@@ -47,7 +47,7 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [x] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
 - [x] P2.4 Scoring tests first: percentile, load factor, long-haul share, growth, renormalization when a component is missing
 - [x] P2.5 `src/scoring.py` with the available components (utilization, scale, growth, long haul) and deterministic confidence
-- [ ] P2.6 Tool envelope and tools: `data_status`, `resolve_airport` (handles "LA" ambiguity), `airport_metrics`, `rank_airports`
+- [x] P2.6 Tool envelope and tools: `data_status`, `resolve_airport` (handles "LA" ambiguity), `airport_metrics`, `rank_airports`
 - [ ] P2.7 `src/agent.py`: LangGraph ReAct agent, memory by `thread_id`, system prompt (scope, assumptions, clarify, user language), light input guard; strip any reasoning (`<think>`) block from model output before it reaches the user
 - [ ] P2.8 Agent test with a fake model: tool routing, ambiguity, out-of-scope, missing LLM key message
 - [ ] P2.9 `app.py` Streamlit chat with follow-ups; agent and memory in `st.cache_resource`, `thread_id` in `st.session_state`, SQLite read-only per call; sidebar with data period and provider; collapsible panel with the tools called and their envelopes

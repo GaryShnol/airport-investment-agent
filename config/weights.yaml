@@ -31,3 +31,8 @@ sensitivity:                    # rank stability under weight perturbation
 
 regions:
   new_england: [MA, CT, RI, NH, VT, ME]
+
+# Names that mean several airports. resolve_airport returns them as ambiguous, with the default
+# definition the agent states when it does not ask. Keys are matched case-insensitively.
+metro_aliases:
+  LA: {default: LAX, candidates: [LAX, BUR, LGB, ONT, SNA]}

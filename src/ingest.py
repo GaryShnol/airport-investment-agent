@@ -155,9 +155,10 @@ def ingest_airports(conn: sqlite3.Connection, csv_path: Path, regions: dict[str,
     for r in df.itertuples(index=False):
         state = _state(r.iso_country, r.iso_region)
         rows.append((r.iata_code, r.name, state, state_region.get(state), None,
-                     float(r.latitude_deg), float(r.longitude_deg)))
+                     float(r.latitude_deg), float(r.longitude_deg), r.municipality or None))
     conn.execute("DELETE FROM airports")
-    conn.executemany("INSERT INTO airports (iata, name, state, region, cbsa, lat, lon) VALUES (?,?,?,?,?,?,?)", rows)
+    conn.executemany("INSERT INTO airports (iata, name, state, region, cbsa, lat, lon, municipality) "
+                     "VALUES (?,?,?,?,?,?,?,?)", rows)
     return len(rows)
 
 
