@@ -90,6 +90,8 @@ def cfg():
         target_sensitivity=(0.75, 0.8, 0.85), peak_months=3, top_routes=5,
         sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1, comparison_confidence_level=0.95, comparison_size_ratio_note=3.0,
         sensitivity_top_n=2, sensitivity_stable_share=0.9, commentary_restricted_tools=("rank_airports",),
+        census_dataset="acs/acs5", census_variable="B01003_001E", census_vintage=2024, census_base_vintage=2019,
+        geocoder_vintage="ACS2024_Current",
         regions={"north": ("AA", "BB"), "south": ("CC",)}, max_ranked=25,
     )
 

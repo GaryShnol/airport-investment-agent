@@ -17,6 +17,10 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 _TOLERANCE = 1e-6
+# Default upstream URLs (override in .env). A missing On-Time month returns 404 with text/html.
+ONTIME_PREZIP_URL = ("https://transtats.bts.gov/PREZIP/On_Time_Reporting_Carrier_On_Time_Performance_1987_present_"
+                     "{year}_{month}.zip")
+T100_PAGE_URL = "https://www.transtats.bts.gov/DL_SelectFields.aspx?gnoyr_VQ=FMG&QO_fu146_anzr=Nv4%20Pn44vr45"
 
 
 class ConfigError(ValueError):
@@ -44,6 +48,13 @@ class Settings:
     weights_path: Path
     log_level: str
     max_input_chars: int
+    # Upstream endpoints and HTTP behaviour, used only by `src.ingest` (never at chat time).
+    census_api_url: str          # Census Data API root, e.g. https://api.census.gov/data
+    census_geocoder_url: str     # Census Geocoder, coordinates -> geographies
+    ontime_prezip_url: str       # BTS On-Time monthly ZIP, with {year} and {month} placeholders
+    t100_page_url: str           # BTS T-100 Segment download page ("Latest Available Data")
+    http_timeout_s: float        # per request
+    geocoder_delay_s: float      # pause between Geocoder requests (rate limit)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -63,6 +74,13 @@ class Settings:
             raise ConfigError("MAX_INPUT_CHARS must be a whole number") from exc
         if max_input_chars <= 0:
             raise ConfigError("MAX_INPUT_CHARS must be positive")
+        try:
+            http_timeout_s = float(get("HTTP_TIMEOUT_S", "30"))
+            geocoder_delay_s = float(get("GEOCODER_DELAY_S", "0.25"))
+        except ValueError as exc:
+            raise ConfigError("HTTP_TIMEOUT_S and GEOCODER_DELAY_S must be numbers of seconds") from exc
+        if http_timeout_s <= 0 or geocoder_delay_s < 0:
+            raise ConfigError("HTTP_TIMEOUT_S must be positive and GEOCODER_DELAY_S not negative")
         num_ctx = get("OLLAMA_NUM_CTX")
         try:
             num_ctx = int(num_ctx) if num_ctx is not None else None
@@ -86,6 +104,13 @@ class Settings:
             weights_path=_resolve(get("WEIGHTS_PATH", "config/weights.yaml")),
             log_level=get("LOG_LEVEL", "INFO").upper(),
             max_input_chars=max_input_chars,
+            census_api_url=get("CENSUS_API_URL", "https://api.census.gov/data").rstrip("/"),
+            census_geocoder_url=get("CENSUS_GEOCODER_URL",
+                                    "https://geocoding.geo.census.gov/geocoder/geographies/coordinates"),
+            ontime_prezip_url=get("ONTIME_PREZIP_URL", ONTIME_PREZIP_URL),
+            t100_page_url=get("T100_PAGE_URL", T100_PAGE_URL),
+            http_timeout_s=http_timeout_s,
+            geocoder_delay_s=geocoder_delay_s,
         )
 
 
@@ -110,6 +135,11 @@ class ScoringConfig:
     comparison_confidence_level: float  # compare_airports: margin of error for On-Time figures (0.95)
     comparison_size_ratio_note: float   # compare_airports: note when departures differ by more than this ratio
     commentary_restricted_tools: tuple[str, ...]  # commentary limited to caveats and next steps
+    census_dataset: str          # Census Data API dataset path, e.g. acs/acs5
+    census_variable: str         # population variable, e.g. B01003_001E
+    census_vintage: int          # population vintage scored (demand_context)
+    census_base_vintage: int     # earlier vintage, base for metro population growth
+    geocoder_vintage: str        # Census Geocoder vintage (CBSA delineation) for airport -> CBSA
     regions: dict[str, tuple[str, ...]]
     max_ranked: int            # longest ranking a tool returns (keeps tool results small)
     # name -> {"default": IATA, "candidates": (IATA, ...)}; e.g. LA -> LAX by default
@@ -151,6 +181,14 @@ def _ratio(name: str, value) -> float:
     return float(value)
 
 
+def _base_vintage(census: Mapping) -> int:
+    """The growth base must be an earlier vintage than the one scored."""
+    base = _positive_int("census.base_vintage", census["base_vintage"])
+    if base >= census["vintage"]:
+        raise ConfigError(f"census.base_vintage ({base}) must be earlier than census.vintage ({census['vintage']})")
+    return base
+
+
 def load_scoring(path: Path) -> ScoringConfig:
     try:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
@@ -179,6 +217,11 @@ def load_scoring(path: Path) -> ScoringConfig:
             comparison_confidence_level=_share("comparison.confidence_level", raw["comparison"]["confidence_level"]),
             comparison_size_ratio_note=_ratio("comparison.size_ratio_note", raw["comparison"]["size_ratio_note"]),
             commentary_restricted_tools=tuple(str(t) for t in raw["commentary"]["restricted_tools"] or ()),
+            census_dataset=str(raw["census"]["dataset"]),
+            census_variable=str(raw["census"]["variable"]),
+            census_vintage=_positive_int("census.vintage", raw["census"]["vintage"]),
+            census_base_vintage=_base_vintage(raw["census"]),
+            geocoder_vintage=str(raw["census"]["geocoder_vintage"]),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
             max_ranked=_positive_int("max_ranked", raw["max_ranked"]),
             metro_aliases={k.upper(): {"default": v["default"], "candidates": tuple(v["candidates"])}

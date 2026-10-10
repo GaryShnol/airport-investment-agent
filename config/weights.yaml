@@ -44,6 +44,13 @@ comparison:                     # compare_airports
   size_ratio_note: 3.0          # headline note when one airport has more than this many times the other's
                                 # departures (rates still compare; totals and margins differ in kind)
 
+census:                         # demand_context: metro population growth (Census Data API, ingest only)
+  dataset: acs/acs5             # ACS 5-year estimates: the only Census series covering every metro and micro area
+  variable: B01003_001E         # total population
+  vintage: 2024                 # ACS 5-year 2020-2024 (latest published as of 2026-10)
+  base_vintage: 2019            # ACS 5-year 2015-2019: the previous non-overlapping period, base for growth
+  geocoder_vintage: ACS2024_Current   # CBSA delineation the Census Geocoder uses (airport -> CBSA); matches `vintage`
+
 commentary:                     # what the model may write under a card (src/figure_check.py)
   # For these tools the card and headline give the result (an ordering or a verdict, which a figure
   # check cannot verify): the commentary keeps only sentences with no digit, no airport code and no

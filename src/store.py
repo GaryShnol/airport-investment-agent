@@ -75,11 +75,13 @@ CREATE TABLE IF NOT EXISTS ontime_airport_month (
     dep_del15_n INTEGER,       -- departures with a reported DEP_DEL15 (rate denominator)
     PRIMARY KEY (airport, year, month)
 );
+-- Census population per CBSA (metropolitan or micropolitan area); year = vintage (ACS 5-year: last year).
 CREATE TABLE IF NOT EXISTS census_metro (
     cbsa TEXT NOT NULL,
     year INTEGER NOT NULL,
     population INTEGER,
     fetched_at TEXT,
+    name TEXT,                 -- CBSA name as the Census API returns it for that vintage
     PRIMARY KEY (cbsa, year)
 );
 """
@@ -107,7 +109,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     # Columns added after a DB was first created (CREATE TABLE IF NOT EXISTS does not add them).
     for table, column, kind in (("airports", "municipality", "TEXT"), ("ingest_log", "file_hash", "TEXT"),
                                 ("ingest_log", "source_rows", "INTEGER"),
-                                ("ontime_airport_month", "dep_del15_n", "INTEGER")):
+                                ("ontime_airport_month", "dep_del15_n", "INTEGER"), ("census_metro", "name", "TEXT")):
         if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
@@ -147,6 +149,9 @@ def unmatched_origins(conn: sqlite3.Connection) -> list[str]:
 
 
 WINDOW_MONTHS = 12
+# Monthly sources that set the analysis window. Census (a yearly vintage, context only) is in `meta`
+# too but never moves the window.
+WINDOW_SOURCES = ("t100", "ontime")
 # Sources the previous 12 months are needed for (growth is T-100 passengers). On-Time is used only
 # inside the window, so its missing previous year must not switch growth off.
 GROWTH_SOURCES = ("t100",)
@@ -187,7 +192,9 @@ class Window:
 
 def analysis_window(conn: sqlite3.Connection) -> Window:
     """Trailing 12 months ending at the minimum `last_period` over loaded sources (docs/plan.md)."""
-    rows = conn.execute("SELECT source, last_period FROM meta WHERE last_period IS NOT NULL").fetchall()
+    marks = ",".join("?" * len(WINDOW_SOURCES))
+    rows = conn.execute(f"SELECT source, last_period FROM meta WHERE last_period IS NOT NULL AND source IN ({marks})",
+                        WINDOW_SOURCES).fetchall()
     if not rows:
         raise ValueError("No data loaded: run `uv run python -m src.ingest` first")
     end = min(last for _, last in rows)

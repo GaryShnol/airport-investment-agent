@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from src import store
-from src.config import get_settings, load_scoring
+from src import census, store
+from src.config import ScoringConfig, Settings, get_settings, load_scoring
 
 T100_SOURCE = "t100"
 T100_GLOB = "t100*.csv"  # BTS exports; documentation.csv in the same folder is not data
@@ -44,6 +44,8 @@ ONTIME_TABLE_COLUMNS = [
 ONTIME_CHUNK_ROWS = 200_000      # a month is ~540k-640k flights; read it in a few chunks
 # Data validation reference (docs/plan.md, Acceptance values): BTS row counts for the 2025 files.
 ONTIME_EXPECTED_ROWS = {"2025": 7_001_619, "2025-01": 539_747}
+
+CENSUS_SOURCE = "census"   # ingest_log period = vintage ('2024'); meta last_period = latest vintage loaded
 
 AIRPORTS_FILE = "airports.csv"  # OurAirports, in RAW_DATA_DIR
 # US territories have their own iso_country in OurAirports; T-100 uses the same code as
@@ -236,6 +238,27 @@ def ontime_row_check(conn: sqlite3.Connection) -> list[str]:
     return lines
 
 
+def ingest_census(conn: sqlite3.Connection, session, settings: Settings, cfg: ScoringConfig) -> list[int]:
+    """Load CBSA population for the configured vintage and growth base, skipping vintages already in
+    ingest_log (a rerun makes no request). Every needed vintage is fetched before anything is
+    written, so a failed request leaves the tables untouched (no partial writes). Returns the
+    vintages loaded; raises census.CensusError with a printable message (never the key)."""
+    loaded = store.loaded_periods(conn, CENSUS_SOURCE)
+    needed = [v for v in (cfg.census_vintage, cfg.census_base_vintage) if str(v) not in loaded]
+    fetched = {v: census.fetch_population(session, settings.census_api_url, cfg.census_dataset, cfg.census_variable,
+                                          v, settings.census_api_key, settings.http_timeout_s) for v in needed}
+    now = _now()
+    for vintage, rows in fetched.items():
+        conn.execute("DELETE FROM census_metro WHERE year = ?", (vintage,))
+        conn.executemany("INSERT INTO census_metro (cbsa, year, population, fetched_at, name) VALUES (?, ?, ?, ?, ?)",
+                         [(cbsa, vintage, population, now, name) for cbsa, name, population in rows])
+        conn.execute("INSERT INTO ingest_log (source, period, rows, loaded_at) VALUES (?, ?, ?, ?)",
+                     (CENSUS_SOURCE, str(vintage), len(rows), now))
+    if fetched:  # meta: latest vintage loaded and the retrieval date
+        _update_meta(conn, CENSUS_SOURCE)
+    return sorted(fetched)
+
+
 def _update_meta(conn: sqlite3.Connection, source: str) -> None:
     last = conn.execute("SELECT MAX(period) FROM ingest_log WHERE source = ?", (source,)).fetchone()[0]
     if last is None:
@@ -329,6 +352,19 @@ def main(argv: list[str] | None = None) -> None:
             print(line)
         missing = store.unmatched_ontime_airports(conn)
         print(f"ontime airports without an airports match: {len(missing)} {' '.join(missing)}".rstrip())
+
+        cfg = load_scoring(settings.weights_path)
+        http = census.session()
+        if not settings.census_api_key:
+            print("census: skipped, CENSUS_API_KEY is not set in .env (the Census Data API requires a key)")
+        else:
+            try:
+                vintages = ingest_census(conn, http, settings, cfg)
+                print(f"census: vintages loaded {', '.join(map(str, vintages)) or 'none new'} "
+                      f"({cfg.census_dataset} {cfg.census_variable}, CBSAs)")
+            except census.CensusError as exc:
+                print(f"census: not loaded, nothing written: {exc}")
+        print(f"census: {census.ATTRIBUTION}")
 
 
 if __name__ == "__main__":
