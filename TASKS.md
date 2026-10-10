@@ -121,9 +121,12 @@ Branch `m5b-docs-verify`: final docs and verification. Docs link to `docs/plan.m
     | ANC long haul | resolve_airport, airport_metrics(long_haul) | 115 | match (both bases, counts, sensitivity) |
     | SFO unmet demand | resolve_airport, explain_demand_gap | 173 | match (proxy, range, causes, growth) |
 
-  - Commentary findings (model-dependent; cards unaffected): after `rank_airports` a restricted-mode sentence survived that names excluded airports (MVY, PSM, HYA, PQI, BID) with a wrong reason, so `restrict_commentary` does not treat codes from the excluded list as airport names; the SFO commentary gives the window as "Mar 2025 - Dec 2025" (periods are ignored by the figure check) and calls T-100 "on-time performance". Follow-up: P5.9
+  - Commentary findings (model-dependent; cards unaffected): after `rank_airports` a restricted-mode sentence survived that names excluded airports (MVY, PSM, HYA, PQI, BID) with a wrong reason, so `restrict_commentary` does not treat codes from the excluded list as airport names; the SFO commentary gives the window as "Mar 2025 - Dec 2025" (periods are ignored by the figure check) and calls T-100 "on-time performance". Follow-up: P5.9a, P5.9b
 - [ ] P5.8 (stretch) Voice input via `st.audio_input`
-- [ ] P5.9 Commentary guardrails from P5.7: treat excluded-list codes as airport names in `restrict_commentary`; consider checking month ranges that contradict the data period
+- P5.9 Commentary guardrails from P5.7, split into:
+  - [ ] P5.9a Excluded airports in restricted commentary: codes and names of excluded airports (plain strings today) are collected by the commentary filter, so a restricted sentence naming one is dropped; test with the real failure (MVY and PSM with a wrong exclusion reason)
+  - [ ] P5.9b Date ranges in commentary: month names, month ranges and years checked against the envelope's data period; sentences whose months or years fall outside it or do not match it are dropped (an exact "January to December 2025" or "2025-01..2025-12" passes); test with the real SFO failure ("Mar 2025 - Dec 2025")
+- [ ] P5.10 LLM setup for reviewers: README Docker quickstart leads with OpenAI (set `OPENAI_API_KEY`, `docker compose up`; `.env.example` needs the fewest edits for it); local models (host Ollama, `ollama pull`, `LLM_BASE_URL`, CPU is slow) as a separate optional section; an unreachable LLM or a missing key gives a one-line message naming the setting to fix, never a traceback (unit tested; container started once without a key); one sentence in `docs/design.md` on the model as a swappable service
 
 ## Decision log (for the interview)
 | Decision | Why | Trade-off |
