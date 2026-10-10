@@ -30,7 +30,7 @@ from src.figure_check import check_commentary, restrict_commentary
 from src.llm import get_chat_model, llm_error_message
 from src.prompts import SYSTEM_PROMPT
 from src.render import render_reply
-from src.tools import make_tools
+from src.tools import make_tools, unsupported_region
 
 log = logging.getLogger(__name__)
 
@@ -259,11 +259,39 @@ def _fallback(raw: str, results: list[Any]) -> str:
     return EMPTY_WITH_DATA if results else EMPTY_NO_DATA
 
 
+REGION_GUARD = ("{state} is not a configured region, so no ranking is shown (the model asked for region "
+                "'{region}'). Ask for the national ranking or about a specific airport.")
+
+
+def guard_regions(question: str, calls: list[dict], results: list[Any], cfg: ScoringConfig | None,
+                  rank_tool: Any) -> tuple[list[dict], list[Any], str | None]:
+    """Replace every ranking that stands in for a state the question names but the region passed
+    does not contain (California answered with the national ranking) by the tool's deterministic
+    configured-regions envelope for that state. Returns the calls, the results and the fixed
+    commentary (None when nothing was replaced). Code, not the prompt: P6.1 showed one model
+    passing a configured region for California and getting a national ranking silently."""
+    if cfg is None or rank_tool is None:
+        return calls, results, None
+    calls, results, note = list(calls), list(results), None
+    for i, c in enumerate(calls):
+        if c["name"] != "rank_airports" or i >= len(results):
+            continue
+        passed = str(c["args"].get("region", ""))
+        state = unsupported_region(question, passed, cfg)
+        if state:
+            calls[i] = {"name": "rank_airports", "args": {"region": state}}
+            results[i] = _parse(rank_tool.invoke({"region": state}))
+            note = REGION_GUARD.format(state=state, region=passed)
+    return calls, results, note
+
+
 @dataclass
 class AirportAgent:
     graph: Any                 # compiled LangGraph from create_agent
     max_input_chars: int
     restricted_tools: tuple[str, ...] = ()   # commentary.restricted_tools: caveats and next steps only
+    cfg: ScoringConfig | None = None         # regions, for the region guard
+    rank_tool: Any = None                    # the rank_airports tool, for the region guard
 
     def ask(self, question: str, thread_id: str) -> Reply:
         """Run one turn in `thread_id`; returns the cleaned answer and this turn's tool calls."""
@@ -276,6 +304,11 @@ class AirportAgent:
         calls = [{"name": c["name"], "args": c["args"]} for m in turn if isinstance(m, AIMessage)
                  for c in m.tool_calls]
         results = [_parse(m.content) for m in turn if isinstance(m, ToolMessage)]
+        calls, results, region_note = guard_regions(question, calls, results, self.cfg, self.rank_tool)
+        if region_note:  # the model's text was about the replaced ranking: fixed text, no check needed
+            log.info("Region guard replaced a ranking: %s", region_note)
+            return Reply(ensure_facts(region_note, results), calls, results, missing_facts(region_note, results),
+                         region_note, False, {"mode": "region_guard", "removed": [], "withheld": False, "hidden": False})
         final = next((m for m in reversed(turn) if isinstance(m, AIMessage)), None)
         raw = strip_reasoning(final.text if final else "")
         # Every tool result of the thread: a follow-up may quote an earlier card.
@@ -315,9 +348,11 @@ def build_agent(
             return store.connect_ro(db_path)
 
     num_ctx = settings.ollama_num_ctx if settings.llm_provider == "ollama" else None
-    graph = create_agent(model, make_tools(connect, cfg), system_prompt=SYSTEM_PROMPT,
+    tools = make_tools(connect, cfg)
+    graph = create_agent(model, tools, system_prompt=SYSTEM_PROMPT,
                          middleware=[turn_guard(num_ctx)], checkpointer=InMemorySaver())
-    return AirportAgent(graph, settings.max_input_chars, cfg.commentary_restricted_tools)
+    rank_tool = next(t for t in tools if t.name == "rank_airports")
+    return AirportAgent(graph, settings.max_input_chars, cfg.commentary_restricted_tools, cfg, rank_tool)
 
 
 def main(argv: list[str] | None = None) -> int:

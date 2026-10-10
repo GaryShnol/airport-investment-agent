@@ -16,6 +16,7 @@ numbers in src/scoring.py. Shares are returned as percentages rounded for displa
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
@@ -181,30 +182,56 @@ def _no_match(conn: sqlite3.Connection, query: str, window: store.Window | None)
                          fact("Suggestions", ", ".join(codes) or "none close; " + hint)])
 
 
-def _matches(conn: sqlite3.Connection, query: str, window: store.Window) -> tuple[list[dict], str]:
-    """Matching airports, best first, and how they matched ("iata" or "name or city").
+def _strength(query: str, row: dict) -> int:
+    """Exact signals of a name or city match: the city equals the query, and the query is a whole
+    word (or run of words, split on spaces) of the airport name. 0 = partial match only, so
+    "Boston" is exact for Boston Logan (city and name) but partial for Manchester-Boston Regional."""
+    q = query.lower().split()
+    words = (row["name"] or "").lower().split()
+    in_name = any(words[i:i + len(q)] == q for i in range(len(words) - len(q) + 1))
+    return int((row["municipality"] or "").lower().split() == q) + int(in_name)
+
+
+def _matches(conn: sqlite3.Connection, cfg: ScoringConfig, query: str,
+             window: store.Window) -> tuple[list[dict], str, int]:
+    """Matching airports, best first, how the best matched, and how many share the best rank.
 
     An exact IATA code wins outright. Otherwise airports with passenger service whose name or
-    city contains the query, ranked by passengers in the window (so "New York" puts JFK ahead
-    of "New York Stewart International")."""
+    city contains the query. Exact matches (`_strength` > 0) beat partial ones, and the stronger
+    exact match wins (SFO, city and name "San Francisco", over OAK, name only). Airports below the
+    peer-set passenger floor count as exact only when no larger airport matches exactly, so a
+    seaplane base named "New York ..." never beats JFK. Ties are ranked by passengers; when two or
+    more share the best rank (Portland: PDX and PWM), the caller reports the name as ambiguous."""
     if len(query) == 3 and query.isalpha():
         rows = store.find_airports(conn, "iata", query, window)
         if rows:
-            return rows[:1], "iata"
+            return rows[:1], "iata", 1
     found: dict[str, dict] = {}
     for column in ("name", "municipality"):
         for r in store.find_airports(conn, column, query, window):
             if r["passengers"] > 0:
-                found.setdefault(r["iata"], r)
-    rows = sorted(found.values(), key=lambda r: (-r["passengers"], r["iata"]))
-    return rows, "name or city"
+                found.setdefault(r["iata"], {**r, "strength": _strength(query, r)})
+    exact = [r for r in found.values() if r["strength"]]
+    pool = {r["iata"] for r in [r for r in exact if r["passengers"] >= cfg.min_passengers_per_year] or exact}
+
+    def rank(r: dict) -> int:
+        return r["strength"] if r["iata"] in pool else 0
+
+    rows = sorted(found.values(), key=lambda r: (-rank(r), -r["passengers"], r["iata"]))
+    if not rows:
+        return [], "name or city", 0
+    tied = sum(rank(r) == rank(rows[0]) for r in rows)
+    how = "name or city" if not rank(rows[0]) else (
+        "city and name" if rows[0]["strength"] == 2 else
+        "city" if (rows[0]["municipality"] or "").lower().split() == query.lower().split() else "name")
+    return rows, how, tied
 
 
 def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> dict:
     """Name, city or code -> IATA. Order: configured metro alias (ambiguous, with a default),
-    exact IATA, then name or city ranked by passengers. Several matches -> `ambiguous` with the
-    best match and the alternatives (the agent asks which one); none -> an explicit no-match
-    envelope with suggestions."""
+    exact IATA, then name or city ranked by match strength (`_matches`), then passengers. Two or
+    more equally strong best matches -> `ambiguous` with the best match and the alternatives (the
+    agent asks which one); none -> an explicit no-match envelope with suggestions."""
     query = (text or "").strip()
     if not query:
         return _no_match(conn, query, None)
@@ -226,24 +253,27 @@ def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> 
         headline = f"'{query}' covers several airports; default {query} = {alias['default']}, others: {', '.join(others)}."
         return _envelope(conn, window, data, assumptions, "medium", facts, headline=headline)
 
-    rows, how = _matches(conn, query, window)
+    rows, how, tied = _matches(conn, cfg, query, window)
     if not rows:
         return _no_match(conn, query, window)
-    if len(rows) == 1:
+    if tied == 1:
+        weaker = [r["iata"] for r in rows[1:MAX_LISTED + 1]]
+        assumptions = [] if how == "iata" else [f"matched on airport {how}"]
+        if weaker:
+            assumptions.append(f"weaker matches not used: {', '.join(weaker)}")
         return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])},
-                         [] if how == "iata" else [f"matched on airport {how}"], "high",
-                         [_airport_fact(rows[0])], headline=_resolved(query, rows[0]))
-    shown = [_brief(r) for r in rows[:MAX_LISTED]]
+                         assumptions, "high", [_airport_fact(rows[0])], headline=_resolved(query, rows[0]))
+    shown = [_brief(r) for r in rows[:min(tied, MAX_LISTED)]]
     best, alternatives = shown[0], shown[1:]
     data = {"query": query, "ambiguous": True, "default": None, "best": best, "candidates": shown,
-            "alternatives": alternatives, "matches_total": len(rows)}
+            "alternatives": alternatives, "matches_total": tied}
     alt = ", ".join(a["iata"] for a in alternatives)
     facts = [fact("Best match (most passengers)", f"{best['iata']} ({best['name']})"),
-             fact("Alternatives", alt + (f" and {len(rows) - len(shown)} more" if len(rows) > len(shown) else ""))]
+             fact("Alternatives", alt + (f" and {tied - len(shown)} more" if tied > len(shown) else ""))]
     return _envelope(conn, window, data,
-                     [f"{len(rows)} airports match on {how}; ranked by passengers; ask the user which one"],
+                     [f"{tied} airports match equally well on {how}; ranked by passengers; ask the user which one"],
                      "low", facts,
-                     headline=f"'{query}' matches {len(rows)} airports: best match {best['iata']} "
+                     headline=f"'{query}' matches {tied} airports: best match {best['iata']} "
                               f"({best['name']}), alternatives {alt}.")
 
 
@@ -254,10 +284,12 @@ def _resolve_code(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> tu
     if data is None:
         return None, result
     if data["ambiguous"]:
+        best, alternatives = data["best"], [a["iata"] for a in data["alternatives"]]
         return None, _error(conn, f"'{text}' is ambiguous; ask the user or state the definition used",
                             [c["iata"] for c in data["candidates"]], headline=result["headline"],
-                            default=data["default"], best=data["best"]["iata"],
-                            alternatives=[a["iata"] for a in data["alternatives"]])
+                            ambiguous=True, default=data["default"], best=best["iata"], alternatives=alternatives,
+                            facts=[fact("Best match", f"{best['iata']} ({best.get('name', best['iata'])})"),
+                                   fact("Alternatives", ", ".join(alternatives))])
     return data["iata"], None
 
 
@@ -299,6 +331,8 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
             "in_peer_set": bool(row["in_peer_set"])}
     facts = [fact("Airport", f"{code} ({row['name']})")]
     assumptions = [PASSENGER_SERVICE]
+    if airport.strip().upper() != code:  # resolved from a name: state the definition used
+        assumptions.insert(0, f"'{airport.strip()}' = {code} ({row['name']})")
     headlines = []
 
     if shows["demand"]:
@@ -516,6 +550,44 @@ def _unknown_region(conn: sqlite3.Connection, cfg: ScoringConfig, region: str) -
 
 def _region_key(region: str) -> str:
     return (region or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+# State names for the region guard (reference data, not methodology): a question that names a
+# state must not be answered with a ranking of a region that does not contain it.
+US_STATES = {
+    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA", "Colorado": "CO",
+    "Connecticut": "CT", "Delaware": "DE", "District of Columbia": "DC", "Florida": "FL", "Georgia": "GA",
+    "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS",
+    "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA",
+    "Michigan": "MI", "Minnesota": "MN", "Mississippi": "MS", "Missouri": "MO", "Montana": "MT",
+    "Nebraska": "NE", "Nevada": "NV", "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM",
+    "New York": "NY", "North Carolina": "NC", "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK",
+    "Oregon": "OR", "Pennsylvania": "PA", "Puerto Rico": "PR", "Rhode Island": "RI", "South Carolina": "SC",
+    "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX", "Utah": "UT", "Vermont": "VT", "Virginia": "VA",
+    "Washington": "WA", "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
+}
+# Longest names first, so "West Virginia" is read as one state, not as "Virginia".
+_STATE_NAMES = re.compile(r"\b(" + "|".join(map(re.escape, sorted(US_STATES, key=len, reverse=True))) + r")\b",
+                          re.IGNORECASE)
+
+
+def unsupported_region(question: str, region: str, cfg: ScoringConfig) -> str | None:
+    """The state named in `question` that the ranking for `region` does not stand for, or None.
+
+    A model can answer "rank the airports in California" by passing a configured region (national,
+    new_england): the tool cannot tell that from a real national request, so the agent checks the
+    question here. A state counts as covered only by a configured region that contains it; the
+    national ranking covers no single state. A region that is not configured needs no check: the
+    tool already returns the configured-regions message."""
+    key = _region_key(region)
+    if key not in cfg.regions and key != scoring.NATIONAL:
+        return None
+    covered = set(cfg.regions.get(key, ()))
+    for match in _STATE_NAMES.finditer(question or ""):
+        name = next(n for n in US_STATES if n.lower() == match.group(1).lower())
+        if US_STATES[name] not in covered:
+            return name
+    return None
 
 
 SortBy = Literal["score", "growth", "load_factor", "passengers"]
@@ -1080,14 +1152,18 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
 
     @tool("resolve_airport")
     def resolve_airport_tool(text: str) -> dict:
-        """Turn an airport name, city or code (e.g. 'Anchorage', 'Santa Ana', 'LA') into an IATA code.
+        """Look up which airport a name, city or code means (e.g. 'Anchorage', 'Santa Ana', 'LA'), for
+        questions about the name itself. Not needed before the other tools: they resolve names.
         Returns ambiguous=true with candidates and a default when the name covers several airports."""
         return run(resolve_airport, text)
 
     @tool("airport_metrics")
     def airport_metrics_tool(airport: str, threshold_mi: int | None = None,
                              topic: Topic = "all") -> dict:
-        """Metrics for one airport (IATA code or name). Set topic to what the question asks about:
+        """Metrics for one airport, given as an IATA code or a name or city as the user wrote it
+        (e.g. 'Boston'): the name is resolved here, no resolve_airport call needed. A name that
+        covers several airports returns ambiguous=true with the best match and the alternatives
+        instead of data. Set topic to what the question asks about:
         long_haul (share of departures >= threshold, all flights and passenger service, with
         sensitivity), demand (passengers, seats, load factor), growth (passengers vs the previous
         12 months), congestion (departure delay rate, taxi-out, NAS delay per arrival, cancellations);

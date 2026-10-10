@@ -198,6 +198,33 @@ def test_airport_metrics_ambiguous_returns_candidates(db, scoring_cfg):
     assert r["candidates"] == ["LAX", "BUR", "LGB", "ONT", "SNA"] and r["default"] == "LAX"
 
 
+def test_airport_metrics_takes_a_name_and_states_the_definition(db, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db, scoring_cfg, "Anchorage", topic="demand"))
+    assert r["data"]["airport"] == "ANC"
+    assert r["assumptions"][0] == "'Anchorage' = ANC (Ted Stevens Anchorage International Airport)"
+    assert "Passengers (passenger service)" in facts(r)
+
+
+def test_airport_metrics_takes_a_code_without_a_definition(db, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db, scoring_cfg, " anc ", topic="demand"))
+    assert r["data"]["airport"] == "ANC"
+    assert not any(a.startswith("'") for a in r["assumptions"])
+
+
+def test_airport_metrics_ambiguous_name_returns_the_ambiguity_not_data(db, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db, scoring_cfg, "Chicago", topic="demand"))
+    assert r["data"] is None and r["ambiguous"] is True
+    assert (r["best"], r["alternatives"]) == ("ORD", ["MDW"])
+    assert facts(r)["Best match"]["value"] == "ORD (Chicago O'Hare International Airport)"
+    assert facts(r)["Alternatives"]["value"] == "MDW"
+
+
+def test_airport_metrics_unknown_name_is_an_explicit_no_match(db, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db, scoring_cfg, "Gotham City", topic="demand"))
+    assert r["data"] is None and r["error"] == "No airport with passenger service matches 'Gotham City'"
+    assert facts(r)["Match"] == {"value": "no match for 'Gotham City'", "required": True}
+
+
 def test_airport_metrics_without_service(db, scoring_cfg):
     r = tools.airport_metrics(db, scoring_cfg, "MRI")
     assert r["data"] is None and "no passenger service" in r["error"]
@@ -391,14 +418,66 @@ def test_several_matches_return_best_and_alternatives(db, scoring_cfg):
                              "Airport), alternatives MDW.")
 
 
-def test_name_and_city_matches_rank_by_passengers(db, scoring_cfg):
-    # a small airport with "Boston" in its name must not beat BOS (city Boston, far more passengers)
-    db.execute("INSERT INTO airports (iata, name, state, municipality) VALUES "
-               "('BSF', 'Boston Small Field', 'MA', 'Quincy')")
-    db.executemany("INSERT INTO t100_route_month VALUES ('BSF', NULL, 'BOS', 2025, ?, 'pax', 10, 1, 9, 5)",
-                   [(m,) for m in range(1, 13)])
-    d = tools.resolve_airport(db, scoring_cfg, "boston")["data"]
-    assert d["best"]["iata"] == "BOS" and [a["iata"] for a in d["alternatives"]] == ["BSF"]
+def add_airports(db, *airports):
+    """(iata, name, state, municipality, passengers per month) with 2025 service to BOS."""
+    for iata, name, state, city, pax in airports:
+        db.execute("INSERT INTO airports (iata, name, state, municipality) VALUES (?, ?, ?, ?)", (iata, name, state, city))
+        db.executemany("INSERT INTO t100_route_month VALUES (?, NULL, 'BOS', 2025, ?, 'pax', 500, 10, ?, ?)",
+                       [(iata, m, pax * 2, pax) for m in range(1, 13)])
+
+
+@pytest.fixture
+def db_names(db):
+    add_airports(db,
+                 ("MHT", "Manchester-Boston Regional Airport", "NH", "Manchester", 900),
+                 ("BSF", "Boston Small Field", "MA", "Quincy", 5),  # below the peer-set floor
+                 ("JFK", "John F. Kennedy International Airport", "NY", "New York", 3000),
+                 ("LGA", "LaGuardia Airport", "NY", "New York", 2000),
+                 ("SWF", "New York Stewart International Airport", "NY", "Newburgh", 200),
+                 ("NYS", "New York Skyports Inc Seaplane Base", "NY", "New York", 2),  # below the floor
+                 ("PDX", "Portland International Airport", "OR", "Portland", 1500))
+    return db
+
+
+def test_boston_is_bos_not_ambiguous(db_names, scoring_cfg):
+    # city and name are exact for BOS; MHT ("Manchester-Boston") and BSF (below the floor) are weaker
+    r = check_envelope(tools.resolve_airport(db_names, scoring_cfg, "Boston"))
+    assert r["data"] == {"query": "Boston", "ambiguous": False, "iata": "BOS",
+                         "name": "Boston Logan International Airport", "state": "MA"}
+    assert r["assumptions"][:2] == ["matched on airport city and name", "weaker matches not used: MHT, BSF"]
+    assert r["confidence"] == "high"
+
+
+def test_exact_city_beats_partial_name(db_names, scoring_cfg):
+    assert tools.resolve_airport(db_names, scoring_cfg, "Santa Ana")["data"]["iata"] == "SNA"
+    d = tools.resolve_airport(db_names, scoring_cfg, "Los Angeles")["data"]
+    assert (d["iata"], d["ambiguous"]) == ("LAX", False)
+
+
+def test_new_york_is_ambiguous_between_equally_strong_exact_matches(db_names, scoring_cfg):
+    # JFK and LGA (city) and SWF (name) are one exact signal each; NYS has two but is below the floor
+    d = tools.resolve_airport(db_names, scoring_cfg, "New York")["data"]
+    assert d["ambiguous"] is True and d["default"] is None
+    assert [c["iata"] for c in d["candidates"]] == ["JFK", "LGA", "SWF"] and d["matches_total"] == 3
+
+
+def test_two_airports_named_portland_stay_ambiguous(db_names, scoring_cfg):
+    r = tools.resolve_airport(db_names, scoring_cfg, "Portland")
+    d = r["data"]
+    assert d["ambiguous"] is True and {d["best"]["iata"], *(a["iata"] for a in d["alternatives"])} == {"PDX", "PWM"}
+    assert r["headline"].startswith("'Portland' matches 2 airports: best match ")
+
+
+def test_only_partial_matches_stay_ambiguous(db_names, scoring_cfg):
+    d = tools.resolve_airport(db_names, scoring_cfg, "Kennedy Inter")["data"]  # no exact signal
+    assert (d["iata"], d["ambiguous"]) == ("JFK", False)  # one partial match resolves
+    d = tools.resolve_airport(db_names, scoring_cfg, "Internat")["data"]
+    assert d["ambiguous"] is True and d["matches_total"] > 2
+
+
+def test_airport_metrics_boston_answers_with_bos(db_names, scoring_cfg):
+    r = tools.airport_metrics(db_names, scoring_cfg, "Boston", topic="demand")
+    assert r["data"]["airport"] == "BOS"
 
 
 def test_exact_iata_wins_over_name_matches(db, scoring_cfg):
@@ -748,3 +827,19 @@ def test_ranking_uses_demand_context_in_weights_and_drivers(db_full, scoring_cfg
     pwm = next(x for x in r["data"]["ranked"] if x["iata"] == "PWM")
     assert pwm["components"]["demand_context"]["percentile"] == 100
     assert labels(r)["Drivers: PWM"].startswith("strongest: utilization (load factor), percentile 100")
+
+
+# --- region guard (P6.4) -------------------------------------------------------------------
+
+@pytest.mark.parametrize("question, region, expected", [
+    ("Rank the airports in California for terminal expansion.", "national", "California"),
+    ("Rank the airports in California for terminal expansion.", "new_england", "California"),
+    ("Rank the airports in california", "New England", "California"),
+    ("Which airports in West Virginia should expand?", "national", "West Virginia"),
+    ("Which airports in Maine and Vermont are candidates?", "new_england", None),   # inside the region
+    ("Which airports in New England are strong candidates?", "new_england", None),
+    ("Rank all US airports for terminal expansion.", "national", None),
+    ("Rank the airports in California", "California", None),   # not configured: the tool answers itself
+])
+def test_unsupported_region_reads_the_question(scoring_cfg, question, region, expected):
+    assert tools.unsupported_region(question, region, scoring_cfg) == expected
