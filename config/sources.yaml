@@ -1,0 +1,47 @@
+# Upstream file formats and download estimates for `ingest --update` (P4.6). Change here, not in code.
+# URLs, timeouts, the pause between requests, retries and the User-Agent are infrastructure: .env
+# (ONTIME_PREZIP_URL, T100_PAGE_URL, DOWNLOAD_*, HTTP_USER_AGENT; defaults in src/config.py).
+version: 1
+
+ontime:
+  # BTS PREZIP column (CamelCase) -> the column name the aggregation reads (TranStats download names).
+  # Checked against both files on 2026-10-10 (TASKS.md, M9 probe).
+  prezip_columns:
+    Year: YEAR
+    Month: MONTH
+    Origin: ORIGIN
+    Dest: DEST
+    DepDel15: DEP_DEL15
+    TaxiOut: TAXI_OUT
+    ArrDel15: ARR_DEL15
+    Cancelled: CANCELLED
+    Diverted: DIVERTED
+    CarrierDelay: CARRIER_DELAY
+    WeatherDelay: WEATHER_DELAY
+    NASDelay: NAS_DELAY
+    SecurityDelay: SECURITY_DELAY
+    LateAircraftDelay: LATE_AIRCRAFT_DELAY
+  # BTS row counts (flights) of reference downloads, checked after ingest. A period with no entry here
+  # (e.g. a 2026 month) is not checked. Key = year or YYYY-MM.
+  expected_rows:
+    "2025": 7001619
+    "2025-01": 539747
+  month_mb: 30          # rough PREZIP ZIP size per month, for the plan printed before downloading
+
+t100:
+  # Fixed form values of the BTS T-100 Segment (All Carriers) download, besides the ASP.NET state
+  # fields (read from the page), cboYear/cboPeriod (the month) and the column checkboxes below.
+  form:
+    cboGeography: All
+    chkDownloadZip: "on"
+    btnDownload: Download
+  # Column checkboxes ticked: the columns of our existing T-100 export (same order as its header).
+  fields: [DEPARTURES_PERFORMED, SEATS, PASSENGERS, FREIGHT, MAIL, DISTANCE, AIR_TIME, UNIQUE_CARRIER,
+           UNIQUE_CARRIER_NAME, ORIGIN_AIRPORT_ID, ORIGIN, ORIGIN_STATE_ABR, DEST_AIRPORT_ID, DEST,
+           AIRCRAFT_TYPE, AIRCRAFT_CONFIG, YEAR, MONTH, CLASS]
+  zip_csv: T_T100_SEGMENT_ALL_CARRIER.csv   # the data file inside the ZIP (next to Documentation.csv)
+  month_mb: 1
+
+download:
+  assumed_kb_per_s: 100   # BTS throughput seen on 2026-10-10; only for the time estimate in the plan
+  max_mb: 200             # a download larger than this is refused (one month is about 30 MB)

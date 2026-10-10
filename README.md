@@ -214,8 +214,29 @@ Ingest runs offline, never during a chat, and is idempotent (a month already loa
 ```bash
 uv run python -m src.ingest           # load the files in RAW_DATA_DIR (default data/raw) into DB_PATH
 uv run python -m src.ingest --check   # ask upstream for its latest period per source; no downloads
+uv run python -m src.ingest --update  # download and load the newer BTS months (opt-in, below)
 ```
-Raw files: T-100 exports as `data/raw/t100_segment/t100*.csv`, On-Time monthly TranStats downloads as `data/raw/ontime/**/ontime_*.zip`, OurAirports as `data/raw/airports.csv`; Census needs `CENSUS_API_KEY` in `.env`. Downloading new BTS months is manual for now (see Known limits).
+Raw files: T-100 exports as `data/raw/t100_segment/t100*.csv`, On-Time monthly TranStats downloads as `data/raw/ontime/**/ontime_*.zip`, OurAirports as `data/raw/airports.csv`; Census needs `CENSUS_API_KEY` in `.env`.
+
+### Opt-in update from BTS (`--update`)
+The shipped seed holds 2025-01..2025-12 and stays that way: every figure in the docs and the demo comes from that window. `--update` is for a user who wants newer months in their own DB.
+```bash
+uv run python -m src.ingest --update --dry-run           # the plan only: months, rough size and time
+uv run python -m src.ingest --update --through 2026-01   # load up to a month (asks before downloading)
+uv run python -m src.ingest --update --yes               # up to the latest month upstream, no prompt
+```
+What it does, per source (On-Time and T-100): the `--check` logic finds the latest month upstream; every month after the loaded one, up to `--through` (default: that latest month), is downloaded into a temporary folder outside the project, validated and loaded through the same aggregation as the raw files, one month at a time. On-Time comes from the BTS monthly PREZIP file (its CamelCase columns are renamed through the mapping in [config/sources.yaml](config/sources.yaml)); T-100 comes from the BTS download form (one GET for the form state, one POST for the month). A download that is not a ZIP (BTS answers errors with an HTML page), lacks a needed column or holds another month is refused. Each month is one transaction: the first failure stops the run, months loaded before it stay, and the next run continues from there. A month already loaded is never reloaded, so later BTS revisions of a loaded month are not picked up. Without a terminal, `--yes` is required. Afterwards it prints the loaded periods, the new analysis window and the freshness line. The chat itself never downloads anything.
+
+Size and time: one On-Time month is about 30 MB (several minutes: BTS served about 100 KB/s when this was built), one T-100 month about 1 MB (about 15 s). Catching up from 2025-12 to 2026-07 is about 200 MB and 25-40 minutes. Timeouts, the pause between requests, retries and the User-Agent are `DOWNLOAD_*` and `HTTP_USER_AGENT` in `.env`; file formats and estimates are in `config/sources.yaml`.
+
+In Docker the DB lives in the `data` volume, so run the update inside the running container (or in a one-off container on the same volume) and the app uses the new window on the next question:
+```bash
+docker compose exec app python -m src.ingest --update --yes
+docker compose run --rm --entrypoint python app -m src.ingest --update --yes   # app not running
+```
+To return to the shipped data, remove the volume (`docker compose down -v`); the next start downloads the seed again.
+
+What changes when the window moves: every answer (window, growth base, percentiles, rankings, confidence) is computed from the new 12 months, so the figures differ from those in [docs/design.md](docs/design.md), the demo script and the seed; the window is printed on every answer. Growth needs the 12 months before the window; the seed holds T-100 from 2024-01 and `--update` adds every month in between, so growth stays complete.
 
 Freshness, per source and overall, from the last `--check` (stored in the DB, shown in the sidebar and in every answer):
 - **fresh**: upstream has nothing newer than the loaded period.
@@ -228,7 +249,7 @@ Freshness, per source and overall, from the last `--check` (stored in the DB, sh
 - On-Time covers domestic flights of the large reporting carriers only; airports with few reported flights are scored without congestion (lower confidence). On-Time figures carry margins of error; T-100 figures are full counts.
 - Cargo-heavy airports such as ANC need passenger-service and all-flights figures side by side; the tools always give both.
 - Percentiles are relative to the peer set, and the passenger floor that defines it is a policy line (airports just under it are listed as excluded, with the reason).
-- New BTS months are loaded from files downloaded by hand; `ingest --check` reports when upstream is ahead. Automated download is a next step ([docs/design.md](docs/design.md)).
+- The shipped seed stops at 2025-12. `ingest --update` loads newer BTS months on demand, but a loaded month is never reloaded (BTS revisions are missed), and it depends on the BTS download form, which can change without notice (manual files in `data/raw` are the fallback).
 - The chat UI is in English; answers follow the language of the question.
 - Voice input was tested with a stubbed transcription call and once against the OpenAI API with a synthesized WAV clip, not with a live microphone in a browser; a silent recording is caught only when the model returns no text.
 
@@ -249,7 +270,7 @@ app.py      Streamlit chat (data from tools first, model commentary second)
 Dockerfile, docker-compose.yml, docker/   container image, one-service compose, entrypoint
 src/        config, LLM provider registry, ingest and upstream check, Census, store, scoring,
             tools, render, figure check, agent (also the CLI), voice input, seed build, bootstrap
-config/     scoring methodology (weights.yaml)
+config/     scoring methodology (weights.yaml), upstream file formats for --update (sources.yaml)
 docs/       design.md (design doc), plan.md (build plan and definitions)
 tests/      unit and golden tests (CI)
 eval/       eval questions; results/ (not committed) from scripts/eval.py

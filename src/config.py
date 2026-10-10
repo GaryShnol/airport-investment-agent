@@ -2,6 +2,7 @@
 
 - Environment (.env): infrastructure and secrets (LLM provider, keys, paths).
 - config/weights.yaml: scoring methodology (weights, thresholds, regions).
+- config/sources.yaml: upstream file formats for `ingest --update` (column mapping, form fields, estimates).
 Nothing else in the project should read os.environ or hardcode these values.
 """
 from __future__ import annotations
@@ -22,6 +23,7 @@ _TOLERANCE = 1e-6
 ONTIME_PREZIP_URL = ("https://transtats.bts.gov/PREZIP/On_Time_Reporting_Carrier_On_Time_Performance_1987_present_"
                      "{year}_{month}.zip")
 T100_PAGE_URL = "https://www.transtats.bts.gov/DL_SelectFields.aspx?gnoyr_VQ=FMG&QO_fu146_anzr=Nv4%20Pn44vr45"
+HTTP_USER_AGENT = "airport-investment-agent/1.0 (offline data refresh; https://github.com/GaryShnol/airport-investment-agent)"
 
 
 class ConfigError(ValueError):
@@ -52,6 +54,7 @@ class Settings:
     app_port: int                # Streamlit port in the container (docker-compose publishes it)
     raw_data_dir: Path
     weights_path: Path
+    sources_path: Path           # config/sources.yaml: upstream formats for `ingest --update`
     log_level: str
     max_input_chars: int
     # Voice input (app only): speech-to-text through the OpenAI audio transcription API.
@@ -65,6 +68,11 @@ class Settings:
     t100_page_url: str           # BTS T-100 Segment download page ("Latest Available Data")
     http_timeout_s: float        # per request
     geocoder_delay_s: float      # pause between Geocoder requests (rate limit)
+    # `ingest --update` downloads (one request at a time).
+    download_timeout_s: float    # per request (connect and each read); a BTS form answer takes about 15 s
+    download_delay_s: float      # pause before every download request after the first
+    download_retries: int        # extra attempts after a network error or a 5xx answer (never after a 404)
+    http_user_agent: str         # User-Agent sent with every ingest request
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -113,6 +121,15 @@ class Settings:
             raise ConfigError("STT_MAX_SECONDS must be a number of seconds") from exc
         if stt_max_seconds <= 0:
             raise ConfigError("STT_MAX_SECONDS must be positive")
+        try:
+            download_timeout_s = float(get("DOWNLOAD_TIMEOUT_S", "120"))
+            download_delay_s = float(get("DOWNLOAD_DELAY_S", "2"))
+            download_retries = int(get("DOWNLOAD_RETRIES", "2"))
+        except ValueError as exc:
+            raise ConfigError("DOWNLOAD_TIMEOUT_S and DOWNLOAD_DELAY_S must be seconds and DOWNLOAD_RETRIES "
+                              "a whole number") from exc
+        if download_timeout_s <= 0 or download_delay_s < 0 or download_retries < 0:
+            raise ConfigError("DOWNLOAD_TIMEOUT_S must be positive, DOWNLOAD_DELAY_S and DOWNLOAD_RETRIES not negative")
         num_ctx = get("OLLAMA_NUM_CTX")
         try:
             num_ctx = int(num_ctx) if num_ctx is not None else None
@@ -139,6 +156,7 @@ class Settings:
             app_port=app_port,
             raw_data_dir=_resolve(get("RAW_DATA_DIR", "data/raw")),
             weights_path=_resolve(get("WEIGHTS_PATH", "config/weights.yaml")),
+            sources_path=_resolve(get("SOURCES_PATH", "config/sources.yaml")),
             log_level=get("LOG_LEVEL", "INFO").upper(),
             max_input_chars=max_input_chars,
             stt_model=get("STT_MODEL", "gpt-4o-mini-transcribe"),
@@ -151,6 +169,10 @@ class Settings:
             t100_page_url=get("T100_PAGE_URL", T100_PAGE_URL),
             http_timeout_s=http_timeout_s,
             geocoder_delay_s=geocoder_delay_s,
+            download_timeout_s=download_timeout_s,
+            download_delay_s=download_delay_s,
+            download_retries=download_retries,
+            http_user_agent=get("HTTP_USER_AGENT", HTTP_USER_AGENT),
         )
 
 
@@ -271,6 +293,58 @@ def load_scoring(path: Path) -> ScoringConfig:
         )
     except KeyError as exc:
         raise ConfigError(f"Missing key in {path}: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class SourcesConfig:
+    """Upstream file formats for `ingest --update` (config/sources.yaml)."""
+    ontime_prezip_columns: dict[str, str]   # PREZIP column -> our column name
+    ontime_expected_rows: dict[str, int]    # reference BTS flight counts by year or YYYY-MM
+    ontime_month_mb: float
+    t100_form: dict[str, str]               # fixed form values (geography, zip, button)
+    t100_fields: tuple[str, ...]            # column checkboxes ticked in the form
+    t100_zip_csv: str                       # data file inside the T-100 ZIP
+    t100_month_mb: float
+    assumed_kb_per_s: float                 # throughput for the plan's time estimate
+    max_download_mb: float                  # larger downloads are refused
+
+
+def _positive_number(name: str, value) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ConfigError(f"{name} must be a positive number (got {value!r})")
+    return float(value)
+
+
+def _period_key(name: str, key) -> str:
+    key = str(key)
+    if not re.fullmatch(r"\d{4}(-(0[1-9]|1[0-2]))?", key):
+        raise ConfigError(f"{name}: {key!r} must be a year (2025) or a month (2025-01)")
+    return key
+
+
+def load_sources(path: Path) -> SourcesConfig:
+    try:
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ConfigError(f"Sources config not found: {path}") from exc
+    try:
+        columns = {str(k): str(v) for k, v in raw["ontime"]["prezip_columns"].items()}
+        if len(set(columns.values())) != len(columns):
+            raise ConfigError("ontime.prezip_columns must map each PREZIP column to a different name")
+        return SourcesConfig(
+            ontime_prezip_columns=columns,
+            ontime_expected_rows={_period_key("ontime.expected_rows", k): _positive_int("ontime.expected_rows", v)
+                                  for k, v in (raw["ontime"].get("expected_rows") or {}).items()},
+            ontime_month_mb=_positive_number("ontime.month_mb", raw["ontime"]["month_mb"]),
+            t100_form={str(k): str(v) for k, v in raw["t100"]["form"].items()},
+            t100_fields=tuple(str(f) for f in raw["t100"]["fields"]),
+            t100_zip_csv=str(raw["t100"]["zip_csv"]),
+            t100_month_mb=_positive_number("t100.month_mb", raw["t100"]["month_mb"]),
+            assumed_kb_per_s=_positive_number("download.assumed_kb_per_s", raw["download"]["assumed_kb_per_s"]),
+            max_download_mb=_positive_number("download.max_mb", raw["download"]["max_mb"]),
+        )
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ConfigError(f"Missing or invalid key in {path}: {exc}") from exc
 
 
 @lru_cache(maxsize=1)
