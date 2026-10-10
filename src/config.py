@@ -108,6 +108,7 @@ class ScoringConfig:
     sensitivity_top_n: int              # rank stability: share of runs each airport spends in this top N
     sensitivity_stable_share: float     # the #1 airport is "stable" if first in at least this share of runs
     comparison_confidence_level: float  # compare_airports: margin of error for On-Time figures (0.95)
+    commentary_restricted_tools: tuple[str, ...]  # commentary limited to caveats and next steps
     regions: dict[str, tuple[str, ...]]
     max_ranked: int            # longest ranking a tool returns (keeps tool results small)
     # name -> {"default": IATA, "candidates": (IATA, ...)}; e.g. LA -> LAX by default
@@ -168,6 +169,7 @@ def load_scoring(path: Path) -> ScoringConfig:
             sensitivity_top_n=_positive_int("sensitivity.top_n", raw["sensitivity"]["top_n"]),
             sensitivity_stable_share=_share("sensitivity.stable_share", raw["sensitivity"]["stable_share"]),
             comparison_confidence_level=_share("comparison.confidence_level", raw["comparison"]["confidence_level"]),
+            commentary_restricted_tools=tuple(str(t) for t in raw["commentary"]["restricted_tools"] or ()),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
             max_ranked=_positive_int("max_ranked", raw["max_ranked"]),
             metro_aliases={k.upper(): {"default": v["default"], "candidates": tuple(v["candidates"])}

@@ -48,6 +48,8 @@ def score(q: dict, reply, seconds: float) -> dict:
     expected = q.get("tools")
     tools_ok = None if expected is None else (not called if expected == [] else set(expected) <= set(called))
     removed = reply.figure_check.get("removed", [])
+    # In restricted mode removing figures is the design, not an unsupported claim: not a failure.
+    unsupported = removed if reply.figure_check.get("mode") != "restricted" else []
     said = " ".join([reply.commentary, *(r["sentence"] for r in removed)])
     result = {
         "tools_called": called, "tools_ok": tools_ok,
@@ -58,7 +60,7 @@ def score(q: dict, reply, seconds: float) -> dict:
         "seconds": round(seconds, 1), "commentary": reply.commentary,
     }
     result["pass"] = (tools_ok is not False and not result["missing_facts"] and not result["forbidden"]
-                      and not removed and not result["empty"] and not result["truncated"])
+                      and not unsupported and not result["empty"] and not result["truncated"])
     return result
 
 

@@ -35,13 +35,13 @@ def make(settings, connect, scoring_cfg, *script):
 def test_ranking_question_routes_to_rank_airports(settings, connect, scoring_cfg):
     agent, model = make(settings, connect, scoring_cfg,
                         call("rank_airports", region="new_england", top_n=3),
-                        AIMessage("BOS ranks first (2025-01..2025-12, medium confidence)."))
+                        AIMessage("Scores are relative to the national peer set. Ask how growth changes it."))
     reply = agent.ask("Which airports in New England are strong candidates for terminal expansion?", "t1")
     assert [c["name"] for c in reply.tool_calls] == ["rank_airports"]
     envelope = reply.tool_results[0]
     assert envelope["data"]["region"] == "new_england" and envelope["data"]["weights_used"]
     assert isinstance(model.seen[0][0], SystemMessage) and model.seen[0][0].content == SYSTEM_PROMPT
-    assert "BOS ranks first" in reply.text
+    assert reply.commentary == "Scores are relative to the national peer set. Ask how growth changes it."
 
 
 def test_la_triggers_resolve_airport_and_answer_states_definition(settings, connect, scoring_cfg):
@@ -367,3 +367,25 @@ def test_follow_up_may_quote_figures_from_an_earlier_card(settings, connect, sco
     reply = agent.ask("What is the load factor of the first one?", "t-follow")
     assert reply.tool_calls == [] and reply.commentary == f"{top['iata']} has a load factor of {lf}%."
     assert reply.figure_check["removed"] == []
+
+
+def test_comparison_commentary_is_restricted_to_caveats(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("compare_airports", a="LAX", b="SNA"),
+                    AIMessage("LAX has the shorter taxi-out. Ask about delay causes next."))
+    reply = agent.ask("Compare LAX and SNA", "t-restricted")
+    assert reply.commentary == "Ask about delay causes next."
+    assert reply.figure_check["mode"] == "restricted"
+
+
+def test_restricted_commentary_left_empty_is_hidden_not_a_fallback(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("rank_airports", region="new_england"), AIMessage("BOS is first with 0.7."))
+    reply = agent.ask("Rank New England", "t-hidden")
+    assert reply.commentary == "" and reply.figure_check["hidden"] is True and reply.fallback is False
+
+
+def test_single_airport_tools_keep_the_figure_check(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("airport_metrics", airport="ANC", topic="demand"), AIMessage("ANC is busy."))
+    assert agent.ask("Anchorage passengers?", "t-figures").figure_check["mode"] == "figures"

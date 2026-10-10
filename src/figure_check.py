@@ -13,6 +13,13 @@ Pure functions (commentary and envelopes in, cleaned commentary out), applied by
 Ignored: years, periods (2025-01), numbers glued to letters (T-100, A320, 2nd) and whole numbers up
 to IGNORE_SMALL_INTEGERS without a % sign (counts such as "3 airports", "12 months"). If nothing is left, the
 commentary is replaced by WITHHELD. The data card stays the authoritative answer either way.
+
+Restricted mode (`restrict_commentary`, for the tools in `commentary.restricted_tools`: rankings and
+comparisons). Presence of a number cannot show that an ordering or a direction is right ("BDL ranks
+first", "LAX has the shorter taxi-out" with real figures from the card). For these tools the card
+and headline give the result, and the commentary may only add caveats or a next step: every
+sentence with a digit, an airport code or an airport name from the envelopes is dropped, and so
+are tables, headings and rules (a restated card). If nothing is left, there is no commentary.
 """
 from __future__ import annotations
 
@@ -41,9 +48,13 @@ _NUMBER = re.compile(
     r"(?<![\w.,])(?<![A-Za-z]-)(\d{1,3}(?:,\d{3})+|\d+)(?:([.,])(\d+))?(?![\w])"
     r"(?:\s?(%|percent\b|pts\b|points\b|million\b|billion\b|bn\b|thousand\b|[mk]\b))?", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
-_CODE = re.compile(r"\b[A-Z]{3}\b")
 _NAME_BEFORE_CODE = re.compile(r"((?:[A-Z][\w.'-]*\s+){0,4}[A-Z][\w.'-]*)\s*\(([A-Z]{3})\)")
 _CODE_BEFORE_NAME = re.compile(r"\b([A-Z]{3})\s*\(([^)]{3,60})\)")
+
+
+# Restricted mode: markdown structure that only restates a card (table rows, headings, rules, bold-only lines).
+_STRUCTURE_LINE = re.compile(r"^\s*(?:\||#|[-*_]{3,}\s*$|\*\*[^*]+\*\*:?\s*$)")
+_DIGIT = re.compile(r"\d")
 
 
 @dataclass
@@ -51,9 +62,11 @@ class FigureCheck:
     text: str                                             # commentary, unsupported sentences removed
     removed: list[dict] = field(default_factory=list)     # {"sentence": ..., "reasons": [...]}
     withheld: bool = False                                # nothing was left: text is WITHHELD
+    mode: str = "figures"                                 # "figures" or "restricted"
+    hidden: bool = False                                  # restricted mode left nothing: show no commentary
 
     def as_dict(self) -> dict:
-        return {"removed": self.removed, "withheld": self.withheld}
+        return {"mode": self.mode, "removed": self.removed, "withheld": self.withheld, "hidden": self.hidden}
 
 
 # --- numbers -------------------------------------------------------------------------------
@@ -246,6 +259,22 @@ def sentence_problems(sentence: str, envelopes: list[Any], allowed: set[Decimal]
     return reasons
 
 
+def _filter(commentary: str, judge) -> tuple[str, list[dict]]:
+    """Commentary without the sentences `judge` (sentence -> reasons) objects to, and what was removed."""
+    removed, lines = [], []
+    for sentences in _sentences(commentary):
+        kept = []
+        for sentence in sentences:
+            reasons = judge(sentence)
+            if reasons:
+                removed.append({"sentence": sentence.strip(), "reasons": reasons})
+            else:
+                kept.append(sentence)
+        if kept or not sentences:
+            lines.append(" ".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), removed
+
+
 def check_commentary(commentary: str, envelopes: list[Any]) -> FigureCheck:
     """Remove sentences with unsupported figures; WITHHELD if nothing is left (see module docstring).
 
@@ -253,19 +282,37 @@ def check_commentary(commentary: str, envelopes: list[Any]) -> FigureCheck:
     earlier card. Non-dict results are ignored."""
     envelopes = [e for e in envelopes if isinstance(e, dict)]
     allowed = _numbers_in(envelopes, set())
-    removed, lines = [], []
-    for sentences in _sentences(commentary):
-        kept = []
-        for sentence in sentences:
-            reasons = sentence_problems(sentence, envelopes, allowed)
-            if reasons:
-                removed.append({"sentence": sentence.strip(), "reasons": reasons})
-            else:
-                kept.append(sentence)
-        if kept or not sentences:
-            lines.append(" ".join(kept))
-    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    text, removed = _filter(commentary, lambda s: sentence_problems(s, envelopes, allowed))
     if removed and not re.search(r"\w", text):
         return FigureCheck(WITHHELD, removed, True)
     return FigureCheck(text, removed, False)
+
+
+def _airport_mentions(names: dict[str, str]) -> list[tuple[str, re.Pattern]]:
+    """(label, pattern) for every airport in the envelopes: its code, its full name and each
+    distinctive word of the name as written ("Bradley", "Burlington"; generic and short words skipped)."""
+    out = []
+    for code, name in names.items():
+        words = [w for w in re.findall(r"[A-Z][\w'-]+", name) if len(w) >= 4 and w.lower() not in GENERIC_NAME_WORDS]
+        for term in dict.fromkeys([code, name, *words]):
+            out.append((code, re.compile(rf"\b{re.escape(term)}\b")))
+    return out
+
+
+def restriction_problems(sentence: str, mentions: list[tuple[str, re.Pattern]]) -> list[str]:
+    """Why a sentence is not allowed in restricted mode (empty list: a caveat or next step, kept)."""
+    if _STRUCTURE_LINE.match(sentence):
+        return ["table, heading or rule (restates the card)"]
+    reasons = ["contains a figure"] if _DIGIT.search(sentence) else []
+    named = sorted({code for code, pattern in mentions if pattern.search(sentence)})
+    return reasons + ([f"names an airport ({', '.join(named)})"] if named else [])
+
+
+def restrict_commentary(commentary: str, envelopes: list[Any]) -> FigureCheck:
+    """Restricted mode (see module docstring): keep only sentences with no digit, no airport code and
+    no airport name from the envelopes; `hidden` when nothing is left (no commentary block)."""
+    mentions = _airport_mentions(_airport_names([e for e in envelopes if isinstance(e, dict)]))
+    text, removed = _filter(commentary, lambda s: restriction_problems(s, mentions))
+    hidden = not re.search(r"\w", text)
+    return FigureCheck("" if hidden else text, removed, mode="restricted", hidden=hidden)
 

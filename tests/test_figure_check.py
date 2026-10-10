@@ -132,3 +132,63 @@ def test_figures_from_earlier_cards_in_the_conversation_count():
 def test_lists_and_line_breaks_are_kept():
     out = check_commentary("Points:\n- Passenger service is 11.5%.\n- Cargo is 99.9%.\n- Cargo drives it.", [ANC])
     assert out.text == "Points:\n- Passenger service is 11.5%.\n- Cargo drives it."
+
+
+# --- restricted mode (P3.8b): rank_airports and compare_airports -------------------------------
+
+from src.figure_check import restrict_commentary  # noqa: E402
+
+NE_RANKING = {"headline": "new_england terminal-expansion ranking by score: 1 BOS, 2 BTV, 3 BGR (10 ranked).",
+              "facts": [], "data": {"ranked": [
+                  {"rank": 1, "iata": "BOS", "name": "Boston Logan International Airport", "score": 0.799},
+                  {"rank": 5, "iata": "HVN", "name": "Tweed New Haven Airport", "score": 0.494},
+                  {"rank": 6, "iata": "BDL", "name": "Bradley International Airport", "score": 0.49},
+                  {"rank": 10, "iata": "ORH", "name": "Worcester Regional Airport", "score": 0.107}]}}
+
+# lfm2.5:8b in the first eval run: the ranking rewritten as a table, BDL first, a made-up TWE, ORH twice.
+REWRITTEN_RANKING = """**Quick Overview of the Data**
+
+| Rank | Airport (IATA) | Score |
+|------|----------------|-------|
+| 1    | Bradley International Airport (BDL) | 0.49 |
+| 3    | Tweed New Haven Airport (TWE) | 0.494 |
+| 6    | Worcester Regional (ORH) | 0.107 |
+| 7    | Worcester Regional (duplicate entry) | 0.107 |
+
+### Key Take-aways
+
+1. **Bradley (BDL)** leads the set with relatively strong capacity utilisation.
+Scores are relative to the national peer set, so they shift when the peer set changes."""
+
+
+def test_restricted_mode_drops_a_rewritten_ranking_and_keeps_the_caveat():
+    out = restrict_commentary(REWRITTEN_RANKING, [NE_RANKING])
+    assert out.text == "Scores are relative to the national peer set, so they shift when the peer set changes."
+    assert out.mode == "restricted" and not out.hidden
+    reasons = {r["sentence"]: r["reasons"] for r in out.removed}
+    assert reasons["| 3    | Tweed New Haven Airport (TWE) | 0.494 |"] == ["table, heading or rule (restates the card)"]
+    assert reasons["**Bradley (BDL)** leads the set with relatively strong capacity utilisation."] == [
+        "names an airport (BDL)"]
+    assert reasons["1."] == ["contains a figure"]  # the list marker splits off as its own sentence
+
+
+def test_restricted_mode_drops_a_backwards_direction():
+    # compare card: LAX taxi-out 17.7 min, SNA 16.1 min; the model said LAX's is shorter
+    out = restrict_commentary("LAX has a marginally shorter taxi-out, indicating less congestion at the ramp. "
+                              "On-Time covers only the large carriers, so smaller airlines are not in these figures.",
+                              [LAX_SNA])
+    assert out.text == "On-Time covers only the large carriers, so smaller airlines are not in these figures."
+    assert out.removed[0]["reasons"] == ["names an airport (LAX)"]
+
+
+@pytest.mark.parametrize("sentence", ["Los Angeles has the longer taxi-out.", "John Wayne is busier at the ramp.",
+                                      "The second airport grows faster than the third."])
+def test_restricted_mode_catches_names_without_codes_but_not_unnamed_claims(sentence):
+    out = restrict_commentary(sentence, [LAX_SNA, NE_RANKING])
+    expected_removed = not sentence.startswith("The second")
+    assert bool(out.removed) is expected_removed
+
+
+def test_restricted_mode_with_nothing_left_hides_the_commentary():
+    out = restrict_commentary("BOS ranks first with 0.799.", [NE_RANKING])
+    assert out.hidden and out.text == "" and not out.withheld
