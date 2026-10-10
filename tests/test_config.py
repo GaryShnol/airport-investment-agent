@@ -60,3 +60,13 @@ regions: {x: [MA]}
     )
     with pytest.raises(ConfigError, match="sum to 1.0"):
         load_scoring(bad)
+
+
+def test_ollama_num_ctx_from_env():
+    assert Settings.from_env({}).ollama_num_ctx is None
+    s = Settings.from_env({"OLLAMA_NUM_CTX": "8192"})
+    assert s.ollama_num_ctx == 8192 and get_chat_model(s).num_ctx == 8192
+    assert get_chat_model(Settings.from_env({})).num_ctx is None  # server default
+    for bad in ("big", "0", "-1"):
+        with pytest.raises(ConfigError, match="OLLAMA_NUM_CTX"):
+            Settings.from_env({"OLLAMA_NUM_CTX": bad})

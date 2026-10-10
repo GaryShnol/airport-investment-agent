@@ -33,10 +33,13 @@ def _openai(s: Settings) -> BaseChatModel:
 def _ollama(s: Settings) -> BaseChatModel:
     from langchain_ollama import ChatOllama
 
+    # num_ctx only when set: otherwise the server's default context window applies.
+    extra = {"num_ctx": s.ollama_num_ctx} if s.ollama_num_ctx else {}
     return ChatOllama(
         model=s.llm_model,
         temperature=s.llm_temperature,
         base_url=s.ollama_base_url,
+        **extra,
     )
 
 
