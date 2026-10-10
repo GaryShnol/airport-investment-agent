@@ -40,6 +40,12 @@ def long_haul_share(long_haul_departures: pd.Series, departures: pd.Series) -> p
     return _ratio(long_haul_departures, departures)
 
 
+def floor_share(share: pd.Series, min_share: float) -> pd.Series:
+    """Shares below `min_share` become 0 (missing stays missing): a handful of charter flights
+    should not lift an airport's long-haul percentile above airports with none."""
+    return share.where(share.isna() | (share >= min_share), 0.0)
+
+
 def growth(current: pd.Series, previous: pd.Series) -> pd.Series:
     """current / previous - 1. Missing (not zero, not infinite) when previous is zero or missing:
     an airport without a previous year has no measurable growth, so the component is missing."""
@@ -69,8 +75,9 @@ NOT_BUILT = {
 SCORE_DECIMALS = 9
 
 # Raw value behind each component: the column shown next to its percentile.
+# long_haul is ranked on the floored share (`long_haul_share_scored`); the true share is shown too.
 RAW_COLUMN = {"utilization": "load_factor", "scale": "passengers", "growth": "growth",
-              "long_haul": "long_haul_share"}
+              "long_haul": "long_haul_share_scored"}
 
 
 @dataclass(frozen=True)
@@ -120,8 +127,8 @@ def _confidence(window: Window, missing: list[str], unavailable: dict[str, str],
 def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreResult:
     """Score every peer-set airport; `metrics` has the columns of `store.airport_metrics`.
 
-    Peer set = airports with a US state (`state`, from `airports`) and at least `min_departures_per_year` passenger-service
-    departures. Each component is a percentile inside the peer set. Components not built yet
+    Peer set = airports with a US state (`state`, from `airports`) and at least
+    `min_passengers_per_year` passenger-service passengers. Each component is a percentile inside the peer set. Components not built yet
     (NOT_BUILT) are dropped and the remaining weights renormalized. An airport missing a
     component (e.g. no previous-year passengers, so no growth) is scored on the components it
     has, with its own renormalized weights. Ties in the score are broken by IATA code.
@@ -138,8 +145,9 @@ def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreRes
     t = metrics.copy()
     t["load_factor"] = load_factor(t["passengers"], t["seats"])
     t["long_haul_share"] = long_haul_share(t["long_haul_departures"], t["departures"])
+    t["long_haul_share_scored"] = floor_share(t["long_haul_share"], cfg.long_haul_min_share)
     t["growth"] = growth(t["passengers"], t["prev_passengers"])
-    t["in_peer_set"] = t["state"].notna() & (t["departures"] >= cfg.min_departures_per_year)
+    t["in_peer_set"] = t["state"].notna() & (t["passengers"] >= cfg.min_passengers_per_year)
 
     peer = t["in_peer_set"]
     for component in available:
@@ -177,7 +185,7 @@ def rank(result: ScoreResult, region: str, cfg: ScoringConfig) -> RegionRanking:
     t = result.table[result.table["state"].isin(states)]
     ranked = t[t["in_peer_set"]].copy()
     ranked.insert(0, "rank", range(1, len(ranked) + 1))
-    excluded = t[~t["in_peer_set"]].sort_values("departures", ascending=False, kind="stable").copy()
-    excluded["reason"] = [f"{d:,} passenger-service departures, below the {cfg.min_departures_per_year:,} floor"
-                          for d in excluded["departures"]]
+    excluded = t[~t["in_peer_set"]].sort_values("passengers", ascending=False, kind="stable").copy()
+    excluded["reason"] = [f"{p:,} passenger-service passengers, below the {cfg.min_passengers_per_year:,} floor"
+                          for p in excluded["passengers"]]
     return RegionRanking(region, states, ranked.reset_index(drop=True), excluded.reset_index(drop=True), result)

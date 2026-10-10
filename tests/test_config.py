@@ -50,8 +50,9 @@ def test_weights_must_sum_to_one(tmp_path):
 weights: {utilization: 0.5, congestion: 0.5, scale: 0.5, long_haul: 0.0, growth: 0.0, demand_context: 0.0}
 congestion: {dep_delay_rate: 0.4, taxi_out: 0.3, nas_delay_per_arrival: 0.3}
 long_haul_miles: 2500
+long_haul_min_share: 0.02
 long_haul_sensitivity_miles: [2500]
-min_departures_per_year: 5000
+min_passengers_per_year: 100000
 unmet_demand: {target_load_factor: 0.8}
 sensitivity: {runs: 5, weight_jitter: 0.2, seed: 1}
 regions: {x: [MA]}

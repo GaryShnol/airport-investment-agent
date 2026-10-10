@@ -3,7 +3,7 @@ Task status lives in `TASKS.md`. This file holds the design.
 
 ## Configuration (no hardcoded values)
 - `.env` (see `.env.example`) -> `src/config.py` `Settings.from_env()`: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_TEMPERATURE`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `CENSUS_API_KEY`, `DB_PATH`, `SEED_DB_PATH`, `RAW_DATA_DIR`, `WEIGHTS_PATH`, `LOG_LEVEL`. Secrets are hidden from `repr`. Relative paths resolve against the project root.
-- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles and sensitivity list, min departures, target load factor, sensitivity runs/jitter/seed, regions.
+- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles, minimum long-haul share and sensitivity list, min passengers, target load factor, sensitivity runs/jitter/seed, regions.
 - Why split: env is per-deployment and secret; methodology is reviewable, versioned and part of the design doc.
 
 ## LLM provider
@@ -38,7 +38,7 @@ Every tool returns:
 
 ## Definitions (fixed; used by ingest, scoring and tools)
 - Passenger service: T-100 rows with AIRCRAFT_CONFIG 1 (passenger) or 3 (combi) and DEPARTURES_PERFORMED > 0. Cargo (2) and undocumented (4) are excluded from passenger metrics; they count only in "all flights" figures.
-- Peer set: airports with a US state or territory (`airports.state`, from OurAirports) and at least `min_departures_per_year` passenger-service departures in the window. Percentiles are computed inside this set. T-100 `ORIGIN_STATE_ABR` is not used for this: it also holds Canadian province codes (YYZ = ON) and TT for the Pacific territories. 2025: 188 airports (193 with the T-100 field).
+- Peer set: airports with a US state or territory (`airports.state`, from OurAirports) and at least `min_passengers_per_year` passenger-service passengers in the window (100,000). Passengers, not departures: a departure floor admitted 9-seat commuter airports (Block Island, Westerly: about 20k passengers) and left out regional airports such as ORH and PSM. Percentiles are computed inside this set. T-100 `ORIGIN_STATE_ABR` is not used for this: it also holds Canadian province codes (YYZ = ON) and TT for the Pacific territories.
 - Window: trailing 12 complete months ending at `min(last_period)`; growth compares with the previous 12.
 - On-Time sides: departure delay rate, taxi-out and cancellations belong to the origin airport. Arrival counts and delay-cause minutes belong to the destination airport, because BTS records delay causes for arrival delays.
 
@@ -48,10 +48,11 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 - Scale = annual passengers (passenger service)
 - Congestion = weighted percentiles: departure-delay >=15 rate, mean taxi-out, NAS-delay minutes per arriving flight
 - Growth = passengers in the window vs the previous 12 months
-- LongHaul = departures >= threshold / passenger-service departures
+- LongHaul = departures >= threshold / passenger-service departures; a share below `long_haul_min_share` (2%) counts as 0 for the percentile, and the true share is still shown
 - DemandContext = metro population growth (Census)
 - Why Scale: profit depends on volume as well as pressure. Without it a small airport with fast growth outranks a large one (HVN +25% on 0.7M passengers vs BOS on 21M).
 - Why LongHaul is only 0.10: it hints at wide-body and international facilities, but it is secondary and distorted by cargo.
+- Why the 2% long-haul floor: without it, 55 peer airports with 0% tie at the bottom while airports with a few charters (about 0.1%) reach the 65th percentile; noise, not a facility signal.
 - Missing component -> renormalize weights, lower confidence, say so.
 - Question mapping: Q2 = Congestion; Q3 = LongHaul; Q4 = Utilization + Congestion + delay causes + spill proxy.
 - Confidence (deterministic): high = all components, full 12 months, in the peer set; medium = a component renormalized or partial coverage; low = fewer than 12 months or proxy-only. Unmet demand is capped at medium.

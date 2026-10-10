@@ -41,4 +41,4 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 ## Defaults (all in `config/weights.yaml`, change there)
 - `Score = 0.25 Utilization + 0.25 Congestion + 0.15 Scale + 0.15 Growth + 0.10 LongHaul + 0.10 DemandContext`
 - Congestion = 0.40 departure-delay rate + 0.30 taxi-out + 0.30 NAS-delay minutes per arriving flight (cancellations shown, not scored: mostly weather).
-- Long-haul threshold 2,500 mi; min 5,000 departures/yr to be ranked; unmet-demand target load factor 0.80; New England = MA CT RI NH VT ME.
+- Long-haul threshold 2,500 mi; min 100,000 passenger-service passengers/yr to be ranked; long-haul share under 2% counts as 0 in the score; unmet-demand target load factor 0.80; New England = MA CT RI NH VT ME.

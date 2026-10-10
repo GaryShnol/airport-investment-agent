@@ -86,7 +86,7 @@ def cfg():
         weights=dict(WEIGHTS),
         congestion_weights={"dep_delay_rate": 0.4, "taxi_out": 0.3, "nas_delay_per_arrival": 0.3},
         long_haul_miles=2500, long_haul_sensitivity_miles=(1500, 2500, 3000),
-        min_departures_per_year=100, target_load_factor=0.8,
+        long_haul_min_share=0.02, min_passengers_per_year=5_000, target_load_factor=0.8,
         sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1,
         regions={"north": ("AA", "BB"), "south": ("CC",)},
     )
@@ -117,6 +117,29 @@ def test_peer_set_needs_state_and_floor(metrics, cfg):
     assert peers == {"BIG", "MID", "NEW", "HOT", "SUN"}
     assert result.peer_set_size == 5
     assert result.table.set_index("iata").loc[["TNY", "YVR"], "score"].isna().all()
+
+
+def test_peer_set_floor_is_on_passengers_not_departures(cfg):
+    commuter = airport("CMT", "AA", 5_000, 45_000, 4_999, 0, 4_000)   # many flights, tiny aircraft
+    regional = airport("RGN", "AA", 40, 6_000, 5_000, 0, 4_000)       # few flights, enough passengers
+    t = scoring.score(pd.DataFrame([commuter, regional]), cfg, FULL).table.set_index("iata")
+    assert not t.at["CMT", "in_peer_set"] and t.at["RGN", "in_peer_set"]
+
+
+def test_long_haul_share_below_the_floor_counts_as_zero(cfg):
+    rows = pd.DataFrame([airport("NON", "AA", 10_000, 900_000, 800_000, 0, 700_000),
+                         airport("LOW", "AA", 10_000, 900_000, 800_000, 199, 700_000),   # 1.99%
+                         airport("TOP", "AA", 10_000, 900_000, 800_000, 200, 700_000)])  # 2.00%
+    t = scoring.score(rows, cfg, FULL).table.set_index("iata")
+    assert t.at["LOW", "long_haul_share"] == pytest.approx(0.0199)  # true share still shown
+    assert t.at["LOW", "long_haul_share_scored"] == 0.0
+    assert t.at["TOP", "long_haul_share_scored"] == pytest.approx(0.02)
+    assert t.at["LOW", "pct_long_haul"] == t.at["NON", "pct_long_haul"] < t.at["TOP", "pct_long_haul"]
+
+
+def test_floor_share_keeps_missing():
+    out = scoring.floor_share(pd.Series([0.01, 0.02, None]), 0.02)
+    assert out[0] == 0.0 and out[1] == 0.02 and math.isnan(out[2])
 
 
 def test_missing_built_components_are_renormalized_and_reported(metrics, cfg):
@@ -183,7 +206,7 @@ def test_rank_inside_region_and_excluded_list(metrics, cfg):
     assert ranking.ranked["score"].is_monotonic_decreasing
     assert ranking.ranked.iloc[0]["iata"] == "BIG"
     assert list(ranking.excluded["iata"]) == ["TNY"]
-    assert "below the 100 floor" in ranking.excluded.iloc[0]["reason"]
+    assert "below the 5,000 floor" in ranking.excluded.iloc[0]["reason"]
 
 
 def test_region_percentiles_stay_national(metrics, cfg):
@@ -204,6 +227,7 @@ def test_same_input_same_output(metrics, cfg):
 
 
 def test_score_ties_break_by_iata(cfg):
+    cfg = replace(cfg, min_passengers_per_year=0)
     twins = pd.DataFrame([airport("ZZZ", "AA", 200, 100, 80, 0, 70),
                           airport("AAA", "AA", 200, 100, 80, 0, 70)])
     t = scoring.score(twins, cfg, FULL).table
@@ -212,6 +236,7 @@ def test_score_ties_break_by_iata(cfg):
 
 
 def test_equal_scores_from_different_components_tie_exactly(cfg):
+    cfg = replace(cfg, min_passengers_per_year=0)
     # scale and growth carry the same weight: high scale + low growth == low scale + high growth,
     # but summed in floating point the two can differ by 1e-16. The tie must still go by IATA.
     # Unrounded, this case gives 0.8557692307692308 vs 0.855769230769231.

@@ -77,8 +77,9 @@ class ScoringConfig:
     weights: dict[str, float]
     congestion_weights: dict[str, float]
     long_haul_miles: int
+    long_haul_min_share: float
     long_haul_sensitivity_miles: tuple[int, ...]
-    min_departures_per_year: int
+    min_passengers_per_year: int
     target_load_factor: float
     sensitivity_runs: int
     sensitivity_jitter: float
@@ -112,8 +113,9 @@ def load_scoring(path: Path) -> ScoringConfig:
             weights=_check_weights("weights", raw["weights"], _WEIGHT_KEYS),
             congestion_weights=_check_weights("congestion", raw["congestion"], _CONGESTION_KEYS),
             long_haul_miles=int(raw["long_haul_miles"]),
+            long_haul_min_share=float(raw["long_haul_min_share"]),
             long_haul_sensitivity_miles=tuple(int(x) for x in raw["long_haul_sensitivity_miles"]),
-            min_departures_per_year=int(raw["min_departures_per_year"]),
+            min_passengers_per_year=int(raw["min_passengers_per_year"]),
             target_load_factor=float(raw["unmet_demand"]["target_load_factor"]),
             sensitivity_runs=int(raw["sensitivity"]["runs"]),
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),
