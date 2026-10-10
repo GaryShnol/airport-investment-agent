@@ -258,5 +258,31 @@ def test_period_check_drops_periods_the_data_does_not_cover(sentence, reason):
     assert out.removed and out.removed[0]["reasons"] == [reason]
 
 
+def test_month_names_from_the_peak_months_pass():
+    # gpt-5-mini, q4 (eval run 20261010-215548): removed as "'June–July' is not the data period"
+    real = ("The excess is concentrated on key transcontinental routes (EWR, JFK, ORD account for a large share "
+            "of the spill) and peak June–July and December months drive the pressure.")
+    assert check_commentary(real, [SFO_GAP]).removed == []
+
+
+@pytest.mark.parametrize("sentence", [
+    "Load peaked in June-July 2025.",
+    "June to July and December carry the peak.",
+    "Jun–Jul is the summer peak.",
+])
+def test_month_ranges_named_in_the_facts_pass(sentence):
+    assert check_commentary(sentence, [SFO_GAP]).removed == []
+
+
+@pytest.mark.parametrize("sentence, reason", [
+    ("Load stayed high from June to December.", "'June to December' is not the data period"),
+    ("Load peaked in June-July 2023.", "'June-July 2023' is not the data period"),
+    ("Peak months were May-June.", "'May-June' is not the data period"),
+])
+def test_month_ranges_not_named_or_outside_the_data_still_drop(sentence, reason):
+    out = check_commentary(sentence, [SFO_GAP])
+    assert out.removed and out.removed[0]["reasons"] == [reason]
+
+
 def test_period_check_needs_a_data_period():
     assert check_commentary("Load factor peaked in June 2023.", [{"headline": "x", "facts": []}]).removed == []

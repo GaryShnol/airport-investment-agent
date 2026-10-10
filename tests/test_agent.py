@@ -9,8 +9,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from src import agent as agent_mod
 from src.agent import FACTS_FOOTER, InputRejected, build_agent, ensure_facts, missing_facts, strip_reasoning
 from src.config import ConfigError, Settings
-from src.prompts import SYSTEM_PROMPT
+from src.prompts import FOLLOW_UPS_HEADER, SYSTEM_PROMPT, build_system_prompt
 from tests.conftest import seed_analysis_db
+from src.tools import make_tools
 from tests.fake_model import ScriptedChatModel, call
 
 
@@ -40,7 +41,8 @@ def test_ranking_question_routes_to_rank_airports(settings, connect, scoring_cfg
     assert [c["name"] for c in reply.tool_calls] == ["rank_airports"]
     envelope = reply.tool_results[0]
     assert envelope["data"]["region"] == "new_england" and envelope["data"]["weights_used"]
-    assert isinstance(model.seen[0][0], SystemMessage) and model.seen[0][0].content == SYSTEM_PROMPT
+    assert isinstance(model.seen[0][0], SystemMessage)
+    assert model.seen[0][0].content == build_system_prompt(make_tools(connect, scoring_cfg))
     assert reply.commentary == "Scores are relative to the national peer set. Ask how growth changes it."
 
 
@@ -345,6 +347,29 @@ def test_prompt_rules():
                  "No conclusion without supporting data", "one tool call is enough",
                  "ask the user which airport they mean"]:
         assert rule in SYSTEM_PROMPT
+
+
+def test_follow_ups_are_listed_from_the_tool_registry(connect, scoring_cfg):
+    tools = make_tools(connect, scoring_cfg)
+    prompt = build_system_prompt(tools)
+    assert prompt.startswith(SYSTEM_PROMPT) and "Suggest only follow-ups" in SYSTEM_PROMPT
+    listed = prompt.split(FOLLOW_UPS_HEADER, 1)[1].strip().splitlines()
+    assert [line.split("(", 1)[0] for line in listed] == [f"- {t.name}" for t in tools]
+    assert "threshold_mi" in prompt and "sort_by=score|growth|load_factor|passengers" in prompt
+
+
+def test_demand_gap_tool_says_the_target_cannot_be_changed(connect, scoring_cfg):
+    # gpt-5-mini, q4 (eval run 20261010-215548) offered follow-ups no tool parameter supports:
+    real = ("If you want, I can (1) show the routes ranked by spill per seat, (2) rerun the proxy with a "
+            "different target load factor (75% or 85%), or (3) compare this proxy at SFO with another Bay Area airport.")
+    tools = {t.name: t for t in make_tools(connect, scoring_cfg)}
+    gap = tools["explain_demand_gap"]
+    assert list(gap.args) == ["airport"]  # no target or route-sort parameter: (1) and (2) are not possible
+    line = next(x for x in build_system_prompt(list(tools.values())).splitlines() if x.startswith("- explain_demand_gap"))
+    assert "Limits: the target load factor is fixed by configuration (80%" in line
+    assert "cannot be changed per question" in line and "spill proxy only" in line
+    assert "compare_airports(a, b)" in build_system_prompt(list(tools.values()))  # (3) is possible
+    assert "different target load factor" in real and "spill per seat" in real
 
 
 # --- commentary figure check (P3.6b) ----------------------------------------------------------

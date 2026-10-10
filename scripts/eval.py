@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.agent import build_agent  # noqa: E402
 from src.config import get_settings  # noqa: E402
+from src.render import render_reply  # noqa: E402
 
 QUESTIONS = ROOT / "eval" / "questions.yaml"
 # A commentary that stops mid-sentence (cut by the context window or max tokens) ends without this.
@@ -41,26 +42,72 @@ def load_questions(only: list[str] | None) -> list[dict]:
     return [q for q in questions if not only or q["id"] in only]
 
 
-def score(q: dict, reply, seconds: float) -> dict:
-    """Checks for one answer: expected tools, must-have facts, forbidden text, figure check, empty or cut."""
-    called = [c["name"] for c in reply.tool_calls]
-    labels = [f.get("label", "") for env in reply.tool_results if isinstance(env, dict) for f in env.get("facts") or []]
+def _tools_ok(q: dict, calls: list[dict]) -> bool | None:
+    """Expected tools called, each `tool_args` entry matched by at least one call of that tool."""
     expected = q.get("tools")
-    tools_ok = None if expected is None else (not called if expected == [] else set(expected) <= set(called))
+    if expected is None:
+        return None
+    names = [c["name"] for c in calls]
+    if expected == []:
+        return not names
+    args_ok = all(any(c["name"] == name and all(c["args"].get(k) == v for k, v in want.items()) for c in calls)
+                  for name, want in (q.get("tool_args") or {}).items())
+    return set(expected) <= set(names) and args_ok
+
+
+def _reasons(r: dict, q: dict, unsupported: list[dict]) -> list[str]:
+    """Which checks failed, in words (empty when the answer passes)."""
+    reasons = []
+    if r["tools_ok"] is False:
+        want = ", ".join(q.get("tools") or []) or "no tool"
+        args = q.get("tool_args")
+        reasons.append(f"tools: expected {want}{f' with {args}' if args else ''}, called "
+                       f"{', '.join(r['tools_called']) or 'none'}")
+    if r["missing_facts"]:
+        reasons.append(f"missing facts: {', '.join(r['missing_facts'])}")
+    if r["forbidden"]:
+        reasons.append(f"forbidden text shown: {', '.join(repr(s) for s in r['forbidden'])}")
+    if unsupported:
+        reasons.append("figure check removed: " + "; ".join(x for u in unsupported for x in u["reasons"]))
+    if r["empty"]:
+        reasons.append("empty reply (fixed fallback text)")
+    if r["truncated"]:
+        reasons.append("reply cut mid-sentence")
+    return reasons
+
+
+def score(q: dict, reply, seconds: float) -> dict:
+    """Checks for one answer: expected tools, must-have facts, forbidden text, figure check, empty or cut.
+
+    Forbidden text is checked in what the user sees (rendered cards and the commentary after the
+    figure check). A forbidden string that only the removed sentences contained is the guardrail
+    working: recorded in `forbidden_filtered`, not a failure. With `answer_from_card`, an answer
+    with no tool call passes the tool and fact checks when it has figures and the figure check
+    (against the earlier cards of the conversation) removed none of them."""
+    calls = [{"name": c["name"], "args": c["args"]} for c in reply.tool_calls]
+    called = [c["name"] for c in calls]
+    labels = [f.get("label", "") for env in reply.tool_results if isinstance(env, dict) for f in env.get("facts") or []]
     removed = reply.figure_check.get("removed", [])
     # In restricted mode removing figures is the design, not an unsupported claim: not a failure.
     unsupported = removed if reply.figure_check.get("mode") != "restricted" else []
-    said = " ".join([reply.commentary, *(r["sentence"] for r in removed)])
+    visible = f"{render_reply(reply.tool_calls, reply.tool_results)}\n{reply.commentary}".lower()
+    raw = " ".join([reply.commentary, *(r["sentence"] for r in removed)]).lower()
+    must_not = q.get("must_not", [])
+    from_card = (q.get("answer_from_card") and not called and not unsupported and not reply.fallback
+                 and any(ch.isdigit() for ch in reply.commentary))
     result = {
-        "tools_called": called, "tools_ok": tools_ok,
-        "missing_facts": [m for m in q.get("must_have", []) if not any(m in label for label in labels)],
-        "forbidden": [s for s in q.get("must_not", []) if s.lower() in said.lower()],
+        "tools_called": called, "tool_calls": calls,
+        "tools_ok": True if from_card else _tools_ok(q, calls), "answered_from_card": bool(from_card),
+        "missing_facts": [] if from_card else [m for m in q.get("must_have", []) if not any(m in x for x in labels)],
+        "forbidden": [s for s in must_not if s.lower() in visible],
+        "forbidden_filtered": [s for s in must_not if s.lower() in raw and s.lower() not in visible],
         "figure_check": reply.figure_check, "empty": reply.fallback,
         "truncated": bool(reply.commentary) and not SENTENCE_END.search(reply.commentary),
         "seconds": round(seconds, 1), "commentary": reply.commentary,
     }
-    result["pass"] = (tools_ok is not False and not result["missing_facts"] and not result["forbidden"]
-                      and not unsupported and not result["empty"] and not result["truncated"])
+    reasons = _reasons(result, q, unsupported)
+    result["pass"] = not reasons
+    result["reason"] = "; ".join(reasons)
     return result
 
 
@@ -79,11 +126,16 @@ def run(questions: list[dict], out_dir: Path) -> Path:
             reply = agent.ask(q["question"], f"eval-{run_id}-{q.get('group') or q['id']}")
             record = {**base, **score(q, reply, time.perf_counter() - start)}
         except Exception as exc:  # noqa: BLE001 - e.g. the model server stopped; keep going
-            record = {**base, "error": f"{type(exc).__name__}: {exc}", "pass": False,
+            error = f"{type(exc).__name__}: {exc}"
+            record = {**base, "error": error, "pass": False, "reason": f"error: {error}",
                       "seconds": round(time.perf_counter() - start, 1)}
         with path.open("a", encoding="utf-8") as f:  # one line per question, written at once
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     return path
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
 def _mark(value) -> str:
@@ -95,19 +147,28 @@ def report(path: Path) -> str:
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     lines = [f"Model: {rows[0]['model'] if rows else 'n/a'} ({path.name})", "",
              "| Question | Tools called | Seconds | Expected tools | Missing facts | Figures removed "
-             "| Empty/cut | Pass |", "|---|---|---|---|---|---|---|---|"]
+             "| Empty/cut | Pass | Reason |", "|---|---|---|---|---|---|---|---|---|"]
+    notes = []
     for r in rows:
         if "error" in r:
-            lines.append(f"| {r['id']} | error: {r['error'][:60]} | {r['seconds']} | | | | | no |")
+            lines.append(f"| {r['id']} | error: {r['error'][:60]} | {r['seconds']} | | | | | no | error |")
             continue
         removed = len(r["figure_check"].get("removed", []))
         cut = "empty" if r["empty"] else ("cut" if r["truncated"] else "no")
         missing = ", ".join(r["missing_facts"] + [f"wrote '{s}'" for s in r["forbidden"]]) or "none"
         lines.append(f"| {r['id']} | {', '.join(r['tools_called']) or 'none'} | {r['seconds']} | "
-                     f"{_mark(r['tools_ok'])} | {missing} | {removed} | {cut} | {_mark(r['pass'])} |")
+                     f"{_mark(r['tools_ok'])} | {missing} | {removed} | {cut} | {_mark(r['pass'])} | "
+                     f"{_cell(r.get('reason', ''))} |")
+        if r.get("forbidden_filtered"):
+            notes.append(f"- {r['id']}: the raw reply contained {', '.join(map(repr, r['forbidden_filtered']))}; "
+                         "the figure check removed it (guardrail working, not a failure).")
+        if r.get("answered_from_card"):
+            notes.append(f"- {r['id']}: answered from an earlier card (no tool call, every figure supported).")
     passed = sum(bool(r.get("pass")) for r in rows)
     seconds = sum(r.get("seconds", 0) for r in rows)
     lines += ["", f"Passed {passed} of {len(rows)}; total {seconds:.0f} s."]
+    if notes:
+        lines += ["", "Notes:", *notes]
     return "\n".join(lines)
 
 

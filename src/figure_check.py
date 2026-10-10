@@ -10,9 +10,10 @@ Pure functions (commentary and envelopes in, cleaned commentary out), applied by
 - an airport name in parentheses next to a code (or the reverse) that is another airport's name in
   the envelopes, such as "Bradley (BTV)" when Bradley is BDL;
 - a known misreading of a definition (MISREADINGS);
-- a month or year outside the data periods of the envelopes, or a month range that is not one of
-  them ("Mar 2025 - Dec 2025" when the data is 2025-01..2025-12; "January to December 2025" and
-  "2025-01..2025-12" pass). Single months and years pass when a period covers them or the envelopes
+- a month or year outside the data periods of the envelopes, or a month range that is neither one of
+  them nor made only of months the envelopes name ("Mar 2025 - Dec 2025" when the data is
+  2025-01..2025-12; "January to December 2025", "2025-01..2025-12" and, with peak months 2025-06 and
+  2025-07, "June-July" pass). Single months and years pass when a period covers them or the envelopes
   name them (peak months, the upstream month of a freshness note, Census vintages).
 Ignored as figures: years, periods (2025-01), numbers glued to letters (T-100, A320, 2nd) and whole numbers up
 to IGNORE_SMALL_INTEGERS without a % sign (counts such as "3 airports", "12 months"). If nothing is left, the
@@ -282,6 +283,17 @@ class Periods:
     def covers_year(self, year: int) -> bool:
         return year in self.years or any(a // 12 <= year <= b // 12 for a, b in self.ranges)
 
+    def names_all(self, span: tuple[int, int]) -> bool:
+        """Every month of the span is named in the envelopes (peak months: "June-July 2025")."""
+        return span[0] <= span[1] and all(ym in self.months for ym in range(span[0], span[1] + 1))
+
+    def names_all_months(self, first: int, last: int) -> bool:
+        """Every month of the year from `first` to `last` (wrapping past December) is named in the
+        envelopes in some year inside a data period ("June-July" with peak months 2025-06, 2025-07)."""
+        named = {ym % 12 + 1 for ym in self.months if any(a <= ym <= b for a, b in self.ranges)}
+        months = range(first, last + 1) if first <= last else [*range(first, 13), *range(1, last + 1)]
+        return all(m in named for m in months)
+
 
 def _strings(value: Any) -> list[str]:
     if isinstance(value, str):
@@ -320,9 +332,11 @@ def period_problems(sentence: str, periods: Periods) -> list[str]:
         if y1 or y2:
             y2 = int(y2 or y1)
             y1 = int(y1) if y1 else (y2 if m1 <= m2 else y2 - 1)
-            ok = (_ym(y1, m1), _ym(y2, m2)) in periods.ranges
-        else:  # "March to December": the months must be a period's first and last
-            ok = any(a % 12 + 1 == m1 and b % 12 + 1 == m2 for a, b in periods.ranges)
+            span = (_ym(y1, m1), _ym(y2, m2))
+            ok = span in periods.ranges or periods.names_all(span)
+        else:  # "March to December": a period's first and last month, or months the envelopes all name
+            ok = (any(a % 12 + 1 == m1 and b % 12 + 1 == m2 for a, b in periods.ranges)
+                  or periods.names_all_months(m1, m2))
         if not ok:
             reasons.append(f"'{m.group().strip().rstrip('.')}' is not the data period")
         text = _blank(text, m)
