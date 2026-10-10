@@ -2,7 +2,7 @@
 
 Task board for the Airport Investment Intelligence Agent (Deloitte Digital FDE exam, 24h budget).
 Legend: [x] done · [~] written, not yet verified · [ ] todo · (stretch) only if time allows.
-Last updated: 2026-10-10. Current milestone: **M3**.
+Last updated: 2026-10-10. Current milestone: **M4**.
 
 ## Working agreements
 - Build in vertical slices: after M2 the app already answers questions end to end; later milestones add data and depth.
@@ -62,7 +62,7 @@ Last updated: 2026-10-10. Current milestone: **M3**.
 - [x] P2.10 (superseded by P3.7b for the evaluation scope) Small eval (8-10 fixed questions with the expected tool) on local models (qwen3:4b-instruct-2507, lfm2.5:8b, gpt-oss:20b); record tool-choice accuracy and latency; set `num_ctx` in config; decide the reasoning setting (`reasoning` parameter of ChatOllama, verify it exists in the installed version); also change the prompt to "comment on the data, do not repeat it" and measure faithfulness (commentary that contradicts the data card, for example the sign of a growth rate), with and without the change
   - Covered by P3.7b: `scripts/eval.py` runs fixed questions with expected tools on whichever model `.env` selects and records tool choice, latency and faithfulness (figure check), so models are compared by rerunning it. Done elsewhere: the "comment, do not repeat" prompt (P2.14), `OLLAMA_NUM_CTX` in `.env` (P2.14). Not decided: the reasoning setting (not measured)
 
-## M3 - Congestion and depth (Q2 complete, Q4 complete) (current)
+## M3 - Congestion and depth (Q2 complete, Q4 complete)
 - [x] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
   - Verified: 7,001,619 flights for 2025 and 539,747 for January (exact); 352 airports, all matched in `airports`; 1.47% cancelled. Idempotent by file sha256 (rerun reads nothing); a changed file reloads its month only
 - [x] P3.2 Congestion component (delay rate, taxi-out, NAS delay per arriving flight) in scoring, with tests
@@ -81,13 +81,15 @@ Last updated: 2026-10-10. Current milestone: **M3**.
   - New England 2025: BOS long haul 96 / growth 29; BTV congestion 79 / long haul 43; BGR growth 91 / scale 35; PWM utilization 87 / congestion 36. Airports under the 2% long-haul floor share one percentile (43), stated in the assumptions
 - [x] P3.8d Wording: `compare_airports` headline ends with a deterministic overall sentence (mixed / X higher on every measure / no meaningful difference) and a note when departures differ by more than a configured ratio; `explain_demand_gap` spill proxy worded as passengers above the target load level (excess over target x seats), definition in the assumptions
 
-## M4 - Context and freshness
-- [ ] P4.1 Census ingest: airport to CBSA via the Census Geocoder (cached), population from the API; attribution in the UI
-- [ ] P4.2 `demand_context` component and weights back to the full formula
-- [ ] P4.3 `ingest --check` (HEAD next On-Time month, T-100 "Latest Available Data") and `meta` freshness fields; `data_status` reports current, behind or unknown
-- [ ] P4.4 Build and commit `seed/airport.db`
-- [ ] P4.5 (stretch) `ingest --download` for On-Time (direct URLs) and T-100 (form POST), falling back to local files
-- [ ] P4.6 (stretch) Extend the window to 2026-07 using P4.5
+## M4 - Context and freshness (current)
+Branch `m4a-census-freshness`.
+- [ ] P4.1 Census ingest into `census_metro`: population by CBSA (metropolitan and micropolitan) from the Census API, vintage from config; idempotent via `ingest_log`; vintage and retrieval date in `meta`; API errors give a clear message and no partial writes; key only from `.env`, never printed; Census attribution in the README and the sidebar
+- [ ] P4.2 Airport to CBSA: Census Geocoder (coordinates -> geographies) for peer-set airports, from `airports` lat/lon; results cached in a table so reruns do not call the API; report matched airports and those with no CBSA; polite rate limit, failures tolerated per airport
+- [ ] P4.3 `demand_context` component as defined in `docs/plan.md` (weight 0.10 from config); open details decided in the decision log; missing CBSA -> weights renormalized and confidence lowered; shown in the card, in "weights used" and in the `rank_airports` drivers block. Fix: a component on the tie floor (airports under the long-haul floor, percentile 43) is never an airport's "strongest" driver
+- [ ] P4.4 `ingest --check` and freshness: per source loaded period vs upstream latest (On-Time by HEAD on the PREZIP URL, 404 = not published; T-100 unknown unless it can be checked reliably; Census vintage vs latest available); result and timestamp in `meta`; freshness "fresh" / "stale (upstream has YYYY-MM)" / "unknown" in `data_status` and every envelope; never runs during chat; network failures give "unknown"
+- [ ] P4.5 Build and commit `seed/airport.db`
+- [ ] P4.6 (stretch) `ingest --download` for On-Time (direct URLs) and T-100 (form POST), falling back to local files
+- [ ] P4.7 (stretch) Extend the window to 2026-07 using P4.6
 
 ## M5 - Package and document
 - [ ] P5.1 `Dockerfile`, `docker-compose.yml`, entrypoint that seeds the DB volume
