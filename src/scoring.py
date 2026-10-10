@@ -368,3 +368,17 @@ def compare_values(a: float | None, b: float | None, margin_a: float | None,
     if abs(a - b) <= math.hypot(margin_a, margin_b):
         return "same"
     return "a" if a > b else "b"
+
+
+def overall_verdict(results: Iterable[str | None]) -> str:
+    """One verdict over several `compare_values` results (the scored metrics only):
+    'none' (nothing comparable), 'same' (no meaningful difference anywhere), 'a' or 'b' (higher on
+    every comparable measure, each beyond the margin), else 'mixed'. Missing results are skipped."""
+    known = [r for r in results if r is not None]
+    if not known:
+        return "none"
+    if set(known) == {"same"}:
+        return "same"
+    if len(set(known)) == 1:
+        return known[0]
+    return "mixed"

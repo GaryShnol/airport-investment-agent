@@ -75,7 +75,9 @@ def test_q2_la_vs_santa_ana(tools):
         "LAX vs SNA, 2025-01..2025-12 (95% margins on On-Time figures): delayed departures: LAX higher "
         "(LAX 25.3%, SNA 20.2%); taxi-out: LAX higher (LAX 18.0 min, SNA 16.0 min); NAS delay per arrival: "
         "LAX higher (LAX 2.0 min, SNA 1.5 min); no meaningful difference in cancellations (not scored) "
-        "(LAX 1.0%, SNA 1.0%).")
+        "(LAX 1.0%, SNA 1.0%). Overall: LAX is higher on every measure with a meaningful difference. "
+        "Note: LAX has 10.0 times SNA's departures (passenger service): rates compare per flight, but the "
+        "airports differ in scale.")
     assert r["assumptions"][0] == "'LA' = LAX (configured default; other candidates: BUR, LGB, ONT, SNA)"
     v = values(r)
     assert v["LAX: Departures delayed >= 15 min"] == "25.3% ± 0.78 pts (11,880 departures)"
@@ -109,8 +111,8 @@ def test_q4_sfo_demand_gap_is_a_proxy_with_confidence_at_most_medium(tools):
     r = tools("explain_demand_gap", airport="SFO")
     assert r["headline"] == (
         "PROXY, not a measurement (unmet demand is not observable in this data): SFO load factor was above the "
-        "80% target in 3 of 12 months in 2025-01..2025-12 (peak 2025-06 81.7%); 450 passengers flew on loads "
-        "above 80% (range 600 at 75% to 300 at 85%).")
+        "80% target in 3 of 12 months in 2025-01..2025-12 (peak 2025-06 81.7%); spill proxy 450 passengers above "
+        "the 80% load level (excess over 80% of seats per route and month; range 600 at 75% to 300 at 85%).")
     assert r["confidence"] in ("medium", "low")
     assert values(r)["Unmet demand"] == "not observable in this data; the figures below are a proxy"
     assert r["data"]["why"][0].startswith("Airport-wide load factor was above the 80% target in 3 of 12 months")

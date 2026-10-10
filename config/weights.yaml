@@ -41,6 +41,8 @@ sensitivity:                    # rank stability under weight perturbation (rank
 comparison:                     # compare_airports
   confidence_level: 0.95        # margin of error on On-Time figures; a difference inside the combined
                                 # margin is reported as "no meaningful difference"
+  size_ratio_note: 3.0          # headline note when one airport has more than this many times the other's
+                                # departures (rates still compare; totals and margins differ in kind)
 
 commentary:                     # what the model may write under a card (src/figure_check.py)
   # For these tools the card and headline give the result (an ordering or a verdict, which a figure

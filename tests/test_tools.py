@@ -517,6 +517,26 @@ def test_compare_facts_are_per_airport_and_cancellations_not_scored(db_ontime, s
     assert any("cancellations are shown, not scored" in a for a in r["assumptions"])
 
 
+def test_compare_overall_sentence_from_the_scored_verdicts(db_ontime, scoring_cfg):
+    # LAX higher on all three scored measures (cancellations are not scored and do not count)
+    r = tools.compare_airports(db_ontime, scoring_cfg, "LAX", "SNA")
+    assert r["data"]["overall"] == "Overall: LAX is higher on every measure with a meaningful difference."
+    # PWM vs SNA: delays inside the margin, taxi-out and NAS differ in opposite directions -> mixed
+    assert tools.compare_airports(db_ontime, scoring_cfg, "PWM", "SNA")["data"]["overall"] == (
+        "Overall: mixed, no airport is higher on every measure.")
+    assert tools.compare_airports(db_ontime, scoring_cfg, "BOS", "BTV")["data"]["overall"] == (
+        "Overall: not comparable, no scored congestion figure for both airports.")
+
+
+def test_compare_size_note_follows_the_configured_ratio(db_ontime, scoring_cfg):
+    from dataclasses import replace
+    # passenger-service departures a month: LAX 100, SNA 10
+    note = " Note: LAX has 10.0 times SNA's departures (passenger service): rates compare per flight, but the airports differ in scale."
+    assert tools.compare_airports(db_ontime, scoring_cfg, "LAX", "SNA")["headline"].endswith(note)
+    wide = replace(scoring_cfg, comparison_size_ratio_note=20.0)
+    assert "Note:" not in tools.compare_airports(db_ontime, wide, "LAX", "SNA")["headline"]
+
+
 def test_compare_without_congestion_figures_is_not_comparable(db_ontime, scoring_cfg):
     r = tools.compare_airports(db_ontime, scoring_cfg, "BOS", "BTV")   # BTV under min_ontime_flights
     assert comparison(r)["dep_delay_rate"][0] == "not comparable"
@@ -558,7 +578,10 @@ def test_demand_gap_facts_from_the_data(db_sfo, scoring_cfg):
     assert req["Months with load factor above 80%"] == "3 of 12"
     assert facts(r)["Peak months (load factor)"]["value"] == "2025-06 81.7%, 2025-07 81.7%, 2025-08 81.7%"
     # spill proxy: HNL (950 - 800) x 3 months = 450 of 27,150 passengers; LAX never above 80%
-    assert req["Spill proxy: passengers carried above 80% load (per route and month)"] == "450 (1.7% of passengers)"
+    # the excess over 80% of seats, not all passengers on full flights (2,850 flew on HNL in summer)
+    assert req["Spill proxy: passengers above the 80% load level (excess over 80% of seats, per route and month)"] == (
+        "450 (1.7% of passengers)")
+    assert any("only the excess counts" in a for a in r["assumptions"])
     assert req["Spill proxy sensitivity (target load factor)"] == "600 at 75% to 300 at 85%"
     assert facts(r)["Routes with the most passengers above 80% load"]["value"] == "SFO-HNL 450 (100.0% of the spill proxy)"
     assert facts(r)["Routes with the most passengers (load factor)"]["value"].startswith("SFO-LAX 18,000 (75.0%)")
@@ -573,7 +596,7 @@ def test_demand_gap_why_is_built_from_the_facts(db_sfo, scoring_cfg):
     assert why == [
         "Airport-wide load factor was above the 80% target in 3 of 12 months, highest in "
         "2025-06 81.7%, 2025-07 81.7%, 2025-08 81.7%.",
-        "Above-target loads are concentrated on routes to HNL (100.0% of the spill proxy on that route).",
+        "Passengers above the target load are concentrated on routes to HNL (100.0% of the spill proxy on that route).",
         "The largest delay cause on arrivals is NAS (50.0% of delay minutes).",
         "Passengers changed +10.4% vs 2024-01..2024-12.",
     ]
@@ -589,7 +612,7 @@ def test_demand_gap_target_comes_from_config(db_sfo, scoring_cfg):
     from dataclasses import replace
     r = tools.explain_demand_gap(db_sfo, replace(scoring_cfg, target_load_factor=0.75), "SFO")
     assert required(r)["Months with load factor above 75%"] == "3 of 12"
-    assert "above 75%" in r["headline"]
+    assert "above the 75% load level" in r["headline"]
 
 
 def test_demand_gap_ambiguous_or_unknown(db_sfo, scoring_cfg):

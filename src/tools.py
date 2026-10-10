@@ -773,7 +773,7 @@ def compare_airports(conn: sqlite3.Connection, cfg: ScoringConfig, a: str, b: st
     status = {c: (rows[c]["ontime_status"] if "congestion" not in result.unavailable else "not_loaded")
               for c in codes}
 
-    metrics, facts, parts = [], [], []
+    metrics, facts, parts, scored = [], [], [], []
     for key, label, short, kind in ONTIME_COMPARED:
         cells = {c: _ontime_cell(key, kind, rows[c] if status[c] == "ok" else None,
                                  store.ontime_monthly(conn, c, window) if status[c] == "ok" else None, z)
@@ -781,6 +781,8 @@ def compare_airports(conn: sqlite3.Connection, cfg: ScoringConfig, a: str, b: st
         winner = scoring.compare_values(*(cells[c]["value"] for c in codes), *(cells[c]["margin"] for c in codes))
         verdict = {"a": f"{codes[0]} higher", "b": f"{codes[1]} higher", "same": "no meaningful difference",
                    None: "not comparable"}[winner]
+        if key in scoring.CONGESTION_COLUMN.values():  # scored congestion metrics (not cancellations)
+            scored.append(winner)
         values = ", ".join(f"{c} {cells[c]['short']}" for c in codes)
         parts.append(f"no meaningful difference in {short} ({values})" if winner == "same"
                      else f"{short}: {verdict} ({values})")
@@ -820,8 +822,25 @@ def compare_airports(conn: sqlite3.Connection, cfg: ScoringConfig, a: str, b: st
     confidence = max(levels, key=CONFIDENCE_ORDER.index)
     no_figures = [f"{c} has no congestion figures ({status[c].replace('_', ' ')})" for c in codes if status[c] != "ok"]
     assumptions += no_figures
+    overall = scoring.overall_verdict(scored)
+    overall_text = {"none": "Overall: not comparable, no scored congestion figure for both airports.",
+                    "same": "Overall: no meaningful difference.",
+                    "a": f"Overall: {codes[0]} is higher on every measure with a meaningful difference.",
+                    "b": f"Overall: {codes[1]} is higher on every measure with a meaningful difference.",
+                    "mixed": "Overall: mixed, no airport is higher on every measure."}[overall]
+    data["overall"] = overall_text
+    assumptions.append("overall verdict over the scored congestion measures (delayed departures, taxi-out, NAS "
+                       "delay per arrival; cancellations are not scored); higher = more congested")
+    deps = {c: int(rows[c]["departures"]) for c in codes}
+    big, small = sorted(codes, key=lambda c: -deps[c])
+    size_note = ""
+    if deps[small] and deps[big] / deps[small] > cfg.comparison_size_ratio_note:
+        size_note = (f" Note: {big} has {deps[big] / deps[small]:.1f} times {small}'s departures (passenger "
+                     "service): rates compare per flight, but the airports differ in scale.")
+        assumptions.append(f"departures differ by more than {cfg.comparison_size_ratio_note:g} times "
+                           "(comparison.size_ratio_note): per-flight rates compare, totals do not")
     headline = (f"{codes[0]} vs {codes[1]}, {window.label} ({level} margins on On-Time figures): "
-                + "; ".join(parts) + "." + "".join(f" {n}." for n in no_figures))
+                + "; ".join(parts) + "." + "".join(f" {n}." for n in no_figures) + f" {overall_text}" + size_note)
     return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
 
 
@@ -917,7 +936,8 @@ def explain_demand_gap(conn: sqlite3.Connection, cfg: ScoringConfig, airport: st
         fact("Unmet demand", "not observable in this data; the figures below are a proxy", True),
         fact(f"Months with load factor above {t_text}", f"{len(above)} of {len(months)}", True),
         fact("Peak months (load factor)", peak_text),
-        fact(f"Spill proxy: passengers carried above {t_text} load (per route and month)",
+        fact(f"Spill proxy: passengers above the {t_text} load level (excess over {t_text} of seats, per route "
+             "and month)",
              f"{spill[target]:,} ({_share(spill_share)} of passengers)", True),
         fact("Spill proxy sensitivity (target load factor)", range_text, True),
         fact("Routes with the most passengers (load factor)",
@@ -937,7 +957,7 @@ def explain_demand_gap(conn: sqlite3.Connection, cfg: ScoringConfig, airport: st
            f"highest in {peak_text}." if len(above) else
            f"Airport-wide load factor stayed at or below the {t_text} target in every month (highest {peak_text})."]
     if spilling.size:
-        why.append(f"Above-target loads are concentrated on routes to {', '.join(spilling.index[:3])} "
+        why.append(f"Passengers above the target load are concentrated on routes to {', '.join(spilling.index[:3])} "
                    f"({_share(top_spill_share)} of the spill proxy on "
                    + ("that route)." if len(spilling) == 1 else f"the top {len(spilling)} routes)."))
     if causes:
@@ -947,15 +967,18 @@ def explain_demand_gap(conn: sqlite3.Connection, cfg: ScoringConfig, airport: st
     data["why"] = why
 
     assumptions = [UNMET_DEMAND_PROXY, NEEDED_TO_MEASURE,
-                   f"spill proxy = passengers above {t_text} of seats, summed per route and month (only loads "
-                   f"above the target count); sensitivity at {', '.join(_target(t) for t in targets)}",
+                   f"spill proxy = passengers in excess of {t_text} x seats, summed over the route-months whose load "
+                   f"factor is above {t_text}: only the excess counts (a route-month at 85% adds 5% of its seats), "
+                   "not every passenger on a full flight; sensitivity at "
+                   f"{', '.join(_target(t) for t in targets)}",
                    PASSENGER_SERVICE, LOAD_FACTOR_PROXY, CAUSE_DEFINITIONS, ONTIME_COVERAGE,
                    f"confidence capped at {PROXY_CONFIDENCE_CAP}: a proxy, not a measurement"]
     confidence = max(row["confidence"], PROXY_CONFIDENCE_CAP, key=CONFIDENCE_ORDER.index)
     headline = (f"PROXY, not a measurement (unmet demand is not observable in this data): {code} load factor was "
                 f"above the {t_text} target in {len(above)} of {len(months)} months in {window.label}"
                 + (f" (peak {peaks.iloc[0]['label']} {_lf(peaks.iloc[0]['load_factor'])})" if len(above) else "")
-                + f"; {spill[target]:,} passengers flew on loads above {t_text} (range {range_text}).")
+                + f"; spill proxy {spill[target]:,} passengers above the {t_text} load level (excess over "
+                  f"{t_text} of seats per route and month; range {range_text}).")
     return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
 
 

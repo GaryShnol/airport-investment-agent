@@ -108,6 +108,7 @@ class ScoringConfig:
     sensitivity_top_n: int              # rank stability: share of runs each airport spends in this top N
     sensitivity_stable_share: float     # the #1 airport is "stable" if first in at least this share of runs
     comparison_confidence_level: float  # compare_airports: margin of error for On-Time figures (0.95)
+    comparison_size_ratio_note: float   # compare_airports: note when departures differ by more than this ratio
     commentary_restricted_tools: tuple[str, ...]  # commentary limited to caveats and next steps
     regions: dict[str, tuple[str, ...]]
     max_ranked: int            # longest ranking a tool returns (keeps tool results small)
@@ -143,6 +144,13 @@ def _share(name: str, value) -> float:
     return float(value)
 
 
+def _ratio(name: str, value) -> float:
+    """A ratio greater than 1."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 1:
+        raise ConfigError(f"{name} must be a number greater than 1 (got {value!r})")
+    return float(value)
+
+
 def load_scoring(path: Path) -> ScoringConfig:
     try:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
@@ -169,6 +177,7 @@ def load_scoring(path: Path) -> ScoringConfig:
             sensitivity_top_n=_positive_int("sensitivity.top_n", raw["sensitivity"]["top_n"]),
             sensitivity_stable_share=_share("sensitivity.stable_share", raw["sensitivity"]["stable_share"]),
             comparison_confidence_level=_share("comparison.confidence_level", raw["comparison"]["confidence_level"]),
+            comparison_size_ratio_note=_ratio("comparison.size_ratio_note", raw["comparison"]["size_ratio_note"]),
             commentary_restricted_tools=tuple(str(t) for t in raw["commentary"]["restricted_tools"] or ()),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
             max_ranked=_positive_int("max_ranked", raw["max_ranked"]),
