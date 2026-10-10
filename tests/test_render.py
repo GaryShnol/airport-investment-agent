@@ -162,3 +162,13 @@ def test_demand_gap_why_is_rendered_as_a_list_under_the_card():
     env = {"headline": "PROXY, not a measurement: ...", "facts": [], "data": {"why": ["First.", "Second."]},
            "assumptions": [], "confidence": "medium"}
     assert "Why (built only from the facts above):\n\n- First.\n- Second." in render_envelope(env)
+
+
+def test_ranking_shows_stability_columns_when_computed():
+    env = {**RANKING, "data": {**RANKING["data"], "ranked": [
+        {**RANKING["data"]["ranked"][0], "stability": {"top_n": 3, "in_top_n_pct": 100.0, "min_rank": 1, "max_rank": 1}},
+        {**RANKING["data"]["ranked"][1], "stability": {"top_n": 3, "in_top_n_pct": 85.0, "min_rank": 2, "max_rank": 4}},
+    ]}}
+    table = render_ranking(env)
+    assert "| In top 3 (runs) | Rank range | Confidence |" in table
+    assert "| 100% | 1 | medium |" in table and "| 85% | 2-4 | low |" in table

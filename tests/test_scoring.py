@@ -89,6 +89,7 @@ def cfg():
         long_haul_min_share=0.02, min_passengers_per_year=5_000, min_ontime_flights=100, target_load_factor=0.8,
         target_sensitivity=(0.75, 0.8, 0.85), peak_months=3, top_routes=5,
         sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1, comparison_confidence_level=0.95,
+        sensitivity_top_n=2, sensitivity_stable_share=0.9,
         regions={"north": ("AA", "BB"), "south": ("CC",)}, max_ranked=25,
     )
 
@@ -381,3 +382,41 @@ def test_mean_margin_from_monthly_spread():
 ])
 def test_compare_values_uses_the_combined_margin(a, b, ma, mb, expected):
     assert scoring.compare_values(a, b, ma, mb) == expected
+
+
+# --- rank stability (P3.5) -------------------------------------------------------------------
+
+def test_perturbed_weights_stay_within_the_jitter_and_sum_to_one():
+    import numpy as np
+    w = scoring.perturb_weights({"a": 0.5, "b": 0.3, "c": 0.2}, 0.25, np.random.default_rng(7))
+    assert sum(w.values()) == pytest.approx(1.0)
+    raw = {"a": 0.5, "b": 0.3, "c": 0.2}
+    ratios = [w[k] / raw[k] for k in raw]
+    assert max(ratios) / min(ratios) <= 1.25 / 0.75 + 1e-9
+
+
+def test_rank_stability_is_deterministic_for_a_seed(metrics, cfg):
+    result = scoring.score(metrics, cfg, FULL)
+    ranking = scoring.rank(result, scoring.NATIONAL, cfg)
+    first = scoring.rank_stability(ranking, result.weights_used, cfg)
+    assert first == scoring.rank_stability(ranking, result.weights_used, cfg)
+    assert set(first) == set(ranking.ranked["iata"])
+    for s in first.values():
+        assert s["runs"] == cfg.sensitivity_runs and s["top_n"] == cfg.sensitivity_top_n
+        assert 1 <= s["min_rank"] <= s["max_rank"] <= len(first)
+        assert 0 <= s["first"] <= s["in_top_n"] <= s["runs"]
+
+
+def test_rank_stability_without_jitter_keeps_the_base_ranking(metrics, cfg):
+    result = scoring.score(metrics, cfg, FULL)
+    ranking = scoring.rank(result, scoring.NATIONAL, cfg)
+    s = scoring.rank_stability(ranking, result.weights_used, replace(cfg, sensitivity_jitter=0.0))
+    assert {iata: (v["min_rank"], v["max_rank"]) for iata, v in s.items()} == {
+        iata: (rank, rank) for iata, rank in zip(ranking.ranked["iata"], ranking.ranked["rank"])}
+
+
+def test_rank_stability_seed_changes_the_draws(metrics, cfg):
+    import numpy as np
+    a = scoring.perturb_weights(cfg.weights, 0.25, np.random.default_rng(1))
+    b = scoring.perturb_weights(cfg.weights, 0.25, np.random.default_rng(2))
+    assert a != b

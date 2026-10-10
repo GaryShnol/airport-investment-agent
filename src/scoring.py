@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from statistics import NormalDist, stdev
 from typing import Iterable, Mapping
 
+import numpy as np
 import pandas as pd
 
 from src.config import ScoringConfig
@@ -166,6 +167,16 @@ def _confidence(window: Window, missing: list[str], unavailable: dict[str, str],
     return ("medium", reasons) if reasons else ("high", [])
 
 
+def weighted_score(pct: pd.DataFrame, weights: Mapping[str, float], peer: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """(score, weight present) per row: the weighted mean of the component percentiles each airport
+    has. Dividing by the sum of the weights present renormalizes per airport; no weighted component
+    present, or outside the peer set -> no score. Rounded to SCORE_DECIMALS so float noise (1e-16)
+    never decides an exact tie; ties then break by IATA. Shared by `score` and `rank_stability`."""
+    w = pd.Series(weights, dtype=float)
+    present = pct.notna().mul(w).sum(axis=1)
+    return ((pct * w).sum(axis=1) / present.where(peer & (present > 0))).round(SCORE_DECIMALS), present
+
+
 def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreResult:
     """Score every peer-set airport; `metrics` has the columns of `store.airport_metrics`.
 
@@ -210,13 +221,8 @@ def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreRes
     for component in available:
         t[f"pct_{component}"] = percentile_rank(t.loc[peer, RAW_COLUMN[component]].astype(float))
 
-    # Weighted mean over the components each airport has: dividing by the sum of the weights
-    # present renormalizes per airport. No weighted component present -> no score.
     pct = t[[f"pct_{c}" for c in available]].set_axis(available, axis=1)
-    w = pd.Series(weights_used)
-    present_weight = pct.notna().mul(w).sum(axis=1)
-    # Rounded so float noise (1e-16) never decides an exact tie; ties then break by IATA.
-    t["score"] = ((pct * w).sum(axis=1) / present_weight.where(peer & (present_weight > 0))).round(SCORE_DECIMALS)
+    t["score"], present_weight = weighted_score(pct, weights_used, peer)
     t["missing"] = [[c for c in available if pd.isna(pct.at[i, c])] if peer[i] else [] for i in t.index]
     t["weights_used"] = [{c: wt / present_weight[i] for c, wt in weights_used.items() if c not in miss}
                          if pd.notna(t.at[i, "score"]) else {} for i, miss in t["missing"].items()]
@@ -251,6 +257,39 @@ def rank(result: ScoreResult, region: str, cfg: ScoringConfig) -> RegionRanking:
     excluded["reason"] = [f"{p:,} passenger-service passengers, below the {cfg.min_passengers_per_year:,} floor"
                           for p in excluded["passengers"]]
     return RegionRanking(region, states, ranked.reset_index(drop=True), excluded.reset_index(drop=True), result)
+
+
+# --- rank stability (rank_airports) -----------------------------------------------------------
+
+def perturb_weights(weights: Mapping[str, float], jitter: float, rng: np.random.Generator) -> dict[str, float]:
+    """Each weight times (1 + u), u uniform in [-jitter, +jitter], drawn in key order; renormalized."""
+    draws = rng.uniform(-jitter, jitter, size=len(weights))
+    return renormalize({k: w * (1 + d) for (k, w), d in zip(weights.items(), draws)}, weights)
+
+
+def rank_stability(ranking: RegionRanking, weights: Mapping[str, float], cfg: ScoringConfig) -> dict[str, dict]:
+    """How much each ranked airport's rank depends on the weights. Seeded and deterministic.
+
+    `sensitivity_runs` times: perturb `weights` (the weights the ranking used) with
+    `perturb_weights`, recompute every score from the same percentiles with `weighted_score`, and
+    re-rank the region (ties by IATA). Per airport: runs in the top `sensitivity_top_n`, runs ranked
+    first, and the min and max rank. Same seed and inputs -> same output."""
+    t = ranking.ranked
+    if t.empty:
+        return {}
+    pct = t[[f"pct_{c}" for c in weights]].set_axis(list(weights), axis=1)
+    peer = pd.Series(True, index=t.index)
+    rng = np.random.default_rng(cfg.sensitivity_seed)
+    ranks = {iata: [] for iata in t["iata"]}
+    for _ in range(cfg.sensitivity_runs):
+        scores, _present = weighted_score(pct, perturb_weights(weights, cfg.sensitivity_jitter, rng), peer)
+        order = pd.DataFrame({"iata": t["iata"], "score": scores}).sort_values(
+            ["score", "iata"], ascending=[False, True], na_position="last", kind="stable")
+        for position, iata in enumerate(order["iata"], start=1):
+            ranks[iata].append(position)
+    return {iata: {"runs": cfg.sensitivity_runs, "top_n": cfg.sensitivity_top_n,
+                   "in_top_n": sum(r <= cfg.sensitivity_top_n for r in rs), "first": rs.count(1),
+                   "min_rank": min(rs), "max_rank": max(rs)} for iata, rs in ranks.items()}
 
 
 # --- demand-gap proxy (explain_demand_gap) -----------------------------------------------------

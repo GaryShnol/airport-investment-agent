@@ -595,3 +595,42 @@ def test_demand_gap_target_comes_from_config(db_sfo, scoring_cfg):
 def test_demand_gap_ambiguous_or_unknown(db_sfo, scoring_cfg):
     assert tools.explain_demand_gap(db_sfo, scoring_cfg, "Chicago")["candidates"] == ["ORD", "MDW"]
     assert "No airport" in tools.explain_demand_gap(db_sfo, scoring_cfg, "Atlantis")["error"]
+
+
+# --- rank stability (P3.5) -----------------------------------------------------------------------
+
+def test_rank_airports_reports_stability_per_airport(db_ontime, scoring_cfg):
+    r = tools.rank_airports(db_ontime, scoring_cfg, "new_england")
+    for x in r["data"]["ranked"]:
+        s = x["stability"]
+        assert s["runs"] == scoring_cfg.sensitivity_runs and s["top_n"] == scoring_cfg.sensitivity_top_n
+        assert s["min_rank"] <= x["rank"] <= s["max_rank"]
+    by = facts(r)
+    assert by["Rank stability (method)"]["value"] == "20 runs, each weight changed at random by up to ±25% and renormalized (seed 42)"
+    top = r["data"]["ranked"][0]
+    assert by["Stability of the top airport"]["value"] == f"{top['iata']} first in {top['stability']['first']} of 20 runs"
+    assert "of stability runs, ranks" in by[f"#1 {top['iata']} ({top['name']})"]["value"]
+
+
+def test_rank_stability_is_deterministic_in_the_tool(db_ontime, scoring_cfg):
+    a = tools.rank_airports(db_ontime, scoring_cfg, "national")
+    b = tools.rank_airports(db_ontime, scoring_cfg, "national")
+    assert [x["stability"] for x in a["data"]["ranked"]] == [x["stability"] for x in b["data"]["ranked"]]
+
+
+def test_unstable_top_airport_gets_a_headline_note(db_ontime, scoring_cfg, monkeypatch):
+    real = tools.scoring.rank_stability
+
+    def shaky(ranking, weights, cfg):
+        out = real(ranking, weights, cfg)
+        out[ranking.ranked["iata"].iloc[0]].update(first=12)
+        return out
+
+    monkeypatch.setattr(tools.scoring, "rank_stability", shaky)
+    r = tools.rank_airports(db_ontime, scoring_cfg, "new_england")
+    top = r["data"]["ranked"][0]["iata"]
+    assert r["headline"].endswith(f"Not stable: {top} is first in only 12 of 20 runs with perturbed weights.")
+
+
+def test_stable_top_airport_has_no_note(db_ontime, scoring_cfg):
+    assert "Not stable" not in tools.rank_airports(db_ontime, scoring_cfg, "new_england")["headline"]

@@ -517,6 +517,7 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
     scenario = merged is not None
     components = list(result.weights_used)
     base_rank = dict(zip(base_ranking.ranked["iata"], base_ranking.ranked["rank"]))
+    stability = scoring.rank_stability(ranking, result.weights_used, cfg)
 
     order = ranking.ranked
     if sort_by != "score":  # highest first, missing last, ties by score then IATA
@@ -542,6 +543,10 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
                                   "passengers": int(r["passengers"])}[sort_by]
         if scenario:
             item["base_rank"] = int(base_rank[r["iata"]])
+        s = stability[r["iata"]]
+        item["stability"] = {"top_n": s["top_n"], "in_top_n_pct": _pct(s["in_top_n"] / s["runs"], 0),
+                             "first": s["first"], "runs": s["runs"], "min_rank": s["min_rank"],
+                             "max_rank": s["max_rank"]}
         if r["missing"]:
             item["missing"] = r["missing"]
             item["weights_used"] = {c: round(w, 3) for c, w in r["weights_used"].items()}
@@ -563,6 +568,8 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         "weights_used": {c: round(w, 3) for c, w in result.weights_used.items()},
         "components_unavailable": result.unavailable,
         "ties": [[x["iata"] for x in ranked if x["score"] == s] for s in ties],
+        "stability": {"runs": cfg.sensitivity_runs, "weight_jitter": cfg.sensitivity_jitter,
+                      "seed": cfg.sensitivity_seed, "top_n": cfg.sensitivity_top_n},
     }
     if scenario:
         data["weights_base"] = {c: round(w, 3) for c, w in base_result.weights_used.items()}
@@ -601,8 +608,22 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
     if sort_by != "score":
         facts.append(fact("Sorted by", f"{SORT_LABELS[sort_by]}, highest first (not the score)", True))
     facts += [fact(f"#{x['rank']} {x['iata']} ({x['name']})", _ranked_summary(x)) for x in ranked]
-    return _envelope(conn, window, data, assumptions, confidence, facts,
-                     headline=_ranking_headline(data, key, sort_by, scenario))
+    headline = _ranking_headline(data, key, sort_by, scenario)
+    if ranked:
+        facts.append(fact("Rank stability (method)", _stability_method(cfg)))
+        assumptions.append(f"rank stability: {_stability_method(cfg)}; it tests the weights, not the data")
+        top = next((x for x in ranked if x.get("score_rank", x["rank"]) == 1), ranked[0])  # the score's #1
+        s = top["stability"]
+        facts.append(fact("Stability of the top airport", f"{top['iata']} first in {s['first']} of {s['runs']} runs"))
+        if sort_by == "score" and s["first"] < cfg.sensitivity_stable_share * s["runs"]:
+            headline += (f" Not stable: {top['iata']} is first in only {s['first']} of {s['runs']} runs "
+                         "with perturbed weights.")
+    return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
+
+
+def _stability_method(cfg: ScoringConfig) -> str:
+    return (f"{cfg.sensitivity_runs} runs, each weight changed at random by up to ±{cfg.sensitivity_jitter:.0%} "
+            f"and renormalized (seed {cfg.sensitivity_seed})")
 
 
 def _ranking_headline(data: dict, key: str, sort_by: str, scenario: bool) -> str:
@@ -636,6 +657,8 @@ def _ranked_summary(item: dict) -> str:
         raw = next(val for key, val in v.items() if key != "percentile")
         shown = f"{raw:,}" if isinstance(raw, int) else _share(raw)
         parts.append(f"{COMPONENT_LABELS.get(c, c)} {shown}, percentile {pct}")
+    if s := item.get("stability"):
+        parts.append(f"top {s['top_n']} in {s['in_top_n_pct']:.0f}% of stability runs, ranks {s['min_rank']}-{s['max_rank']}")
     return "; ".join(parts)
 
 

@@ -105,6 +105,8 @@ class ScoringConfig:
     sensitivity_runs: int
     sensitivity_jitter: float
     sensitivity_seed: int
+    sensitivity_top_n: int              # rank stability: share of runs each airport spends in this top N
+    sensitivity_stable_share: float     # the #1 airport is "stable" if first in at least this share of runs
     comparison_confidence_level: float  # compare_airports: margin of error for On-Time figures (0.95)
     regions: dict[str, tuple[str, ...]]
     max_ranked: int            # longest ranking a tool returns (keeps tool results small)
@@ -163,6 +165,8 @@ def load_scoring(path: Path) -> ScoringConfig:
             sensitivity_runs=int(raw["sensitivity"]["runs"]),
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),
             sensitivity_seed=int(raw["sensitivity"]["seed"]),
+            sensitivity_top_n=_positive_int("sensitivity.top_n", raw["sensitivity"]["top_n"]),
+            sensitivity_stable_share=_share("sensitivity.stable_share", raw["sensitivity"]["stable_share"]),
             comparison_confidence_level=_share("comparison.confidence_level", raw["comparison"]["confidence_level"]),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
             max_ranked=_positive_int("max_ranked", raw["max_ranked"]),

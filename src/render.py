@@ -57,6 +57,16 @@ def render_facts(envelope: dict) -> str:
     return _table(["Fact", "Value"], rows) if rows else ""
 
 
+def _stability_cells(row: dict, top_n: int | None) -> list[str]:
+    s = row.get("stability")
+    if not top_n:
+        return []
+    if not s:
+        return ["n/a", "n/a"]
+    span = str(s["min_rank"]) if s["min_rank"] == s["max_rank"] else f"{s['min_rank']}-{s['max_rank']}"
+    return [f"{s['in_top_n_pct']:.0f}%", span]
+
+
 def render_ranking(envelope: dict) -> str:
     """Ranking table from rank_airports `data.ranked` (raw values, not percentiles), plus ties."""
     data = envelope.get("data") or {}
@@ -68,6 +78,8 @@ def render_ranking(envelope: dict) -> str:
              if any(key in r for r in ranked)]
     # Congestion column only when the ranking used it (On-Time loaded): share of departures delayed >= 15 min.
     congestion = any("congestion" in r.get("components", {}) for r in ranked)
+    # Rank stability columns when the tool computed them (P3.5): share of runs in the top N, rank range.
+    stable = next((r["stability"]["top_n"] for r in ranked if r.get("stability")), None)
     rows = []
     for r in ranked:
         comp = r.get("components", {})
@@ -77,9 +89,10 @@ def render_ranking(envelope: dict) -> str:
                      "n/a" if passengers is None else f"{passengers:,}",
                      _pct(comp.get("utilization", {}).get("load_factor_pct")),
                      _pct(comp.get("growth", {}).get("growth_pct"), signed=True),
-                     *delayed, r["confidence"]])
+                     *delayed, *_stability_cells(r, stable), r["confidence"]])
     header = ["Rank", *[label for _, label in extra], "Airport", "Name", "Score", "Passengers", "Load factor",
-              "Growth", *(["Delayed departures"] if congestion else []), "Confidence"]
+              "Growth", *(["Delayed departures"] if congestion else []),
+              *([f"In top {stable} (runs)", "Rank range"] if stable else []), "Confidence"]
     table = _table(header, rows)
     total = data.get("ranked_total", len(ranked))
     if total > len(ranked):
