@@ -2,7 +2,7 @@
 
 Task board for the Airport Investment Intelligence Agent (Deloitte Digital FDE exam, 24h budget).
 Legend: [x] done · [~] written, not yet verified · [ ] todo · (stretch) only if time allows.
-Last updated: 2026-10-10. Current milestone: **M1**.
+Last updated: 2026-10-10. Current milestone: **M2**.
 
 ## Working agreements
 - Build in vertical slices: after M2 the app already answers questions end to end; later milestones add data and depth.
@@ -31,7 +31,7 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 - [x] P0.8 Align `CLAUDE.md`, `docs/plan.md` and the README diagrams (single source)
 - [x] P0.9 Repo hygiene: cleanup, `.gitignore`, `.gitattributes`, first commits, pushed to GitHub
 
-## M1 - Foundations (current)
+## M1 - Foundations
 - [x] P1.1 Config: `.env.example`, `config/weights.yaml`, `src/config.py`
 - [x] P1.2 LLM provider registry `src/llm.py` (openai, ollama, OpenAI-compatible via base URL)
 - [x] P1.3 Config and provider tests (`tests/test_config.py`): 8 of 8 pass with `uv run pytest`
@@ -41,10 +41,10 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 - [x] P1.7 Create the real `.env`; smoke-test `get_chat_model` with a local Ollama model (works; finding: the reply contained a `<think>` block, handled in P2.7 and P2.10)
 - [x] P1.8 Check which agent constructor the installed LangGraph/LangChain version provides
 
-## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial)
-- [ ] P2.1 `src/store.py`: SQLite schema and queries (schema in `docs/plan.md`)
-- [ ] P2.2 Ingest T-100 to `t100_route_month`; verify ANC 87,988 departures and the long-haul shares, and SFO load factor; re-baseline the acceptance values in `docs/plan.md` under the passenger-service definition
-- [ ] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
+## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial) (current)
+- [x] P2.1 `src/store.py`: SQLite schema and queries (schema in `docs/plan.md`)
+- [x] P2.2 Ingest T-100 to `t100_route_month`; verify ANC 87,988 departures and the long-haul shares, and SFO load factor; re-baseline the acceptance values in `docs/plan.md` under the passenger-service definition
+- [x] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
 - [ ] P2.4 Scoring tests first: percentile, load factor, long-haul share, growth, renormalization when a component is missing
 - [ ] P2.5 `src/scoring.py` with the available components (utilization, scale, growth, long haul) and deterministic confidence
 - [ ] P2.6 Tool envelope and tools: `data_status`, `resolve_airport` (handles "LA" ambiguity), `airport_metrics`, `rank_airports`

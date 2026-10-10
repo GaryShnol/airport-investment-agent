@@ -10,14 +10,15 @@ Task status lives in `TASKS.md`. This file holds the design.
 `src/llm.py`: `PROVIDERS = {"openai": ..., "ollama": ...}`; `get_chat_model(settings)` returns a LangChain `BaseChatModel`. Lazy imports. `openai` accepts `LLM_BASE_URL` for any OpenAI-compatible server (Ollama `/v1`, LM Studio, vLLM). No class hierarchy: LangChain already provides the common interface. Local models are weaker at tool calling, so tools are few, typed and return small JSON; the agent is tested with a fake model too.
 
 ## SQLite schema
-- `meta(source, last_period, upstream_latest, checked_at, fetched_at)`
+- `meta(source, last_period, upstream_latest, checked_at, fetched_at)`  one row per source (freshness summary)
+- `ingest_log(source, period, rows, loaded_at)`  one row per loaded (source, month); makes ingest idempotent
 - `airports(iata, name, state, region, cbsa, lat, lon)`
-- `t100_route_month(origin, dest, year, month, config, distance, departures, seats, passengers)`  config = pax | cargo | combi | unknown
+- `t100_route_month(origin, origin_state, dest, year, month, config, distance, departures, seats, passengers)`  origin_state = ORIGIN_STATE_ABR (peer-set filter)  config = pax | cargo | combi | unknown
 - `ontime_airport_month(airport, year, month, dep_flights, dep_del15, dep_cancelled, taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, nas_min, security_min, late_aircraft_min)`  departure side at the origin airport; arrival side and cause minutes at the destination airport
 - `census_metro(cbsa, year, population, fetched_at)`
 
 ## Ingest (offline, idempotent, `src/ingest.py`)
-- Reads files from `RAW_DATA_DIR`; skips (source, year, month) already in `meta`; validates ZIPs with `zipfile`; aggregates On-Time in a stream with `usecols`.
+- Reads files from `RAW_DATA_DIR`; skips (source, month) already in `ingest_log`; validates ZIPs with `zipfile`; aggregates On-Time in a stream with `usecols`.
 - `--check`: HEAD the next On-Time month (404 = not published) and read T-100 "Latest Available Data"; stores `upstream_latest`, `checked_at`; prints what is missing. No downloads.
 - Optional (stretch): `--download` fetches missing On-Time months (direct URLs) and T-100 (form POST). Any failure falls back to local files.
 - `seed/airport.db` is built from the aggregated tables and committed; the container copies it to the `DB_PATH` volume if absent.
@@ -65,9 +66,10 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 Dockerfile + `docker-compose.yml` (app service, `env_file: .env`, volume for the DB, entrypoint seeds the DB). Local model from a container: `OLLAMA_BASE_URL=http://host.docker.internal:11434`. GitHub Actions runs `pytest`. README: two-command quickstart. `docs/design.md`: scoring methodology, tradeoffs, where AI is used, limits, production path (scheduled ingest, tracing, secrets, evals).
 
 ## Acceptance values (calendar 2025; become golden tests in P3.5)
-These came from the exploratory pass (passenger-only = config 1; SFO load factor = rows with seats). Re-baseline in P2.2 under the Definitions above; the ANC passenger-only share may move by about 0.1 point because combi flights are now included, and the new numbers replace these.
-- T-100 2025 ANC, all configs: 87,988 departures; share >= 2,500 mi = 43.2%; passenger-config only = 11.4%.
-- T-100 2025 SFO load factor = 82.3%.
+Re-baselined in P2.2 from `t100_route_month` under the Definitions above (passenger service = config 1 or 3). Only the passenger figures moved, because combi flights are now included; the exploratory pass used config 1 only.
+- T-100 2025 ANC, all configs: 87,988 departures; share >= 2,500 mi = 43.2% (unchanged).
+- T-100 2025 ANC, passenger service: share >= 2,500 mi = 11.5% (was 11.4% with config 1 only). Sensitivity: >= 1,500 mi 19.3%, >= 3,000 mi 4.3% (were 19.4% and 4.0%).
+- T-100 2025 SFO load factor, passenger service = 82.3% (82.26%; unchanged).
 - On-Time 2025: 7,001,619 rows; January = 539,747.
 
 ## Data validation (first pass on T-100 2024-2025, done before building)
