@@ -105,7 +105,7 @@ def required(result):
 
 
 def test_airport_metrics_required_facts(db, scoring_cfg):
-    f = facts(tools.airport_metrics(db, scoring_cfg, "ANC", focus="long_haul"))
+    f = facts(tools.airport_metrics(db, scoring_cfg, "ANC", topic="long_haul"))
     required = {k: v["value"] for k, v in f.items() if v["required"]}
     assert required == {
         "Long-haul threshold": "2,500 mi",
@@ -116,31 +116,53 @@ def test_airport_metrics_required_facts(db, scoring_cfg):
         "Data period": "2025-01..2025-12",
         "Confidence": "medium",
     }
-    assert f["Passengers (passenger service)"] == {"value": "115,500", "required": False}
+    assert "Passengers (passenger service)" not in f  # long-haul topic: no demand rows
 
 
-def test_airport_metrics_focus_load_factor_does_not_require_long_haul(db, scoring_cfg):
-    r = tools.airport_metrics(db, scoring_cfg, "ANC", focus="load_factor")
-    assert required(r) == {"Load factor (passenger service, a demand-pressure proxy)": "85.9%",
+def test_airport_metrics_topic_demand_shows_no_long_haul_rows(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", topic="demand")
+    assert required(r) == {"Passengers (passenger service)": "115,500",
+                           "Load factor (passenger service, a demand-pressure proxy)": "85.9%",
                            "Data period": "2025-01..2025-12", "Confidence": "medium"}
-    assert facts(r)["Long-haul threshold"] == {"value": "2,500 mi", "required": False}  # still shown
+    assert not any("ong-haul" in label or label.startswith("Departures >=") for label in facts(r))
+    assert "long_haul" not in r["data"] and r["data"]["topic"] == "demand"
+    assert not any("long haul" in a or "cargo" in a for a in r["assumptions"])
+    assert ">=" not in r["headline"]
 
 
-def test_airport_metrics_focus_growth_and_all(db, scoring_cfg):
-    growth = required(tools.airport_metrics(db, scoring_cfg, "ANC", focus="growth"))
-    assert set(growth) == {"Passenger growth vs 2024-01..2024-12", "Data period", "Confidence"}
-    every = required(tools.airport_metrics(db, scoring_cfg, "ANC"))  # default focus = all
-    assert set(every) == set(required(tools.airport_metrics(db, scoring_cfg, "ANC", focus="long_haul"))) | set(
-        growth) | {"Load factor (passenger service, a demand-pressure proxy)"}
+def test_airport_metrics_topic_growth_rows(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", topic="growth")
+    assert list(facts(r)) == ["Airport", "Passengers 2025-01..2025-12 (passenger service)",
+                              "Passengers 2024-01..2024-12", "Passenger growth vs 2024-01..2024-12",
+                              "Data period", "Confidence"]
+    assert set(required(r)) == {"Passenger growth vs 2024-01..2024-12", "Data period", "Confidence"}
+    assert "load_factor_pct" not in r["data"] and "long_haul" not in r["data"]
 
 
-def test_airport_metrics_unknown_focus_is_an_error(db, scoring_cfg):
-    r = tools.airport_metrics(db, scoring_cfg, "ANC", focus="delays")
-    assert r["data"] is None and "focus must be one of" in r["error"]
+def test_airport_metrics_topic_all_is_the_union(db, scoring_cfg):
+    def labels(topic, only_required=False):
+        r = tools.airport_metrics(db, scoring_cfg, "ANC", topic=topic)
+        return set(required(r) if only_required else facts(r))
+    every = labels("all", True)
+    assert every == labels("long_haul", True) | labels("demand", True) | labels("growth", True)
+    # growth's passenger row is folded into the demand row when both are shown
+    assert labels("all") == labels("long_haul") | labels("demand") | labels("growth") - {
+        "Passengers 2025-01..2025-12 (passenger service)"}
+
+
+@pytest.mark.parametrize("topic", ["long_haul", "demand", "growth", "all"])
+def test_airport_metrics_always_has_the_data_period(db, scoring_cfg, topic):
+    r = tools.airport_metrics(db, scoring_cfg, "BOS", topic=topic)
+    assert required(r)["Data period"] == "2025-01..2025-12" and r["data_period"] == "2025-01..2025-12"
+
+
+def test_airport_metrics_unknown_topic_is_an_error(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", topic="delays")
+    assert r["data"] is None and "topic must be one of" in r["error"]
 
 
 def test_plain_error_envelope_has_no_facts(db, scoring_cfg):
-    assert tools.airport_metrics(db, scoring_cfg, "ANC", focus="delays")["facts"] == []
+    assert tools.airport_metrics(db, scoring_cfg, "ANC", topic="delays")["facts"] == []
 
 
 def test_airport_metrics_custom_threshold_is_added_to_sensitivity(db, scoring_cfg):
@@ -213,17 +235,17 @@ def test_every_envelope_has_a_headline(db, scoring_cfg):
 
 
 def test_long_haul_headline_states_definition_both_bases_and_counts(db, scoring_cfg):
-    r = tools.airport_metrics(db, scoring_cfg, "ANC", focus="long_haul")
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", topic="long_haul")
     # per year: all flights 1,464 departures, 744 >= 2,500 mi; passenger service 864, 144
     assert r["headline"] == ("50.8% of all departures from ANC (incl. cargo) are >= 2,500 mi (744 of 1,464); "
                              "passenger service: 16.7% (144 of 864).")
     assert facts(r)["Departures >= 2,500 mi, all flights"] == {"value": "744 of 1,464", "required": False}
 
 
-def test_metrics_headline_follows_focus(db, scoring_cfg):
-    load = tools.airport_metrics(db, scoring_cfg, "ANC", focus="load_factor")["headline"]
-    assert load.startswith("ANC load factor (passenger service) is 85.9%") and ">= 2,500" not in load
-    growth = tools.airport_metrics(db, scoring_cfg, "ANC", focus="growth")["headline"]
+def test_metrics_headline_follows_topic(db, scoring_cfg):
+    load = tools.airport_metrics(db, scoring_cfg, "ANC", topic="demand")["headline"]
+    assert load == "ANC in 2025-01..2025-12: 115,500 passengers on 134,400 seats (passenger service), load factor 85.9%."
+    growth = tools.airport_metrics(db, scoring_cfg, "ANC", topic="growth")["headline"]
     assert growth.startswith("ANC passengers changed +10.0% in 2025-01..2025-12")
 
 

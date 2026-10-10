@@ -31,10 +31,10 @@ CONFIDENCE_ORDER = ("high", "medium", "low")
 PASSENGER_SERVICE = "passenger service = aircraft config passenger or combi (BTS T-100), departures > 0"
 # Display cap for candidate and excluded lists: keeps envelopes small for local models' short context.
 MAX_LISTED = 5
-# airport_metrics `focus`: which facts are required (ensure_facts appends them if the answer omits
-# them). All facts are always returned; focus only decides what the answer must mention.
-Focus = Literal["long_haul", "load_factor", "growth", "all"]
-FOCUS_VALUES = get_args(Focus)
+# airport_metrics `topic`: which facts, data and assumptions are returned, and which facts are
+# required (ensure_facts appends them if the answer omits them). demand = passengers, seats, load factor.
+Topic = Literal["long_haul", "demand", "growth", "all"]
+TOPIC_VALUES = get_args(Topic)
 # resolve_airport suggestions: difflib ratio needed to suggest an airport for an unmatched name.
 SUGGEST_MIN_SIMILARITY = 0.6
 # Ranked airports named in a ranking headline; the table lists the rest.
@@ -250,14 +250,16 @@ def _shares(counts: dict) -> dict[int, float | None]:
 
 
 def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
-                    threshold_mi: int | None = None, focus: str = "all") -> dict:
-    """Passengers, load factor, growth and long-haul share (all flights and passenger service).
+                    threshold_mi: int | None = None, topic: str = "all") -> dict:
+    """One airport's metrics for a `topic` (TOPIC_VALUES): long_haul (share of departures for all
+    flights and for passenger service, with sensitivity), demand (passengers, seats, load factor),
+    growth (passengers vs the previous 12 months), or all of them.
 
-    `focus` (FOCUS_VALUES) marks the facts the question is about as required, so a load-factor
-    question does not get the long-haul sensitivity appended; "all" requires every metric."""
-    focus = (focus or "all").strip().lower()
-    if focus not in FOCUS_VALUES:
-        return _error(conn, f"focus must be one of: {', '.join(FOCUS_VALUES)}")
+    The topic decides which facts, data and assumptions are returned (so a passenger question
+    shows no long-haul rows) and which facts are required; the data period is always included."""
+    topic = (topic or "all").strip().lower()
+    if topic not in TOPIC_VALUES:
+        return _error(conn, f"topic must be one of: {', '.join(TOPIC_VALUES)}")
     code, err = _resolve_code(conn, cfg, airport)
     if err:
         return err
@@ -271,19 +273,44 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
     if rows.empty:
         return _error(conn, f"{code} has no passenger service in {window.label}")
     row = rows.iloc[0]
+    shows = {t: topic in (t, "all") for t in TOPIC_VALUES if t != "all"}
 
-    thresholds = sorted({threshold, *cfg.long_haul_sensitivity_miles})
-    every = store.long_haul_counts(conn, code, window, thresholds)
-    pax = store.long_haul_counts(conn, code, window, thresholds, store.PASSENGER_CONFIGS)
-    every_pct, pax_pct = _shares(every), _shares(pax)
-    data = {
-        "airport": code, "name": row["name"], "state": row["state"],
-        "passengers": int(row["passengers"]), "seats": int(row["seats"]),
-        "departures_passenger_service": int(row["departures"]),
-        "load_factor_pct": _pct(row["load_factor"]),
-        "growth_pct": _pct(row["growth"]), "previous_passengers": int(row["prev_passengers"]),
-        "months_active": int(row["months_active"]), "in_peer_set": bool(row["in_peer_set"]),
-        "long_haul": {
+    data = {"airport": code, "name": row["name"], "state": row["state"], "topic": topic,
+            "passengers": int(row["passengers"]), "months_active": int(row["months_active"]),
+            "in_peer_set": bool(row["in_peer_set"])}
+    facts = [fact("Airport", f"{code} ({row['name']})")]
+    assumptions = [PASSENGER_SERVICE]
+    headlines = []
+
+    if shows["demand"]:
+        data.update(seats=int(row["seats"]), departures_passenger_service=int(row["departures"]),
+                    load_factor_pct=_pct(row["load_factor"]))
+        facts += [fact("Passengers (passenger service)", f"{data['passengers']:,}", True),
+                  fact("Seats (passenger service)", f"{data['seats']:,}"),
+                  fact("Departures (passenger service)", f"{data['departures_passenger_service']:,}"),
+                  fact("Load factor (passenger service, a demand-pressure proxy)", _share(data["load_factor_pct"]),
+                       True)]
+        assumptions.append(LOAD_FACTOR_PROXY)
+        headlines.append(f"{code} in {window.label}: {data['passengers']:,} passengers on {data['seats']:,} seats "
+                         f"(passenger service), load factor {_share(data['load_factor_pct'])}.")
+
+    if shows["growth"]:
+        data.update(growth_pct=_pct(row["growth"]), previous_passengers=int(row["prev_passengers"]))
+        previous = f"{window.prev_start}..{window.prev_end}"
+        if not shows["demand"]:
+            facts.append(fact(f"Passengers {window.label} (passenger service)", f"{data['passengers']:,}"))
+        facts += [fact(f"Passengers {previous}", f"{data['previous_passengers']:,}"),
+                  fact(f"Passenger growth vs {previous}", _share(data["growth_pct"]), True)]
+        assumptions.append(f"growth = passengers {window.label} vs {previous}")
+        headlines.append(f"{code} passengers changed {_signed(data['growth_pct'])} in {window.label} "
+                         f"({data['passengers']:,}) vs {previous} ({data['previous_passengers']:,}).")
+
+    if shows["long_haul"]:
+        thresholds = sorted({threshold, *cfg.long_haul_sensitivity_miles})
+        every = store.long_haul_counts(conn, code, window, thresholds)
+        pax = store.long_haul_counts(conn, code, window, thresholds, store.PASSENGER_CONFIGS)
+        every_pct, pax_pct = _shares(every), _shares(pax)
+        data["long_haul"] = {
             "threshold_mi": threshold,
             "all_flights": {"departures": every["departures"], "long_haul_departures": every["long_haul"][threshold],
                             "share_pct": every_pct[threshold]},
@@ -291,35 +318,23 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
                                   "share_pct": pax_pct[threshold]},
             "sensitivity": [{"threshold_mi": t, "all_flights_pct": every_pct[t], "passenger_service_pct": pax_pct[t]}
                             for t in thresholds],
-        },
-    }
-    assumptions = [
-        PASSENGER_SERVICE, LOAD_FACTOR_PROXY,
-        "all flights = every aircraft config, including cargo and undocumented",
-        f"long haul = segment distance >= {threshold} mi, share of departures",
-        f"growth = passengers {window.label} vs {window.prev_start}..{window.prev_end}",
-    ]
-    need = {f: focus in (f, "all") for f in FOCUS_VALUES}
-    facts = [
-        fact("Airport", f"{code} ({row['name']})"),
-        fact("Long-haul threshold", _miles(threshold), need["long_haul"]),
-        fact(f"Long-haul share >= {_miles(threshold)}, all flights (including cargo)",
-             _share(every_pct[threshold]), need["long_haul"]),
-        fact(f"Long-haul share >= {_miles(threshold)}, passenger service", _share(pax_pct[threshold]),
-             need["long_haul"]),
-        fact(f"Departures >= {_miles(threshold)}, all flights", _of(every, threshold)),
-        fact(f"Departures >= {_miles(threshold)}, passenger service", _of(pax, threshold)),
-        *[fact(f"Sensitivity: long-haul share >= {_miles(t)}",
-               f"all flights {_share(every_pct[t])}, passenger service {_share(pax_pct[t])}", need["long_haul"])
-          for t in thresholds if t != threshold],
-        fact("Passengers (passenger service)", f"{data['passengers']:,}"),
-        fact("Load factor (passenger service, a demand-pressure proxy)", _share(data["load_factor_pct"]),
-             need["load_factor"]),
-        fact(f"Passenger growth vs {window.prev_start}..{window.prev_end}", _share(data["growth_pct"]),
-             need["growth"]),
-    ]
-    return _envelope(conn, window, data, assumptions, row["confidence"], facts,
-                     headline=_metrics_headline(data, focus, window))
+        }
+        facts += [
+            fact("Long-haul threshold", _miles(threshold), True),
+            fact(f"Long-haul share >= {_miles(threshold)}, all flights (including cargo)",
+                 _share(every_pct[threshold]), True),
+            fact(f"Long-haul share >= {_miles(threshold)}, passenger service", _share(pax_pct[threshold]), True),
+            fact(f"Departures >= {_miles(threshold)}, all flights", _of(every, threshold)),
+            fact(f"Departures >= {_miles(threshold)}, passenger service", _of(pax, threshold)),
+            *[fact(f"Sensitivity: long-haul share >= {_miles(t)}",
+                   f"all flights {_share(every_pct[t])}, passenger service {_share(pax_pct[t])}", True)
+              for t in thresholds if t != threshold],
+        ]
+        assumptions += ["all flights = every aircraft config, including cargo and undocumented",
+                        f"long haul = segment distance >= {threshold} mi, share of departures"]
+        headlines.append(_long_haul_headline(code, data["long_haul"]))
+
+    return _envelope(conn, window, data, assumptions, row["confidence"], facts, headline=" ".join(headlines))
 
 
 def _of(counts: dict, threshold: int) -> str:
@@ -330,21 +345,13 @@ def _signed(pct: float | None) -> str:
     return "n/a" if pct is None else f"{pct:+.1f}%"
 
 
-def _metrics_headline(data: dict, focus: str, window: store.Window) -> str:
-    """One sentence per focus; long haul states the definition and both bases with counts."""
-    code, lh = data["airport"], data["long_haul"]
+def _long_haul_headline(code: str, lh: dict) -> str:
+    """States the definition (threshold, share of departures) and both bases with counts."""
     every, pax = lh["all_flights"], lh["passenger_service"]
-    long_haul = (f"{_share(every['share_pct'])} of all departures from {code} (incl. cargo) are "
-                 f">= {_miles(lh['threshold_mi'])} ({every['long_haul_departures']:,} of {every['departures']:,}); "
-                 f"passenger service: {_share(pax['share_pct'])} "
-                 f"({pax['long_haul_departures']:,} of {pax['departures']:,}).")
-    load = (f"{code} load factor (passenger service) is {_share(data['load_factor_pct'])}: "
-            f"{data['passengers']:,} passengers on {data['seats']:,} seats in {window.label}.")
-    growth = (f"{code} passengers changed {_signed(data['growth_pct'])} in {window.label} "
-              f"({data['passengers']:,}) vs {window.prev_start}..{window.prev_end} ({data['previous_passengers']:,}).")
-    summary = (f"{code} in {window.label}: {data['passengers']:,} passengers (passenger service), load factor "
-               f"{_share(data['load_factor_pct'])}, growth {_signed(data['growth_pct'])}.")
-    return {"long_haul": long_haul, "load_factor": load, "growth": growth}.get(focus, f"{summary} {long_haul}")
+    return (f"{_share(every['share_pct'])} of all departures from {code} (incl. cargo) are "
+            f">= {_miles(lh['threshold_mi'])} ({every['long_haul_departures']:,} of {every['departures']:,}); "
+            f"passenger service: {_share(pax['share_pct'])} "
+            f"({pax['long_haul_departures']:,} of {pax['departures']:,}).")
 
 
 # --- rank_airports -----------------------------------------------------------------------
@@ -573,12 +580,12 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
 
     @tool("airport_metrics")
     def airport_metrics_tool(airport: str, threshold_mi: int | None = None,
-                             focus: Focus = "all") -> dict:
-        """Metrics for one airport (IATA code or name): passengers, load factor, growth, and the
-        long-haul share of departures for all flights and for passenger service, at the threshold
-        (default from config) and at each sensitivity threshold. Set focus to what the question
-        asks about (long_haul, load_factor, growth); use all when it asks for several."""
-        return run(airport_metrics, airport, threshold_mi, focus)
+                             topic: Topic = "all") -> dict:
+        """Metrics for one airport (IATA code or name). Set topic to what the question asks about:
+        long_haul (share of departures >= threshold, all flights and passenger service, with
+        sensitivity), demand (passengers, seats, load factor), growth (passengers vs the previous
+        12 months); all when it asks for several. threshold_mi only for long_haul (default from config)."""
+        return run(airport_metrics, airport, threshold_mi, topic)
 
     @tool("rank_airports", description=(
         "Rank airports in a region as terminal-expansion candidates: scores, component percentiles "

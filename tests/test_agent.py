@@ -225,12 +225,13 @@ def test_ensure_facts_is_deterministic_and_ignores_non_envelopes():
 
 def test_reply_keeps_commentary_apart_from_the_footer(settings, connect, scoring_cfg):
     agent, _ = make(settings, connect, scoring_cfg,
-                    call("airport_metrics", airport="ANC", focus="load_factor"),
+                    call("airport_metrics", airport="ANC", topic="demand"),
                     AIMessage("ANC is busy."))
-    reply = agent.ask("What is the load factor at Anchorage?", "t-focus")
+    reply = agent.ask("What is the load factor at Anchorage?", "t-topic")
     assert reply.commentary == "ANC is busy."
     assert [f["label"] for f in reply.missing_facts] == [
-        "Load factor (passenger service, a demand-pressure proxy)", "Data period", "Confidence"]
+        "Passengers (passenger service)", "Load factor (passenger service, a demand-pressure proxy)",
+        "Data period", "Confidence"]
     assert reply.text.startswith("ANC is busy.\n\n" + FACTS_FOOTER)
 
 
@@ -240,7 +241,7 @@ def test_commentary_drops_a_verbatim_headline(settings, connect, scoring_cfg):
     headline = ("50.8% of all departures from ANC (incl. cargo) are >= 2,500 mi (744 of 1,464); "
                 "passenger service: 16.7% (144 of 864).")
     agent, _ = make(settings, connect, scoring_cfg,
-                    call("airport_metrics", airport="ANC", focus="long_haul"),
+                    call("airport_metrics", airport="ANC", topic="long_haul"),
                     AIMessage(f"{headline.upper()}\n\nCargo flights to Asia explain the gap."))
     reply = agent.ask("What share of ANC flights are long haul?", "t-headline")
     assert reply.tool_results[0]["headline"] == headline
