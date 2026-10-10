@@ -1,0 +1,102 @@
+"""Golden markdown for src/render.py: hand-written envelopes in, exact markdown out."""
+from src.render import render_envelope, render_excluded, render_facts, render_ranking, render_reply
+
+METRICS = {
+    "facts": [
+        {"label": "Airport", "value": "ANC (Ted Stevens Anchorage International Airport)", "required": False},
+        {"label": "Long-haul share >= 2,500 mi, all flights (including cargo)", "value": "43.2%", "required": True},
+        {"label": "Long-haul share >= 2,500 mi, passenger service", "value": "11.5%", "required": True},
+        {"label": "Data period", "value": "2025-01..2025-12", "required": True},
+        {"label": "Confidence", "value": "high", "required": True},
+    ],
+    "data": {"airport": "ANC"},
+    "data_period": "2025-01..2025-12", "freshness": "unknown",
+    "assumptions": ["long haul = segment distance >= 2500 mi, share of departures"],
+    "confidence": "high",
+}
+
+RANKING = {
+    "facts": [
+        {"label": "Weights used (renormalized without congestion)", "value": "utilization 0.385, scale 0.231",
+         "required": True},
+        {"label": "#1 BOS (Boston Logan International Airport)", "value": "score 0.9", "required": False},
+        {"label": "Data period", "value": "2025-01..2025-12", "required": True},
+        {"label": "Confidence", "value": "medium", "required": True},
+    ],
+    "data": {
+        "ranked": [
+            {"rank": 1, "iata": "BOS", "name": "Boston Logan International Airport", "score": 0.9,
+             "components": {"utilization": {"load_factor_pct": 84.1, "percentile": 80.0},
+                            "scale": {"passengers": 20123456, "percentile": 99.0},
+                            "growth": {"growth_pct": 2.5, "percentile": 40.0}},
+             "confidence": "medium"},
+            {"rank": 2, "iata": "PWM", "name": "Portland International Jetport", "score": 0.7123,
+             "components": {"utilization": {"load_factor_pct": 82.4, "percentile": 70.0},
+                            "growth": {"growth_pct": -1.0, "percentile": 10.0}},
+             "confidence": "low"},
+        ],
+        "ranked_total": 6, "ties": [],
+        "excluded": ["PSM: 85,102 passengers, below the 100,000 floor", "HYA: 5 passengers, below the 100,000 floor"],
+        "excluded_total": 4,
+    },
+    "data_period": "2025-01..2025-12", "freshness": "current",
+    "assumptions": ["score is a capacity-pressure proxy"], "confidence": "medium",
+}
+
+
+def test_facts_card_golden():
+    assert render_facts(METRICS) == (
+        "| Fact | Value |\n"
+        "|---|---|\n"
+        "| Airport | ANC (Ted Stevens Anchorage International Airport) |\n"
+        "| Long-haul share >= 2,500 mi, all flights (including cargo) * | 43.2% |\n"
+        "| Long-haul share >= 2,500 mi, passenger service * | 11.5% |\n"
+        "| Data period * | 2025-01..2025-12 |\n"
+        "| Confidence * | high |\n"
+        "| Freshness | unknown |"
+    )
+
+
+def test_ranking_table_golden():
+    assert render_ranking(RANKING) == (
+        "| Rank | Airport | Name | Score | Passengers | Load factor | Growth | Confidence |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        "| 1 | BOS | Boston Logan International Airport | 0.900 | 20,123,456 | 84.1% | +2.5% | medium |\n"
+        "| 2 | PWM | Portland International Jetport | 0.712 | n/a | 82.4% | -1.0% | low |\n"
+        "\n"
+        "Top 2 of 6 ranked airports."
+    )
+
+
+def test_ranking_card_leaves_airport_rows_to_the_table():
+    card = render_facts(RANKING)
+    assert "#1 BOS" not in card and "| Weights used (renormalized without congestion) * |" in card
+
+
+def test_excluded_list_counts_the_rest():
+    assert render_excluded(RANKING) == (
+        "- PSM: 85,102 passengers, below the 100,000 floor\n"
+        "- HYA: 5 passengers, below the 100,000 floor\n"
+        "- and 2 more, smaller still"
+    )
+
+
+def test_envelope_order_and_pipes_escaped():
+    env = {**METRICS, "facts": [{"label": "Note", "value": "a | b", "required": False}]}
+    md = render_envelope(env, "airport_metrics")
+    assert md.startswith("**airport_metrics**\n\n| Fact | Value |")
+    assert "| Note | a \\| b |" in md
+    assert md.endswith("Assumptions:\n\n- long haul = segment distance >= 2500 mi, share of departures")
+
+
+def test_error_envelope_and_non_json_result():
+    err = {"data": None, "facts": [], "error": "'LA' is ambiguous", "candidates": ["LAX", "BUR"], "default": "LAX"}
+    assert render_envelope(err) == "**Tool error:** 'LA' is ambiguous\n\nCandidates: LAX, BUR (default: LAX)"
+    assert render_envelope("boom") == "```\nboom\n```"
+
+
+def test_reply_titles_each_envelope_with_its_tool():
+    md = render_reply([{"name": "resolve_airport", "args": {}}, {"name": "airport_metrics", "args": {}}],
+                      [METRICS, METRICS])
+    assert md.count("**resolve_airport**") == 1 and "\n\n---\n\n**airport_metrics**" in md
+    assert render_reply([], []) == ""

@@ -221,3 +221,14 @@ def test_ensure_facts_is_deterministic_and_ignores_non_envelopes():
     envelopes = [ANC, "not json", {"data": None, "facts": [], "error": "x"}]
     assert ensure_facts(answer, envelopes) == ensure_facts(answer, envelopes)
     assert ensure_facts("Hi", []) == "Hi"
+
+
+def test_reply_keeps_commentary_apart_from_the_footer(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("airport_metrics", airport="ANC", focus="load_factor"),
+                    AIMessage("ANC is busy."))
+    reply = agent.ask("What is the load factor at Anchorage?", "t-focus")
+    assert reply.commentary == "ANC is busy."
+    assert [f["label"] for f in reply.missing_facts] == [
+        "Load factor (passenger service, a demand-pressure proxy)", "Data period", "Confidence"]
+    assert reply.text.startswith("ANC is busy.\n\n" + FACTS_FOOTER)

@@ -3,7 +3,8 @@
 The model picks tools and phrases their envelopes; it never computes numbers. Conversation
 memory is an in-memory checkpointer keyed by `thread_id` (follow-up questions see earlier turns).
 
-CLI: `uv run python -m src.agent "question"` prints the tools called and the final answer.
+CLI: `uv run python -m src.agent "question"` prints the tools called, the data rendered from their
+envelopes (src/render.py), then the model's commentary: the same layout as the Streamlit app.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from src import store
 from src.config import ConfigError, ScoringConfig, Settings, get_settings, load_scoring
 from src.llm import get_chat_model
 from src.prompts import SYSTEM_PROMPT
+from src.render import render_reply
 from src.tools import make_tools
 
 # Reasoning models (qwen3, gpt-oss via some servers) may prefix the answer with a <think> block,
@@ -142,10 +144,13 @@ def _parse(content: Any) -> Any:
 
 @dataclass
 class Reply:
+    """One turn. Interfaces render `tool_results` (src/render.py) first and show `commentary`
+    after it; `text` is the commentary plus the ensure_facts footer, for text-only consumers."""
     text: str
     tool_calls: list[dict] = field(default_factory=list)     # {"name", "args"} in call order
     tool_results: list[Any] = field(default_factory=list)    # envelopes, same order
     missing_facts: list[dict] = field(default_factory=list)  # required facts appended by ensure_facts
+    commentary: str = ""                                     # the model's text, reasoning stripped
 
 
 @dataclass
@@ -166,7 +171,7 @@ class AirportAgent:
         results = [_parse(m.content) for m in turn if isinstance(m, ToolMessage)]
         final = next((m for m in reversed(turn) if isinstance(m, AIMessage)), None)
         answer = strip_reasoning(final.text if final else "")
-        return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results))
+        return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results), answer)
 
 
 def build_agent(
@@ -217,8 +222,9 @@ def main(argv: list[str] | None = None) -> int:
     print("Tools called:" if reply.tool_calls else "Tools called: none")
     for call in reply.tool_calls:
         print(f"  - {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['args'].items())})")
-    print(f"Footer added: {'yes, ' + str(len(reply.missing_facts)) + ' fact(s)' if reply.missing_facts else 'no'}")
-    print("\nAnswer:\n" + reply.text)
+    print(f"Required facts the commentary omits: {len(reply.missing_facts)} (all are in the data below)")
+    print("\nData (from tools):\n" + (render_reply(reply.tool_calls, reply.tool_results) or "none"))
+    print("\nCommentary (model):\n" + reply.commentary)
     return 0
 
 

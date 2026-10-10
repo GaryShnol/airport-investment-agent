@@ -100,8 +100,12 @@ def test_airport_metrics_long_haul_both_definitions(db, scoring_cfg):
     assert any("cargo" in a for a in r["assumptions"])
 
 
+def required(result):
+    return {f["label"]: f["value"] for f in result["facts"] if f["required"]}
+
+
 def test_airport_metrics_required_facts(db, scoring_cfg):
-    f = facts(tools.airport_metrics(db, scoring_cfg, "ANC"))
+    f = facts(tools.airport_metrics(db, scoring_cfg, "ANC", focus="long_haul"))
     required = {k: v["value"] for k, v in f.items() if v["required"]}
     assert required == {
         "Long-haul threshold": "2,500 mi",
@@ -113,6 +117,26 @@ def test_airport_metrics_required_facts(db, scoring_cfg):
         "Confidence": "medium",
     }
     assert f["Passengers (passenger service)"] == {"value": "115,500", "required": False}
+
+
+def test_airport_metrics_focus_load_factor_does_not_require_long_haul(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", focus="load_factor")
+    assert required(r) == {"Load factor (passenger service, a demand-pressure proxy)": "85.9%",
+                           "Data period": "2025-01..2025-12", "Confidence": "medium"}
+    assert facts(r)["Long-haul threshold"] == {"value": "2,500 mi", "required": False}  # still shown
+
+
+def test_airport_metrics_focus_growth_and_all(db, scoring_cfg):
+    growth = required(tools.airport_metrics(db, scoring_cfg, "ANC", focus="growth"))
+    assert set(growth) == {"Passenger growth vs 2024-01..2024-12", "Data period", "Confidence"}
+    every = required(tools.airport_metrics(db, scoring_cfg, "ANC"))  # default focus = all
+    assert set(every) == set(required(tools.airport_metrics(db, scoring_cfg, "ANC", focus="long_haul"))) | set(
+        growth) | {"Load factor (passenger service, a demand-pressure proxy)"}
+
+
+def test_airport_metrics_unknown_focus_is_an_error(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", focus="delays")
+    assert r["data"] is None and "focus must be one of" in r["error"]
 
 
 def test_error_envelope_has_no_facts(db, scoring_cfg):
