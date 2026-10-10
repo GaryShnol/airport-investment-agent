@@ -634,3 +634,16 @@ def test_unstable_top_airport_gets_a_headline_note(db_ontime, scoring_cfg, monke
 
 def test_stable_top_airport_has_no_note(db_ontime, scoring_cfg):
     assert "Not stable" not in tools.rank_airports(db_ontime, scoring_cfg, "new_england")["headline"]
+
+
+# --- drivers (P3.8c) ---------------------------------------------------------------------------
+
+def test_rank_airports_drivers_block(db_ontime, scoring_cfg):
+    r = tools.rank_airports(db_ontime, scoring_cfg, "new_england")
+    for x in r["data"]["ranked"]:
+        pcts = {c: v["percentile"] for c, v in x["components"].items() if v["percentile"] is not None}
+        assert x["drivers"]["strongest"]["percentile"] == max(pcts.values())
+        assert x["drivers"]["weakest"]["percentile"] == min(pcts.values())
+        f = next(f for f in r["facts"] if f["label"] == f"Drivers: {x['iata']}")
+        assert f["ranked"] == x["iata"] and f["value"].startswith("strongest: ")
+    assert any(a.startswith("drivers = ") for a in r["assumptions"])

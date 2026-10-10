@@ -77,7 +77,8 @@ Last updated: 2026-10-10. Current milestone: **M3**.
 - [x] P3.8a Docs: remove the duplicated "Commentary figure check" paragraph in `docs/plan.md`; check plan, README and TASKS for other duplicated paragraphs
   - Checked: the paragraph appears once (plan.md, Agent and UI); the two versions are the old and new lines of the 98e5bfa diff, not two paragraphs in the file. A similarity scan of plan.md, README.md and TASKS.md found no other duplicated paragraphs. Deliberate overlaps remain: the decision log (TASKS.md) summarizes decisions detailed in plan.md, and the ANC shares appear in both Acceptance values and Data validation (the latter is the config-1-only first pass)
 - [x] P3.8b Commentary mode per tool: for `commentary.restricted_tools` (config: rank_airports, compare_airports) keep only sentences without digits, IATA codes or airport names from the envelopes (caveats and next steps); nothing left -> no commentary block; prompt updated; tests for the rewritten ranking, the backwards taxi-out and a surviving caveat
-- [ ] P3.8c `rank_airports` drivers: strongest and weakest component per ranked airport by national percentile, as facts and in the ranking card
+- [x] P3.8c `rank_airports` drivers: strongest and weakest component per ranked airport by national percentile, as facts and in the ranking card
+  - New England 2025: BOS long haul 96 / growth 29; BTV congestion 79 / long haul 43; BGR growth 91 / scale 35; PWM utilization 87 / congestion 36. Airports under the 2% long-haul floor share one percentile (43), stated in the assumptions
 - [ ] P3.8d Wording: `compare_airports` headline ends with a deterministic overall sentence (mixed / X higher on every measure / no meaningful difference) and a note when departures differ by more than a configured ratio; `explain_demand_gap` spill proxy worded as passengers above the target load level (excess over target x seats), definition in the assumptions
 
 ## M4 - Context and freshness

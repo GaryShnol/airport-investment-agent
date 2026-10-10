@@ -15,9 +15,9 @@ _RANKING_FACT = re.compile(r"^#\d+ ")
 
 
 def _in_a_table(f: dict) -> bool:
-    """Facts shown by a table instead of the card: ranking rows, and compare_airports values
-    (an `airport` key) and verdicts (a `metric` key)."""
-    return bool(_RANKING_FACT.match(f["label"])) or "airport" in f or "metric" in f
+    """Facts shown by a table instead of the card: ranking rows and drivers (a `ranked` key), and
+    compare_airports values (an `airport` key) and verdicts (a `metric` key)."""
+    return bool(_RANKING_FACT.match(f["label"])) or "airport" in f or "metric" in f or "ranked" in f
 
 
 def _cell(value: Any) -> str:
@@ -114,6 +114,22 @@ def render_comparison(envelope: dict) -> str:
     return f"{names}\n\n" + _table(["Metric", *codes, "Verdict"], rows)
 
 
+def _driver_cell(d: dict) -> str:
+    return f"{d['component'].replace('_', ' ')} ({d['percentile']:.0f})"
+
+
+def render_drivers(envelope: dict) -> str:
+    """rank_airports drivers: each ranked airport's strongest and weakest component (national percentile)."""
+    data = envelope.get("data") or {}
+    ranked = [r for r in (data.get("ranked") or []) if r.get("drivers")] if isinstance(data, dict) else []
+    if not ranked:
+        return ""
+    rows = [[r["rank"], r["iata"], _driver_cell(r["drivers"]["strongest"]), _driver_cell(r["drivers"]["weakest"])]
+            for r in ranked]
+    return ("Drivers (component and national percentile in the peer set):\n\n"
+            + _table(["Rank", "Airport", "Strongest", "Weakest"], rows))
+
+
 def render_why(envelope: dict) -> str:
     """explain_demand_gap's "why": sentences built by the tool from its own facts, as a list."""
     data = envelope.get("data") or {}
@@ -167,7 +183,8 @@ def render_envelope(envelope: Any, title: str | None = None) -> str:
     if envelope.get("error"):
         parts.append(render_error(envelope))
         return "\n\n".join(parts)
-    parts += [render_comparison(envelope), render_facts(envelope), render_why(envelope), render_ranking(envelope)]
+    parts += [render_comparison(envelope), render_facts(envelope), render_why(envelope), render_ranking(envelope),
+              render_drivers(envelope)]
     if excluded := render_excluded(envelope):
         parts.append(f"{excluded_title(envelope)}:\n\n{excluded}")
     if assumptions := render_assumptions(envelope):

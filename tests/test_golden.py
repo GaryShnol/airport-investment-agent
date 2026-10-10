@@ -56,6 +56,13 @@ def test_q1_new_england_ranking(tools):
             for x in r["data"]["ranked"]] == [(100.0, 1, 1), (100.0, 2, 2), (100.0, 3, 3)]
     assert {"Data period", "Confidence", "Weights used (renormalized without demand_context)"} <= required(r)
     assert r["confidence"] == "medium"
+    # drivers: why each airport ranks where it does. BOS ties congestion and scale at 100 (congestion is
+    # listed first in the weights); PWM has the highest load factor but the lowest congestion
+    assert [values(r)[f"Drivers: {c}"] for c in ("BOS", "PWM", "BTV")] == [
+        "strongest: congestion, percentile 100; weakest: utilization (load factor), percentile 44",
+        "strongest: utilization (load factor), percentile 100; weakest: congestion, percentile 17",
+        "strongest: growth (passengers vs previous 12 months), percentile 50; "
+        "weakest: scale (annual passengers), percentile 17"]
 
 
 # --- Q2: LA vs Santa Ana congestion ------------------------------------------------------------

@@ -420,3 +420,18 @@ def test_rank_stability_seed_changes_the_draws(metrics, cfg):
     a = scoring.perturb_weights(cfg.weights, 0.25, np.random.default_rng(1))
     b = scoring.perturb_weights(cfg.weights, 0.25, np.random.default_rng(2))
     assert a != b
+
+
+# --- drivers (P3.8c) -------------------------------------------------------------------------
+
+def test_drivers_pick_highest_and_lowest_percentile():
+    row = {"pct_utilization": 0.8, "pct_scale": 0.3, "pct_growth": float("nan"), "pct_long_haul": 0.95}
+    assert scoring.drivers(row, ["utilization", "scale", "growth", "long_haul"]) == {
+        "strongest": ("long_haul", 0.95), "weakest": ("scale", 0.3)}
+
+
+def test_drivers_ties_go_to_the_first_component_and_none_without_data():
+    row = {"pct_utilization": 0.5, "pct_scale": 0.5}
+    assert scoring.drivers(row, ["utilization", "scale"]) == {"strongest": ("utilization", 0.5),
+                                                              "weakest": ("utilization", 0.5)}
+    assert scoring.drivers({"pct_growth": float("nan")}, ["growth"]) is None

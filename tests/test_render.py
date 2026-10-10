@@ -172,3 +172,15 @@ def test_ranking_shows_stability_columns_when_computed():
     table = render_ranking(env)
     assert "| In top 3 (runs) | Rank range | Confidence |" in table
     assert "| 100% | 1 | medium |" in table and "| 85% | 2-4 | low |" in table
+
+
+def test_drivers_table_and_facts_stay_out_of_the_card():
+    env = {**RANKING, "facts": [*RANKING["facts"], {"label": "Drivers: BOS", "value": "strongest: scale", "required": False,
+                                                     "ranked": "BOS"}],
+           "data": {**RANKING["data"], "ranked": [
+               {**RANKING["data"]["ranked"][0], "drivers": {"strongest": {"component": "scale", "percentile": 99.0},
+                                                             "weakest": {"component": "long_haul", "percentile": 43.0}}}]}}
+    out = render_envelope(env)
+    assert ("Drivers (component and national percentile in the peer set):\n\n| Rank | Airport | Strongest | Weakest |\n"
+            "|---|---|---|---|\n| 1 | BOS | scale (99) | long haul (43) |") in out
+    assert "Drivers: BOS" not in render_facts(env)

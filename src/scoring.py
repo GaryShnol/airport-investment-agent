@@ -259,6 +259,21 @@ def rank(result: ScoreResult, region: str, cfg: ScoringConfig) -> RegionRanking:
     return RegionRanking(region, states, ranked.reset_index(drop=True), excluded.reset_index(drop=True), result)
 
 
+# --- drivers (rank_airports) -------------------------------------------------------------------
+
+def drivers(row: Mapping, components: Iterable[str]) -> dict[str, tuple[str, float]] | None:
+    """An airport's strongest and weakest component by national percentile (`pct_<component>`),
+    over the components it has. Ties go to the component listed first (the order of the weights in
+    config/weights.yaml). None when it has no component percentile."""
+    present = [(c, float(row[f"pct_{c}"])) for c in components
+               if f"pct_{c}" in row and row[f"pct_{c}"] is not None and row[f"pct_{c}"] == row[f"pct_{c}"]]
+    if not present:
+        return None
+    strongest = max(present, key=lambda cp: cp[1])   # max/min keep the first of equal values
+    weakest = min(present, key=lambda cp: cp[1])
+    return {"strongest": strongest, "weakest": weakest}
+
+
 # --- rank stability (rank_airports) -----------------------------------------------------------
 
 def perturb_weights(weights: Mapping[str, float], jitter: float, rng: np.random.Generator) -> dict[str, float]:

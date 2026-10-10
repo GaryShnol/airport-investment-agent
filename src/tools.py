@@ -543,6 +543,8 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
                                   "passengers": int(r["passengers"])}[sort_by]
         if scenario:
             item["base_rank"] = int(base_rank[r["iata"]])
+        if found := scoring.drivers(r, components):
+            item["drivers"] = {k: {"component": c, "percentile": _pct(p, 0)} for k, (c, p) in found.items()}
         s = stability[r["iata"]]
         item["stability"] = {"top_n": s["top_n"], "in_top_n_pct": _pct(s["in_top_n"] / s["runs"], 0),
                              "first": s["first"], "runs": s["runs"], "min_rank": s["min_rank"],
@@ -568,6 +570,7 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         "weights_used": {c: round(w, 3) for c, w in result.weights_used.items()},
         "components_unavailable": result.unavailable,
         "ties": [[x["iata"] for x in ranked if x["score"] == s] for s in ties],
+        "drivers_basis": "national percentile in the peer set (higher = stronger)",
         "stability": {"runs": cfg.sensitivity_runs, "weight_jitter": cfg.sensitivity_jitter,
                       "seed": cfg.sensitivity_seed, "top_n": cfg.sensitivity_top_n},
     }
@@ -593,6 +596,9 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
                               + (f"; ignored (component not built): {', '.join(ignored)}" if ignored else ""))
     if sort_by != "score":
         assumptions.insert(0, f"sorted by {SORT_LABELS[sort_by]} (highest first), not by the expansion score")
+    assumptions.append("drivers = each airport's highest and lowest component percentile; tied values share one "
+                       "percentile, so airports with no material long-haul service all get the same middling "
+                       "long-haul percentile, which can show up as a 'strongest' component")
     if int(top_n) > shown and len(ranking.ranked) > shown:
         assumptions.append(f"list capped at {cfg.max_ranked} airports")
     levels = [x["confidence"] for x in ranked] or ["low"]
@@ -608,6 +614,9 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
     if sort_by != "score":
         facts.append(fact("Sorted by", f"{SORT_LABELS[sort_by]}, highest first (not the score)", True))
     facts += [fact(f"#{x['rank']} {x['iata']} ({x['name']})", _ranked_summary(x)) for x in ranked]
+    # Drivers block: why each airport ranks where it does, without model commentary (rendered as a table).
+    facts += [fact(f"Drivers: {x['iata']}", _drivers_text(x["drivers"])) | {"ranked": x["iata"]}
+              for x in ranked if x.get("drivers")]
     headline = _ranking_headline(data, key, sort_by, scenario)
     if ranked:
         facts.append(fact("Rank stability (method)", _stability_method(cfg)))
@@ -641,6 +650,14 @@ def _ranking_headline(data: dict, key: str, sort_by: str, scenario: bool) -> str
 COMPONENT_LABELS = {"utilization": "utilization (load factor)", "scale": "scale (annual passengers)",
                     "growth": "growth (passengers vs previous 12 months)", "long_haul": "long-haul share",
                     "congestion": "congestion"}
+
+
+def _driver(d: dict) -> str:
+    return f"{COMPONENT_LABELS.get(d['component'], d['component'])}, percentile {d['percentile']:.0f}"
+
+
+def _drivers_text(drivers: dict) -> str:
+    return f"strongest: {_driver(drivers['strongest'])}; weakest: {_driver(drivers['weakest'])}"
 
 
 def _ranked_summary(item: dict) -> str:
