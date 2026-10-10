@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from typing import Callable, Literal, get_args
 
 from langchain_core.tools import BaseTool, tool
@@ -298,36 +299,106 @@ def _region_key(region: str) -> str:
     return (region or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
-def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top_n: int = 10) -> dict:
-    """Rank a configured region's peer-set airports by the deterministic score."""
+SortBy = Literal["score", "growth", "load_factor", "passengers"]
+SORT_VALUES = get_args(SortBy)
+SORT_LABELS = {"score": "expansion score", "growth": "passenger growth", "load_factor": "load factor",
+               "passengers": "annual passengers"}
+
+
+def scenario_weights(cfg: ScoringConfig, weights: dict | None) -> tuple[dict[str, float] | None, str | None]:
+    """Validate a scenario override: (merged weights, None) or (None, error message).
+
+    Keys must be weight names from config/weights.yaml, values non-negative numbers. Keys left
+    out keep their configured weight; scoring.score then renormalizes over the available
+    components, so the values need not sum to 1 ("growth 0.30" means double the default 0.15).
+    """
+    if not weights:
+        return None, None
+    if not isinstance(weights, dict):
+        return None, 'weights must be an object such as {"growth": 0.3}'
+    unknown = sorted(map(str, set(weights) - set(cfg.weights)))
+    if unknown:
+        return None, f"Unknown weight(s) {', '.join(unknown)}; valid: {', '.join(cfg.weights)}"
+    merged = dict(cfg.weights)
+    for key, value in weights.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value < 0:
+            return None, f"Weight {key} must be a non-negative number (got {value!r})"
+        merged[key] = float(value)
+    return merged, None
+
+
+def _rank_table(conn: sqlite3.Connection, cfg: ScoringConfig, key: str, window: store.Window):
+    result = scoring.score(store.airport_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    return result, scoring.rank(result, key, cfg)
+
+
+def _weights_text(weights: dict[str, float]) -> str:
+    return ", ".join(f"{c} {w}" for c, w in weights.items())
+
+
+def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top_n: int = 10,
+                  sort_by: str = "score", weights: dict | None = None) -> dict:
+    """Rank a configured region's peer-set airports by the deterministic score.
+
+    `sort_by` reorders the ranked airports by one raw metric (done here, never by the model);
+    `weights` is a scenario override (see `scenario_weights`): the result is labeled "scenario"
+    and every airport carries its base rank (configured weights) next to its scenario rank.
+    The list is capped at `cfg.max_ranked` airports.
+    """
     key = _region_key(region)
     if key not in cfg.regions:
         return _error(conn, f"Unknown region '{region}'", sorted(cfg.regions))
     if int(top_n) < 1:
         return _error(conn, "top_n must be at least 1")
+    sort_by = (sort_by or "score").strip().lower()
+    if sort_by not in SORT_VALUES:
+        return _error(conn, f"sort_by must be one of: {', '.join(SORT_VALUES)}")
+    merged, problem = scenario_weights(cfg, weights)
+    if problem:
+        return _error(conn, problem, list(cfg.weights))
     window = _window(conn)
-    result = scoring.score(store.airport_metrics(conn, window, cfg.long_haul_miles), cfg, window)
-    ranking = scoring.rank(result, key, cfg)
+    base_result, base_ranking = _rank_table(conn, cfg, key, window)
+    result, ranking = base_result, base_ranking
+    if merged is not None:
+        try:
+            result, ranking = _rank_table(conn, replace(cfg, weights=merged), key, window)
+        except ValueError:  # every available component weighted 0
+            return _error(conn, "The scenario weights give no weight to any available component "
+                                f"(not built: {', '.join(sorted(base_result.unavailable))})", list(cfg.weights))
+    scenario = merged is not None
     components = list(result.weights_used)
+    base_rank = dict(zip(base_ranking.ranked["iata"], base_ranking.ranked["rank"]))
 
+    order = ranking.ranked
+    if sort_by != "score":  # highest first, missing last, ties by score then IATA
+        order = order.sort_values([sort_by, "score", "iata"], ascending=[False, False, True],
+                                  na_position="last", kind="stable")
+    shown = min(int(top_n), cfg.max_ranked)
     ranked = []
-    for _, r in ranking.ranked.head(int(top_n)).iterrows():
+    for position, (_, r) in enumerate(order.head(shown).iterrows(), start=1):
         raw = {"utilization": {"load_factor_pct": _pct(r["load_factor"])},
                "scale": {"passengers": int(r["passengers"])},
                "growth": {"growth_pct": _pct(r["growth"])},
                "long_haul": {"share_pct": _pct(r["long_haul_share"])}}
-        item = {"rank": int(r["rank"]), "iata": r["iata"], "name": r["name"], "score": round(float(r["score"]), 3),
+        item = {"rank": position, "iata": r["iata"], "name": r["name"], "score": round(float(r["score"]), 3),
                 "components": {c: {**raw[c], "percentile": _pct(r[f"pct_{c}"], 0)} for c in components},
                 "confidence": r["confidence"]}
+        if sort_by != "score":
+            item["score_rank"] = int(r["rank"])
+            item["sort_value"] = {"growth": _pct(r["growth"]), "load_factor": _pct(r["load_factor"]),
+                                  "passengers": int(r["passengers"])}[sort_by]
+        if scenario:
+            item["base_rank"] = int(base_rank[r["iata"]])
         if r["missing"]:
             item["missing"] = r["missing"]
             item["weights_used"] = {c: round(w, 3) for c, w in r["weights_used"].items()}
         ranked.append(item)
 
     scores = [x["score"] for x in ranked]
-    ties = sorted({s for s in scores if scores.count(s) > 1})
+    ties = sorted({s for s in scores if scores.count(s) > 1}) if sort_by == "score" else []
     data = {
         "region": key, "states": list(ranking.states), "peer_set_size": result.peer_set_size,
+        "mode": "scenario" if scenario else "base", "sort_by": sort_by,
         "ranked": ranked,
         "ranked_total": len(ranking.ranked),
         # Largest first; the rest are smaller still and below the same floor.
@@ -339,6 +410,9 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         "components_unavailable": result.unavailable,
         "ties": [[x["iata"] for x in ranked if x["score"] == s] for s in ties],
     }
+    if scenario:
+        data["weights_base"] = {c: round(w, 3) for c, w in base_result.weights_used.items()}
+        data["weights_requested"] = {k: float(v) for k, v in weights.items()}
     assumptions = [
         "score = weighted mean of national percentiles in the peer set (0-1); a capacity-pressure proxy, "
         "not a measured terminal need (no gate or terminal-area data)",
@@ -347,16 +421,42 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         f"long haul >= {cfg.long_haul_miles} mi; shares under {_pct(cfg.long_haul_min_share)}% count as 0 in the score",
         *result.notes,
     ]
+    if scenario:
+        ignored = sorted(k for k, v in weights.items() if k in result.unavailable and v > 0)
+        assumptions.insert(0, "scenario: weights changed by the user, not the configured methodology; "
+                              "weights not given keep their configured value, then all are renormalized"
+                              + (f"; ignored (component not built): {', '.join(ignored)}" if ignored else ""))
+    if sort_by != "score":
+        assumptions.insert(0, f"sorted by {SORT_LABELS[sort_by]} (highest first), not by the expansion score")
+    if int(top_n) > shown and len(ranking.ranked) > shown:
+        assumptions.append(f"list capped at {cfg.max_ranked} airports")
     levels = [x["confidence"] for x in ranked] or ["low"]
     confidence = max(levels, key=CONFIDENCE_ORDER.index)
-    weights_label = "Weights used" + (f" (renormalized without {', '.join(sorted(result.unavailable))})"
-                                      if result.unavailable else "")
-    facts = [fact(weights_label, ", ".join(f"{c} {w}" for c, w in data["weights_used"].items()), True),
-             *[fact(f"#{x['rank']} {x['iata']} ({x['name']})", _ranked_summary(x)) for x in ranked]]
-    top = ", ".join(f"{x['rank']} {x['iata']}" for x in ranked[:HEADLINE_TOP])
-    headline = (f"{key} terminal-expansion ranking by score: {top or 'no airport in the peer set'} "
-                f"({data['ranked_total']} ranked, {data['excluded_total']} excluded).")
-    return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
+    renorm = f" (renormalized without {', '.join(sorted(result.unavailable))})" if result.unavailable else ""
+    facts = []
+    if scenario:
+        facts += [fact("Ranking", "scenario (user weights, not the configured methodology)", True),
+                  fact("Scenario weights used" + renorm, _weights_text(data["weights_used"]), True),
+                  fact("Base weights (config)" + renorm, _weights_text(data["weights_base"]))]
+    else:
+        facts.append(fact("Weights used" + renorm, _weights_text(data["weights_used"]), True))
+    if sort_by != "score":
+        facts.append(fact("Sorted by", f"{SORT_LABELS[sort_by]}, highest first (not the score)", True))
+    facts += [fact(f"#{x['rank']} {x['iata']} ({x['name']})", _ranked_summary(x)) for x in ranked]
+    return _envelope(conn, window, data, assumptions, confidence, facts,
+                     headline=_ranking_headline(data, key, sort_by, scenario))
+
+
+def _ranking_headline(data: dict, key: str, sort_by: str, scenario: bool) -> str:
+    ranked = data["ranked"][:HEADLINE_TOP]
+    if scenario:
+        top = ", ".join(f"{x['rank']} {x['iata']} (base {x['base_rank']})" for x in ranked)
+    else:
+        top = ", ".join(f"{x['rank']} {x['iata']}" for x in ranked)
+    what = "terminal-expansion ranking by score" if sort_by == "score" else f"airports by {SORT_LABELS[sort_by]}"
+    prefix = "Scenario weights: " if scenario else ""
+    return (f"{prefix}{key} {what}: {top or 'no airport in the peer set'} "
+            f"({data['ranked_total']} ranked, {data['excluded_total']} excluded).")
 
 
 COMPONENT_LABELS = {"utilization": "utilization (load factor)", "scale": "scale (annual passengers)",
@@ -411,8 +511,12 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
     @tool("rank_airports", description=(
         "Rank airports in a region as terminal-expansion candidates: scores, component percentiles "
         "with raw values, the weights used, excluded airports, confidence. "
-        f"region must be one of: {', '.join(sorted(cfg.regions))}."))
-    def rank_airports_tool(region: str, top_n: int = 10) -> dict:
-        return run(rank_airports, region, top_n)
+        f"region must be one of: {', '.join(sorted(cfg.regions))}. "
+        "sort_by: score (default), or growth, load_factor, passengers to list the airports by that metric. "
+        "weights: only for what-if questions (e.g. 'what if growth weighs more'): a scenario override "
+        f"such as {{\"growth\": 0.3}}; keys: {', '.join(cfg.weights)}. Omit it otherwise."))
+    def rank_airports_tool(region: str, top_n: int = 10, sort_by: SortBy = "score",
+                           weights: dict[str, float] | None = None) -> dict:
+        return run(rank_airports, region, top_n, sort_by, weights)
 
     return [data_status_tool, resolve_airport_tool, airport_metrics_tool, rank_airports_tool]

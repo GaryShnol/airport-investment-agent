@@ -3,7 +3,7 @@ Task status lives in `TASKS.md`. This file holds the design.
 
 ## Configuration (no hardcoded values)
 - `.env` (see `.env.example`) -> `src/config.py` `Settings.from_env()`: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_TEMPERATURE`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `CENSUS_API_KEY`, `DB_PATH`, `SEED_DB_PATH`, `RAW_DATA_DIR`, `WEIGHTS_PATH`, `LOG_LEVEL`, `MAX_INPUT_CHARS` (input guard for the agent). Secrets are hidden from `repr`. Relative paths resolve against the project root.
-- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles, minimum long-haul share and sensitivity list, min passengers, target load factor, sensitivity runs/jitter/seed, regions, metro aliases (ambiguous names such as LA, with the default airport).
+- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles, `max_ranked` (longest ranking a tool returns), minimum long-haul share and sensitivity list, min passengers, target load factor, sensitivity runs/jitter/seed, regions, metro aliases (ambiguous names such as LA, with the default airport).
 - Why split: env is per-deployment and secret; methodology is reviewable, versioned and part of the design doc.
 
 ## LLM provider
@@ -38,7 +38,7 @@ Every tool returns:
 - `rank_airports` exposes only `weights_used` (configured weights are in `data_status`): showing both made small models mix them.
 - `airport_metrics(airport, threshold_mi, focus)`: volume, load factor, congestion, long-haul share with and without cargo plus sensitivity at each configured threshold.
 - `compare_airports(a, b)`: side by side with normalized metrics.
-- `rank_airports(region, top_n)`: scores, component breakdown, weights, rank stability.
+- `rank_airports(region, top_n, sort_by, weights)`: scores, component breakdown, weights, rank stability. `sort_by` (score, growth, load_factor, passengers) reorders in code and keeps each airport's score rank. `weights` is a scenario override: keys must be weight names from `config/weights.yaml`, values non-negative; keys not given keep the configured weight; all are renormalized over the built components. The envelope is labeled `mode: scenario`, shows the scenario and base weights, and the base rank next to the scenario rank. The list is capped at `max_ranked` (YAML).
 - `explain_demand_gap(airport)`: peak months, highest load-factor routes, spill proxy (seats needed to bring dense routes to the target load factor), delay-cause mix.
 - `resolve_airport(text)`: configured metro alias (ambiguous, with a default: LA = LAX), then exact IATA, airport name, municipality; name and city matches count only airports with passenger service in the window. Ambiguity returns candidates for the agent to ask about.
 - Errors come back as an envelope with `data` null, `error` and `candidates`; tools never raise to the model. Lists are capped (`MAX_LISTED`) to fit short local-model contexts.
@@ -91,4 +91,4 @@ Re-baselined in P2.2 from `t100_route_month` under the Definitions above (passen
 - The passenger floor is a policy line, not a fact: PSM (85,102 passengers) is excluded just under the 100,000 floor. The floor is in `config/weights.yaml` and the excluded list states the reason for each airport.
 - Long haul separates only the big hubs: 201 of 233 peer airports have no material long-haul share, so the component mainly adds a bonus for about 30 hubs (BOS in New England). It stays at 0.10 for that reason.
 - Exact score ties occur (19 of them) when all components are equal; they are broken by IATA code and should be reported as ties.
-- Scores are relative to the peer set, so adding or removing airports moves the percentiles. The rank-stability check (P3.5) shows how sensitive the ranking is to the weights: with growth at 0.30, BGR moves to first and BOS to fifth in New England.
+- Scores are relative to the peer set, so adding or removing airports moves the percentiles. The rank-stability check (P3.5) shows how sensitive the ranking is to the weights: with the scenario `weights={"growth": 0.30}` (0.375 after renormalizing), PWM moves to first, BGR from fourth to second and BOS from first to third in New England.

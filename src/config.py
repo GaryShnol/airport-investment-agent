@@ -93,6 +93,7 @@ class ScoringConfig:
     sensitivity_jitter: float
     sensitivity_seed: int
     regions: dict[str, tuple[str, ...]]
+    max_ranked: int            # longest ranking a tool returns (keeps tool results small)
     # name -> {"default": IATA, "candidates": (IATA, ...)}; e.g. LA -> LAX by default
     metro_aliases: dict[str, dict] = field(default_factory=dict)
 
@@ -110,6 +111,12 @@ def _check_weights(name: str, weights: Mapping[str, float], expected: set[str]) 
     if abs(total - 1.0) > _TOLERANCE:
         raise ConfigError(f"{name} must sum to 1.0 (got {total:.4f})")
     return {k: float(v) for k, v in weights.items()}
+
+
+def _positive_int(name: str, value) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigError(f"{name} must be a positive whole number (got {value!r})")
+    return value
 
 
 def load_scoring(path: Path) -> ScoringConfig:
@@ -131,6 +138,7 @@ def load_scoring(path: Path) -> ScoringConfig:
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),
             sensitivity_seed=int(raw["sensitivity"]["seed"]),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
+            max_ranked=_positive_int("max_ranked", raw["max_ranked"]),
             metro_aliases={k.upper(): {"default": v["default"], "candidates": tuple(v["candidates"])}
                            for k, v in (raw.get("metro_aliases") or {}).items()},
         )

@@ -231,3 +231,91 @@ def test_ranking_headline_names_the_top(db, scoring_cfg):
     r = tools.rank_airports(db, scoring_cfg, "new_england")
     top = ", ".join(f"{x['rank']} {x['iata']}" for x in r["data"]["ranked"])
     assert r["headline"] == f"new_england terminal-expansion ranking by score: {top} (3 ranked, 1 excluded)."
+
+
+# --- rank_airports: sort_by and scenario weights (P2.11) ----------------------------------
+
+def test_rank_default_is_base_mode_with_config_weights(db, scoring_cfg):
+    d = tools.rank_airports(db, scoring_cfg, "new_england")["data"]
+    assert d["mode"] == "base" and d["sort_by"] == "score"
+    assert all("base_rank" not in x and "score_rank" not in x for x in d["ranked"])
+
+
+@pytest.mark.parametrize("sort_by, column", [("growth", "growth_pct"), ("load_factor", "load_factor_pct"),
+                                             ("passengers", "passengers")])
+def test_rank_sort_by_metric_is_done_in_code(db, scoring_cfg, sort_by, column):
+    r = tools.rank_airports(db, scoring_cfg, "new_england", sort_by=sort_by)
+    ranked = r["data"]["ranked"]
+    values = [x["sort_value"] for x in ranked]
+    assert values == sorted(values, reverse=True)
+    assert [x["rank"] for x in ranked] == [1, 2, 3]
+    base = {x["iata"]: x["rank"] for x in tools.rank_airports(db, scoring_cfg, "new_england")["data"]["ranked"]}
+    assert {x["iata"]: x["score_rank"] for x in ranked} == base  # score rank kept next to the sort order
+    assert facts(r)["Sorted by"]["required"] is True
+    assert r["data"]["ties"] == []
+
+
+def test_rank_sort_by_passengers_order(db, scoring_cfg):
+    ranked = tools.rank_airports(db, scoring_cfg, "new_england", sort_by="passengers")["data"]["ranked"]
+    assert [x["iata"] for x in ranked] == ["BOS", "PWM", "BTV"]  # 2025 passengers: BOS > PWM > BTV
+
+
+def test_rank_unknown_sort_by_is_an_error(db, scoring_cfg):
+    r = tools.rank_airports(db, scoring_cfg, "new_england", sort_by="delays")
+    assert r["data"] is None and "sort_by must be one of" in r["error"]
+
+
+def test_scenario_weights_are_labeled_and_show_base_vs_scenario_rank(db, scoring_cfg):
+    r = check_envelope(tools.rank_airports(db, scoring_cfg, "new_england", weights={"growth": 0.6, "scale": 0}))
+    d = r["data"]
+    assert d["mode"] == "scenario" and r["headline"].startswith("Scenario weights: new_england")
+    assert d["weights_requested"] == {"growth": 0.6, "scale": 0.0}
+    # merged with config (utilization 0.25, long_haul 0.10), renormalized over built components
+    total = 0.25 + 0.6 + 0.10
+    assert d["weights_used"] == {"utilization": round(0.25 / total, 3), "scale": 0.0,
+                                 "growth": round(0.6 / total, 3), "long_haul": round(0.10 / total, 3)}
+    assert d["weights_base"] == tools.rank_airports(db, scoring_cfg, "new_england")["data"]["weights_used"]
+    base = {x["iata"]: x["rank"] for x in tools.rank_airports(db, scoring_cfg, "new_england")["data"]["ranked"]}
+    assert {x["iata"]: x["base_rank"] for x in d["ranked"]} == base
+    f = facts(r)
+    assert f["Ranking"]["value"].startswith("scenario") and f["Ranking"]["required"]
+    assert any(k.startswith("Scenario weights used") and v["required"] for k, v in f.items())
+    assert any(a.startswith("scenario:") for a in r["assumptions"])
+
+
+def test_scenario_weight_for_unbuilt_component_is_ignored_and_said(db, scoring_cfg):
+    r = tools.rank_airports(db, scoring_cfg, "new_england", weights={"congestion": 0.5})
+    assert "congestion" not in r["data"]["weights_used"]
+    assert any("ignored (component not built): congestion" in a for a in r["assumptions"])
+
+
+@pytest.mark.parametrize("weights, message", [
+    ({"price": 0.2}, "Unknown weight(s) price"),
+    ({"growth": -0.1}, "non-negative"),
+    ({"growth": "high"}, "non-negative"),
+    ({"growth": True}, "non-negative"),
+    ({"utilization": 0, "scale": 0, "growth": 0, "long_haul": 0}, "no weight to any available component"),
+])
+def test_invalid_scenario_weights_are_errors(db, scoring_cfg, weights, message):
+    r = check_envelope(tools.rank_airports(db, scoring_cfg, "new_england", weights=weights))
+    assert r["data"] is None and message in r["error"]
+
+
+def test_scenario_does_not_change_config(db, scoring_cfg):
+    before = dict(scoring_cfg.weights)
+    tools.rank_airports(db, scoring_cfg, "new_england", weights={"growth": 0.9})
+    assert scoring_cfg.weights == before
+
+
+def test_rank_list_is_capped_by_config(db, scoring_cfg):
+    from dataclasses import replace
+    r = tools.rank_airports(db, replace(scoring_cfg, max_ranked=2), "new_england", top_n=50)
+    assert len(r["data"]["ranked"]) == 2 and r["data"]["ranked_total"] == 3
+    assert "list capped at 2 airports" in r["assumptions"]
+
+
+def test_rank_tool_schema_exposes_sort_by_and_weights(scoring_cfg):
+    rank = {t.name: t for t in tools.make_tools(lambda: None, scoring_cfg)}["rank_airports"]
+    props = rank.args
+    assert props["sort_by"]["enum"] == ["score", "growth", "load_factor", "passengers"]
+    assert "weights" in props and "growth" in rank.description

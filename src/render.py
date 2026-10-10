@@ -57,16 +57,21 @@ def render_ranking(envelope: dict) -> str:
     ranked = data.get("ranked") if isinstance(data, dict) else None
     if not ranked:
         return ""
+    # Extra rank columns: a scenario shows the base rank, a non-score sort shows the score rank.
+    extra = [(key, label) for key, label in (("score_rank", "Score rank"), ("base_rank", "Base rank"))
+             if any(key in r for r in ranked)]
     rows = []
     for r in ranked:
         comp = r.get("components", {})
         passengers = comp.get("scale", {}).get("passengers")
-        rows.append([r["rank"], r["iata"], r["name"], f"{r['score']:.3f}",
+        rows.append([r["rank"], *[r.get(key, "n/a") for key, _ in extra], r["iata"], r["name"], f"{r['score']:.3f}",
                      "n/a" if passengers is None else f"{passengers:,}",
                      _pct(comp.get("utilization", {}).get("load_factor_pct")),
                      _pct(comp.get("growth", {}).get("growth_pct"), signed=True),
                      r["confidence"]])
-    table = _table(["Rank", "Airport", "Name", "Score", "Passengers", "Load factor", "Growth", "Confidence"], rows)
+    header = ["Rank", *[label for _, label in extra], "Airport", "Name", "Score", "Passengers", "Load factor",
+              "Growth", "Confidence"]
+    table = _table(header, rows)
     total = data.get("ranked_total", len(ranked))
     if total > len(ranked):
         table += f"\n\nTop {len(ranked)} of {total} ranked airports."
