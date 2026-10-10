@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
+
+import pandas as pd
 
 # Passenger service = AIRCRAFT_CONFIG 1 (pax) or 3 (combi); see Definitions in docs/plan.md.
 PASSENGER_CONFIGS: tuple[str, ...] = ("pax", "combi")
@@ -125,3 +128,94 @@ def unmatched_origins(conn: sqlite3.Connection) -> list[str]:
         "WHERE origin NOT IN (SELECT iata FROM airports) ORDER BY origin"
     )
     return [r[0] for r in rows]
+
+
+WINDOW_MONTHS = 12
+
+
+def _shift(period: str, months: int) -> str:
+    """'YYYY-MM' moved by `months` (negative goes back)."""
+    year, month = map(int, period.split("-"))
+    index = year * 12 + month - 1 + months
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"
+
+
+def _key(period: str) -> int:
+    """'YYYY-MM' -> year * 100 + month, comparable with the table columns."""
+    year, month = map(int, period.split("-"))
+    return year * 100 + month
+
+
+@dataclass(frozen=True)
+class Window:
+    """Analysis window (trailing 12 months) and the previous 12 months used for growth.
+
+    `months` / `prev_months` count months loaded inside each window, for every loaded source
+    (the minimum across sources); fewer than 12 means partial coverage.
+    """
+    start: str
+    end: str
+    prev_start: str
+    prev_end: str
+    months: int
+    prev_months: int
+
+    @property
+    def label(self) -> str:
+        return f"{self.start}..{self.end}"
+
+
+def analysis_window(conn: sqlite3.Connection) -> Window:
+    """Trailing 12 months ending at the minimum `last_period` over loaded sources (docs/plan.md)."""
+    rows = conn.execute("SELECT source, last_period FROM meta WHERE last_period IS NOT NULL").fetchall()
+    if not rows:
+        raise ValueError("No data loaded: run `uv run python -m src.ingest` first")
+    end = min(last for _, last in rows)
+    start = _shift(end, -(WINDOW_MONTHS - 1))
+    prev_end, prev_start = _shift(start, -1), _shift(start, -WINDOW_MONTHS)
+
+    def coverage(lo: str, hi: str) -> int:
+        return min(
+            conn.execute(
+                "SELECT COUNT(*) FROM ingest_log WHERE source = ? AND period BETWEEN ? AND ?", (source, lo, hi)
+            ).fetchone()[0]
+            for source, _ in rows
+        )
+
+    return Window(start, end, prev_start, prev_end, coverage(start, end), coverage(prev_start, prev_end))
+
+
+def airport_metrics(conn: sqlite3.Connection, window: Window, long_haul_miles: int) -> pd.DataFrame:
+    """One row per origin airport with passenger service in the window.
+
+    Columns: iata, name, state, region, departures, seats, passengers, long_haul_departures
+    (distance >= long_haul_miles), months_active, prev_passengers (previous 12 months; 0 if none).
+    All counts are passenger service only (PASSENGER_CONFIGS). Name, state and region come from
+    `airports`: state is set only for US states and territories, null for foreign airports and
+    for codes without a match. T-100 ORIGIN_STATE_ABR is not used here because it also holds
+    Canadian province codes (ON, BC, ...) and TT for the Pacific territories.
+    """
+    config_params = {f"c{i}": c for i, c in enumerate(PASSENGER_CONFIGS)}
+    configs = ",".join(f":{name}" for name in config_params)
+    sql = f"""
+        WITH t AS (
+            SELECT *, year * 100 + month AS period,
+                   (year * 100 + month) BETWEEN :start AND :end AS cur
+            FROM t100_route_month
+            WHERE config IN ({configs}) AND (year * 100 + month) BETWEEN :prev_start AND :end
+        )
+        SELECT t.origin AS iata, a.name, a.state, a.region,
+               SUM(CASE WHEN cur THEN departures ELSE 0 END) AS departures,
+               SUM(CASE WHEN cur THEN seats ELSE 0 END) AS seats,
+               SUM(CASE WHEN cur THEN passengers ELSE 0 END) AS passengers,
+               SUM(CASE WHEN cur AND distance >= :lh THEN departures ELSE 0 END) AS long_haul_departures,
+               COUNT(DISTINCT CASE WHEN cur THEN period END) AS months_active,
+               SUM(CASE WHEN cur THEN 0 ELSE passengers END) AS prev_passengers
+        FROM t LEFT JOIN airports a ON a.iata = t.origin
+        GROUP BY t.origin
+        HAVING SUM(CASE WHEN cur THEN departures ELSE 0 END) > 0
+        ORDER BY t.origin
+    """
+    params = {"start": _key(window.start), "end": _key(window.end), "prev_start": _key(window.prev_start),
+              "lh": long_haul_miles, **config_params}
+    return pd.read_sql_query(sql, conn, params=params)

@@ -3,7 +3,7 @@ Task status lives in `TASKS.md`. This file holds the design.
 
 ## Configuration (no hardcoded values)
 - `.env` (see `.env.example`) -> `src/config.py` `Settings.from_env()`: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_TEMPERATURE`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `CENSUS_API_KEY`, `DB_PATH`, `SEED_DB_PATH`, `RAW_DATA_DIR`, `WEIGHTS_PATH`, `LOG_LEVEL`. Secrets are hidden from `repr`. Relative paths resolve against the project root.
-- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles and sensitivity list, min departures, target load factor, sensitivity runs/jitter/seed, regions.
+- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles, minimum long-haul share and sensitivity list, min passengers, target load factor, sensitivity runs/jitter/seed, regions.
 - Why split: env is per-deployment and secret; methodology is reviewable, versioned and part of the design doc.
 
 ## LLM provider
@@ -38,7 +38,7 @@ Every tool returns:
 
 ## Definitions (fixed; used by ingest, scoring and tools)
 - Passenger service: T-100 rows with AIRCRAFT_CONFIG 1 (passenger) or 3 (combi) and DEPARTURES_PERFORMED > 0. Cargo (2) and undocumented (4) are excluded from passenger metrics; they count only in "all flights" figures.
-- Peer set: airports with a US state (`ORIGIN_STATE_ABR` not null) and at least `min_departures_per_year` passenger-service departures in the window. Percentiles are computed inside this set.
+- Peer set: airports with a US state or territory (`airports.state`, from OurAirports) and at least `min_passengers_per_year` passenger-service passengers in the window (100,000). Passengers, not departures: a departure floor admitted 9-seat commuter airports (Block Island, Westerly: about 20k passengers) and left out regional airports such as ORH and PSM. Percentiles are computed inside this set. T-100 `ORIGIN_STATE_ABR` is not used for this: it also holds Canadian province codes (YYZ = ON) and TT for the Pacific territories.
 - Window: trailing 12 complete months ending at `min(last_period)`; growth compares with the previous 12.
 - On-Time sides: departure delay rate, taxi-out and cancellations belong to the origin airport. Arrival counts and delay-cause minutes belong to the destination airport, because BTS records delay causes for arrival delays.
 
@@ -48,10 +48,11 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 - Scale = annual passengers (passenger service)
 - Congestion = weighted percentiles: departure-delay >=15 rate, mean taxi-out, NAS-delay minutes per arriving flight
 - Growth = passengers in the window vs the previous 12 months
-- LongHaul = departures >= threshold / passenger-service departures
+- LongHaul = departures >= threshold / passenger-service departures; a share below `long_haul_min_share` (2%) counts as 0 for the percentile, and the true share is still shown
 - DemandContext = metro population growth (Census)
 - Why Scale: profit depends on volume as well as pressure. Without it a small airport with fast growth outranks a large one (HVN +25% on 0.7M passengers vs BOS on 21M).
 - Why LongHaul is only 0.10: it hints at wide-body and international facilities, but it is secondary and distorted by cargo.
+- Why the 2% long-haul floor: without it, 55 peer airports with 0% tie at the bottom while airports with a few charters (about 0.1%) reach the 65th percentile; noise, not a facility signal.
 - Missing component -> renormalize weights, lower confidence, say so.
 - Question mapping: Q2 = Congestion; Q3 = LongHaul; Q4 = Utilization + Congestion + delay causes + spill proxy.
 - Confidence (deterministic): high = all components, full 12 months, in the peer set; medium = a component renormalized or partial coverage; low = fewer than 12 months or proxy-only. Unmet demand is capped at medium.
@@ -77,3 +78,9 @@ Re-baselined in P2.2 from `t100_route_month` under the Definitions above (passen
 - Cross-check against the ArcGIS NTAD 2024 layer (T-100 / ArcGIS): passengers ANC 1.01, SNA 1.04, BOS 1.26, SFO 1.43, LAX 1.45; departures 1.03 to 1.33. The layer looks like a subset, with the largest hubs most affected (hypothesis; confirm against FAA enplanement totals). T-100 is used as the source of truth.
 - ANC share of departures by distance (all configs / passenger-only), 2025: >=1,500 mi 49.1% / 19.4%; >=2,500 mi 43.2% / 11.4%; >=3,000 mi 31.0% / 4.0%. Cargo-config alone: 68.4% at 2,500 mi. 2024 is lower (40.0% / 8.2% at 2,500 mi).
 - SFO load factor 82.3% in 2025 (83.2% in 2024), 6th of 55 airports with at least 5M seats. Monthly range 77.2% (January) to 89.4% (June). Densest routes: HNL 90.6%, EWR 89.2%, MIA 89.2%, JFK 88.2%.
+
+## Known limits of the score (observed on real data, 2025 window)
+- The passenger floor is a policy line, not a fact: PSM (85,102 passengers) is excluded just under the 100,000 floor. The floor is in `config/weights.yaml` and the excluded list states the reason for each airport.
+- Long haul separates only the big hubs: 201 of 233 peer airports have no material long-haul share, so the component mainly adds a bonus for about 30 hubs (BOS in New England). It stays at 0.10 for that reason.
+- Exact score ties occur (19 of them) when all components are equal; they are broken by IATA code and should be reported as ties.
+- Scores are relative to the peer set, so adding or removing airports moves the percentiles. The rank-stability check (P3.5) shows how sensitive the ranking is to the weights: with growth at 0.30, BGR moves to first and BOS to fifth in New England.

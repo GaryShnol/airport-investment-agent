@@ -15,9 +15,11 @@ congestion:            # must sum to 1.0. Cancellations are shown but not scored
   nas_delay_per_arrival: 0.30  # NAS-caused delay minutes per arriving flight (BTS records causes for arrivals)
 
 long_haul_miles: 2500
+long_haul_min_share: 0.02     # share below this counts as 0 for the long_haul component (a few charters are not a signal)
 long_haul_sensitivity_miles: [1500, 2500, 3000]
 
-min_departures_per_year: 5000   # passenger-service departures, to be in the peer set
+min_passengers_per_year: 100000   # passenger-service passengers in the window, to be in the peer set
+                                  # (a departure floor let 9-seat commuter airports in and kept ORH and PSM out)
 
 unmet_demand:
   target_load_factor: 0.80      # spill proxy: seats needed to bring dense routes down to this

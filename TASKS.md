@@ -45,8 +45,8 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [x] P2.1 `src/store.py`: SQLite schema and queries (schema in `docs/plan.md`)
 - [x] P2.2 Ingest T-100 to `t100_route_month`; verify ANC 87,988 departures and the long-haul shares, and SFO load factor; re-baseline the acceptance values in `docs/plan.md` under the passenger-service definition
 - [x] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
-- [ ] P2.4 Scoring tests first: percentile, load factor, long-haul share, growth, renormalization when a component is missing
-- [ ] P2.5 `src/scoring.py` with the available components (utilization, scale, growth, long haul) and deterministic confidence
+- [x] P2.4 Scoring tests first: percentile, load factor, long-haul share, growth, renormalization when a component is missing
+- [x] P2.5 `src/scoring.py` with the available components (utilization, scale, growth, long haul) and deterministic confidence
 - [ ] P2.6 Tool envelope and tools: `data_status`, `resolve_airport` (handles "LA" ambiguity), `airport_metrics`, `rank_airports`
 - [ ] P2.7 `src/agent.py`: LangGraph ReAct agent, memory by `thread_id`, system prompt (scope, assumptions, clarify, user language), light input guard; strip any reasoning (`<think>`) block from model output before it reaches the user
 - [ ] P2.8 Agent test with a fake model: tool routing, ambiguity, out-of-scope, missing LLM key message
@@ -94,14 +94,14 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 | Replies in the user's language, English default | Global reviewers; Hebrew works too | None |
 | Six small tools | Reliable tool choice, also for local models | Less flexible than free-form SQL |
 | Scale component (0.15) in the score | Profit depends on volume, not only pressure and growth; stops tiny fast-growing airports from topping the ranking | One more weight to defend (it is in YAML and covered by the stability check) |
-| Passenger service = config 1 or 3, peer set = US airports above the departure floor | One explicit definition shared by ingest, scoring and tools | Acceptance values must be re-baselined once |
+| Passenger service = config 1 or 3, peer set = US airports above a passenger floor (100,000/yr; a departure floor admitted 9-seat commuter airports) | One explicit definition shared by ingest, scoring and tools | Acceptance values must be re-baselined once |
 | On-Time split into origin and destination sides | BTS records delay causes for arrivals; mixing sides would misattribute them | Slightly wider table |
 | Agent in `st.cache_resource`, SQLite opened read-only per call | Streamlit reruns the script per message; keeps memory and avoids thread errors | None |
 | Agent constructor: `create_agent` from `langchain.agents` (add the `langchain` package in P2.7) | Installed LangGraph 1.2.14 still ships `create_react_agent`, but it warns it is deprecated since V1.0 and removed in V2.0, moved to `langchain.agents` | One more dependency (`langchain`) |
 
 ## Demo script
 1. Which airports in New England are strong candidates for terminal expansion? (ranking, weights, stability, confidence)
-   - Follow-up: why is BDL below PVD? What if growth weighs more?
+   - Follow-up: why is PWM second (highest load factor in the region, 82.4%, plus 5.3% growth), and what changes if growth weighs more? (growth 0.30: BGR moves to first, BOS drops to fifth)
 2. Compare LA and Santa Ana congestion. (agent states LA = LAX, offers BUR/LGB/ONT)
 3. What percentage of long-haul flights leave Anchorage? (both numbers, thresholds, cargo explanation)
 4. What is the unmet demand at SFO and why? (proxy, peak months, dense routes, delay causes, confidence capped at medium)

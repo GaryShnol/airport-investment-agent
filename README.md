@@ -135,7 +135,7 @@ graph TD
 ```
 
 ## Scoring
-Each component is a percentile against all US passenger airports with enough departures in the window. Airports are then ranked inside the requested region. A missing component renormalizes the weights and lowers the reported confidence.
+Each component is a percentile against all US passenger airports with at least 100,000 passenger-service passengers in the window. Airports are then ranked inside the requested region. A missing component renormalizes the weights and lowers the reported confidence.
 
 | Component | Weight | Signal |
 |---|---|---|

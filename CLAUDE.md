@@ -25,8 +25,8 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - Work in small steps; update `TASKS.md` and commit per task.
 
 ## Traps
-- ANC is cargo-dominated: long-haul share differs hugely with/without cargo (all configs 43.2% vs passenger-only 11.4% at 2,500 mi, 2025). Always report both, the threshold and a sensitivity (1,500 / 2,500 / 3,000 mi).
-- T-100: read AIRCRAFT_CONFIG/CLASS/AIRCRAFT_TYPE as strings; config 1=pax, 2=cargo, 3=both, 4=undocumented. Drop rows with DEPARTURES_PERFORMED = 0. ORIGIN_STATE_ABR is null for foreign origins. T-100 totals are higher than the ArcGIS NTAD layer (ratio 1.0-1.45); T-100 is the source of truth, see Data validation in `docs/plan.md`.
+- ANC is cargo-dominated: long-haul share differs hugely with/without cargo (all configs 43.2% vs passenger-only at 2,500 mi, 2025: 11.4% for config 1 only, 11.5% for passenger service = config 1 and 3). Always report both, the threshold and a sensitivity (1,500 / 2,500 / 3,000 mi).
+- T-100: read AIRCRAFT_CONFIG/CLASS/AIRCRAFT_TYPE as strings; config 1=pax, 2=cargo, 3=both, 4=undocumented. Drop rows with DEPARTURES_PERFORMED = 0. ORIGIN_STATE_ABR is null for most foreign origins but holds province codes for Canada (YYZ = ON) and TT for Guam/Saipan; use `airports.state` for "US". T-100 totals are higher than the ArcGIS NTAD layer (ratio 1.0-1.45); T-100 is the source of truth, see Data validation in `docs/plan.md`.
 - On-Time: ~7M rows for 2025. Stream and aggregate, never load all; read only needed columns. Numbers are strings like `0.00`; FL_DATE looks like `1/1/2025 12:00:00 AM`; delay-cause columns are empty unless the flight was delayed (empty is not zero). Domestic, large carriers only, so small airports can be missing: renormalize and lower confidence.
 - Load factor = passengers / seats on passenger flights; it is a demand-pressure proxy, not terminal utilization (no gate or terminal-area data). "Unmet demand" is a proxy (spill estimate), never a field.
 - Definitions (passenger service, peer set, window, On-Time origin vs destination sides) are fixed in `docs/plan.md`; do not redefine them in code. BTS records delay causes for arrival delays, so cause minutes belong to the destination airport; departure delay and taxi-out belong to the origin.
@@ -41,4 +41,4 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 ## Defaults (all in `config/weights.yaml`, change there)
 - `Score = 0.25 Utilization + 0.25 Congestion + 0.15 Scale + 0.15 Growth + 0.10 LongHaul + 0.10 DemandContext`
 - Congestion = 0.40 departure-delay rate + 0.30 taxi-out + 0.30 NAS-delay minutes per arriving flight (cancellations shown, not scored: mostly weather).
-- Long-haul threshold 2,500 mi; min 5,000 departures/yr to be ranked; unmet-demand target load factor 0.80; New England = MA CT RI NH VT ME.
+- Long-haul threshold 2,500 mi; min 100,000 passenger-service passengers/yr to be ranked; long-haul share under 2% counts as 0 in the score; unmet-demand target load factor 0.80; New England = MA CT RI NH VT ME.
