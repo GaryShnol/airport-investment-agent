@@ -8,7 +8,7 @@ Last updated: 2026-10-10. Rule: finish a task, tick it here, commit with the tas
 - [x] P0.1 Read the exam brief and the job post; derive what is evaluated (reasoning, clarity, production thinking, not completeness)
 - [x] P0.2 Choose sources: BTS T-100 Segment (volume, seats, distance), BTS On-Time (delays, taxi, delay causes), Census API (metro population)
 - [x] P0.3 Download T-100 2024-2025 and the 12 On-Time months of 2025
-- [x] P0.4 First-pass analysis and cross-check against ArcGIS NTAD (`reports/t100_first_pass.txt`), acceptance values recorded
+- [x] P0.4 First-pass analysis and cross-check against ArcGIS NTAD; findings and acceptance values kept in `docs/plan.md` (Data validation); the exploratory script and raw report were removed (they stay in git history)
 - [x] P0.5 Document traps (cargo at ANC, config codes, empty vs zero delay causes, proxies) in `CLAUDE.md`
 - [x] P0.6 Feasibility checks: On-Time direct files work (404 when unpublished, latest 2026-07); T-100 download is a scriptable form (latest 2026-07); Census key works
 - [x] P0.7 Design review and decisions (see Decision log)
@@ -57,7 +57,7 @@ Last updated: 2026-10-10. Rule: finish a task, tick it here, commit with the tas
 - [ ] P6.1 `Dockerfile`, `docker-compose.yml`, entrypoint that seeds the DB volume
 - [ ] P6.2 GitHub Actions: `pytest`
 - [~] P6.3 `README.md`: draft with diagrams (architecture and flow, single source), scoring and limits is in; finalize the quickstart when the app runs
-- [ ] P6.4 `docs/design.md`: scoring methodology, key tradeoffs, where AI is used, limits and assumptions, production path
+- [ ] P6.4 `docs/design.md`: scoring methodology, key tradeoffs, where AI is used, limits and assumptions, data validation (from `docs/plan.md`), production path
 - [x] P6.5 Cleanup: removed one-off download helpers, a duplicate ZIP, an empty temp folder and caches (done at the first commit)
 - [ ] P6.6 Final check: fresh clone, `docker compose up`, run the four questions plus follow-ups
 

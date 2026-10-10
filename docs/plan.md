@@ -55,7 +55,13 @@ Component = percentile vs all US passenger airports with >= `min_departures` in 
 ## Packaging
 Dockerfile + `docker-compose.yml` (app service, `env_file: .env`, volume for the DB, entrypoint seeds the DB). Local model from a container: `OLLAMA_BASE_URL=http://host.docker.internal:11434`. GitHub Actions runs `pytest`. README: two-command quickstart. `docs/design.md`: scoring methodology, tradeoffs, where AI is used, limits, production path (scheduled ingest, tracing, secrets, evals).
 
-## Acceptance values (from data already analyzed, calendar 2025)
+## Acceptance values (calendar 2025; become golden tests in P3.5)
 - T-100 2025 ANC, all configs: 87,988 departures; share >= 2,500 mi = 43.2%; passenger-config only = 11.4%.
 - T-100 2025 SFO load factor = 82.3%.
 - On-Time 2025: 7,001,619 rows; January = 539,747.
+
+## Data validation (first pass on T-100 2024-2025, done before building)
+- Profile: 1,121,004 rows, 2,189 origins. Rows with 0 departures: 0.2%, none with passengers. No negative values. Config counts: pax 984,737, cargo 117,440, undocumented 9,905, both 8,922.
+- Cross-check against the ArcGIS NTAD 2024 layer (T-100 / ArcGIS): passengers ANC 1.01, SNA 1.04, BOS 1.26, SFO 1.43, LAX 1.45; departures 1.03 to 1.33. The layer looks like a subset, with the largest hubs most affected (hypothesis; confirm against FAA enplanement totals). T-100 is used as the source of truth.
+- ANC share of departures by distance (all configs / passenger-only), 2025: >=1,500 mi 49.1% / 19.4%; >=2,500 mi 43.2% / 11.4%; >=3,000 mi 31.0% / 4.0%. Cargo-config alone: 68.4% at 2,500 mi. 2024 is lower (40.0% / 8.2% at 2,500 mi).
+- SFO load factor 82.3% in 2025 (83.2% in 2024), 6th of 55 airports with at least 5M seats. Monthly range 77.2% (January) to 89.4% (June). Densest routes: HNL 90.6%, EWR 89.2%, MIA 89.2%, JFK 88.2%.

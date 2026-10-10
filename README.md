@@ -168,8 +168,6 @@ src/        config, LLM provider registry (ingest, store, scoring, tools, agent 
 config/     scoring methodology (weights.yaml)
 docs/       design plan (and later design.md)
 tests/      unit tests
-reports/    first-pass data analysis and cross-checks
-scripts/    one-off analysis scripts
 seed/       prebuilt aggregated database (committed)
 data/       raw downloads (not committed)
 ```
