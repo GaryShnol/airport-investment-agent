@@ -40,7 +40,7 @@ Tool output on the seed `data-2025`: window 2025-01..2025-12, freshness stale (B
 
 **New England candidates** (`rank_airports`, confidence medium: HVN, ACK, ORH lack a component). BOS 0.755, BTV 0.663, PWM 0.605, BGR 0.590, PVD 0.489; 10 ranked, 45 below the passenger floor. Stability: BOS first in 20 of 20 runs; BOS and BTV always top 3, PWM in 80% of runs, BGR in 20%. Drivers: BOS long haul (96th percentile), BTV congestion (79th), PWM utilization (87th). With growth at 0.30, BGR moves to third and PWM to fourth. Caveat: a pressure ranking, not a business case.
 
-**LAX vs SNA congestion** (`compare_airports`, "LA" stated as LAX, confidence medium). Delayed departures: SNA higher (19.2% vs 18.1%). Taxi-out: LAX higher (17.7 vs 16.1 min). NAS delay per arrival: no meaningful difference (1.97 vs 1.76 min, inside the 95% margins). Overall: mixed. Caveat: On-Time covers the large carriers only, and LAX has 5.1 times SNA's departures.
+**LAX vs SNA congestion** (`compare_airports`; asked as "LA", the card states LA = LAX and gives medium confidence for that assumption, high when the model passes LAX itself). Delayed departures: SNA higher (19.2% vs 18.1%). Taxi-out: LAX higher (17.7 vs 16.1 min). NAS delay per arrival: no meaningful difference (1.97 vs 1.76 min, inside the 95% margins). Overall: mixed. Caveat: On-Time covers the large carriers only, and LAX has 5.1 times SNA's departures.
 
 **ANC long haul** (`airport_metrics`, confidence high). At 2,500 mi: 43.2% of all departures including cargo (37,969 of 87,988), 11.5% of passenger service (4,494 of 39,025). At 1,500 mi 49.1% / 19.3%; at 3,000 mi 31.0% / 4.3%. Caveat: a cargo hub, so the base decides the answer; both are always given.
 
