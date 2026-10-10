@@ -5,7 +5,10 @@ Run: `uv run python -m src.ingest`. The only module that writes to the DB.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sqlite3
+import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +27,23 @@ T100_COLUMNS = [
 # so it never enters passenger metrics.
 T100_CONFIGS = {"1": "pax", "2": "cargo", "3": "combi", "4": "unknown"}
 T100_KEYS = ["origin", "origin_state", "dest", "year", "month", "config", "distance"]
+
+ONTIME_SOURCE = store.ONTIME_SOURCE
+ONTIME_DIR = "ontime"
+ONTIME_GLOB = "**/ontime_*.zip"   # one BTS TranStats monthly download per file, read from the ZIP
+ONTIME_COLUMNS = [
+    "YEAR", "MONTH", "ORIGIN", "DEST", "DEP_DEL15", "TAXI_OUT", "ARR_DEL15", "CANCELLED", "DIVERTED",
+    "CARRIER_DELAY", "WEATHER_DELAY", "NAS_DELAY", "SECURITY_DELAY", "LATE_AIRCRAFT_DELAY",
+]
+ONTIME_CAUSES = {"CARRIER_DELAY": "carrier_min", "WEATHER_DELAY": "weather_min", "NAS_DELAY": "nas_min",
+                 "SECURITY_DELAY": "security_min", "LATE_AIRCRAFT_DELAY": "late_aircraft_min"}
+ONTIME_TABLE_COLUMNS = [
+    "airport", "year", "month", "dep_flights", "dep_del15", "dep_cancelled", "taxi_out_sum", "taxi_out_n",
+    "arr_flights", "arr_del15", *ONTIME_CAUSES.values(), "dep_del15_n",
+]
+ONTIME_CHUNK_ROWS = 200_000      # a month is ~540k-640k flights; read it in a few chunks
+# Data validation reference (docs/plan.md, Acceptance values): BTS row counts for the 2025 files.
+ONTIME_EXPECTED_ROWS = {"2025": 7_001_619, "2025-01": 539_747}
 
 AIRPORTS_FILE = "airports.csv"  # OurAirports, in RAW_DATA_DIR
 # US territories have their own iso_country in OurAirports; T-100 uses the same code as
@@ -95,6 +115,125 @@ def ingest_t100(conn: sqlite3.Connection, t100_dir: Path) -> int:
         inserted += len(new)
     _update_meta(conn, T100_SOURCE)
     return inserted
+
+
+@dataclass(frozen=True)
+class OntimeMonth:
+    """One On-Time file aggregated per airport, plus the counts the ingest summary reports."""
+    period: str                     # 'YYYY-MM'
+    table: pd.DataFrame             # ONTIME_TABLE_COLUMNS, one row per airport
+    flights: int                    # data rows in the file
+    cancelled: int
+    diverted: int
+    cancelled_with_dep_delay: int   # cancelled flights that still report DEP_DEL15 (kept as reported)
+    cancelled_with_taxi_out: int
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _ontime_csv(path: Path) -> tuple[zipfile.ZipFile, str]:
+    """The ZIP and the name of its single CSV; raises for anything else (e.g. an HTML error page)."""
+    if not zipfile.is_zipfile(path):
+        raise ValueError(f"{path.name} is not a valid ZIP file")
+    archive = zipfile.ZipFile(path)
+    names = [n for n in archive.namelist() if n.lower().endswith(".csv")]
+    if len(names) != 1:
+        archive.close()
+        raise ValueError(f"{path.name} must hold exactly one CSV, found {names}")
+    return archive, names[0]
+
+
+def read_ontime(path: Path, chunk_rows: int = ONTIME_CHUNK_ROWS) -> OntimeMonth:
+    """Stream one monthly On-Time ZIP and aggregate it per airport (docs/plan.md, On-Time sides).
+
+    Departure side by ORIGIN: scheduled departures (incl. cancelled), cancellations, DEP_DEL15
+    (sum and the number of flights reporting it), taxi-out. Arrival side by DEST: arrivals
+    operated (ARR_DEL15 reported), ARR_DEL15 and the cause minutes. Empty fields are missing, not
+    zero: cancelled flights mostly have no taxi-out or delay, and cause minutes exist only for
+    arrivals delayed >= 15 min, so they sum as "no minutes" and never enter a count.
+    Raises if the file spans several months.
+    """
+    archive, name = _ontime_csv(path)
+    dep_parts, arr_parts, periods = [], [], set()
+    flights = cancelled = diverted = cancelled_dep = cancelled_taxi = 0
+    with archive, archive.open(name) as f:
+        chunks = pd.read_csv(f, usecols=ONTIME_COLUMNS, dtype={"ORIGIN": str, "DEST": str},
+                             keep_default_na=False, na_values=[""], chunksize=chunk_rows)
+        for chunk in chunks:
+            periods |= set(zip(chunk["YEAR"].astype(int), chunk["MONTH"].astype(int)))
+            is_cancelled = chunk["CANCELLED"] == 1
+            flights += len(chunk)
+            cancelled += int(is_cancelled.sum())
+            diverted += int((chunk["DIVERTED"] == 1).sum())
+            cancelled_dep += int((is_cancelled & chunk["DEP_DEL15"].notna()).sum())
+            cancelled_taxi += int((is_cancelled & chunk["TAXI_OUT"].notna()).sum())
+            dep_parts.append(chunk.groupby("ORIGIN").agg(
+                dep_flights=("CANCELLED", "size"), dep_cancelled=("CANCELLED", "sum"),
+                dep_del15=("DEP_DEL15", "sum"), dep_del15_n=("DEP_DEL15", "count"),
+                taxi_out_sum=("TAXI_OUT", "sum"), taxi_out_n=("TAXI_OUT", "count")))
+            arr_parts.append(chunk.groupby("DEST").agg(
+                arr_flights=("ARR_DEL15", "count"), arr_del15=("ARR_DEL15", "sum"),
+                **{col: (src, "sum") for src, col in ONTIME_CAUSES.items()}))
+    if len(periods) != 1:
+        raise ValueError(f"{path.name} must hold exactly one month, found {sorted(periods)}")
+    (year, month), = periods
+
+    dep = pd.concat(dep_parts).groupby(level=0).sum()
+    arr = pd.concat(arr_parts).groupby(level=0).sum()
+    # Outer join: an airport seen on one side only gets zeros on the other.
+    table = dep.join(arr, how="outer").fillna(0).rename_axis("airport").reset_index()
+    table["airport"] = table["airport"].str.strip()
+    table["year"], table["month"] = year, month
+    counts = ["dep_flights", "dep_cancelled", "dep_del15", "dep_del15_n", "taxi_out_n", "arr_flights", "arr_del15"]
+    table[counts] = table[counts].round().astype(int)
+    return OntimeMonth(f"{year:04d}-{month:02d}", table[ONTIME_TABLE_COLUMNS], flights, cancelled, diverted,
+                       cancelled_dep, cancelled_taxi)
+
+
+def ingest_ontime(conn: sqlite3.Connection, ontime_dir: Path) -> list[OntimeMonth]:
+    """Load every On-Time file whose hash is not in ingest_log; returns the months loaded.
+
+    A file already loaded (same sha256) is skipped without being read. A new or changed file
+    replaces its month only: that month's rows and log entry are deleted, then reinserted.
+    """
+    loaded = []
+    for path in sorted(Path(ontime_dir).glob(ONTIME_GLOB)):
+        digest = _sha256(path)
+        if conn.execute("SELECT 1 FROM ingest_log WHERE source = ? AND file_hash = ?",
+                        (ONTIME_SOURCE, digest)).fetchone():
+            continue
+        month = read_ontime(path)
+        year, mon = map(int, month.period.split("-"))
+        conn.execute("DELETE FROM ontime_airport_month WHERE year = ? AND month = ?", (year, mon))
+        conn.execute("DELETE FROM ingest_log WHERE source = ? AND period = ?", (ONTIME_SOURCE, month.period))
+        conn.executemany(
+            f"INSERT INTO ontime_airport_month ({','.join(ONTIME_TABLE_COLUMNS)}) "
+            f"VALUES ({','.join('?' * len(ONTIME_TABLE_COLUMNS))})",
+            month.table.astype(object).itertuples(index=False, name=None),
+        )
+        conn.execute("INSERT INTO ingest_log (source, period, rows, loaded_at, file_hash, source_rows) "
+                     "VALUES (?, ?, ?, ?, ?, ?)",
+                     (ONTIME_SOURCE, month.period, len(month.table), _now(), digest, month.flights))
+        loaded.append(month)
+    _update_meta(conn, ONTIME_SOURCE)
+    return loaded
+
+
+def ontime_row_check(conn: sqlite3.Connection) -> list[str]:
+    """Flights read per reference period (ONTIME_EXPECTED_ROWS) against the expected BTS counts."""
+    lines = []
+    for period, expected in ONTIME_EXPECTED_ROWS.items():
+        got = conn.execute("SELECT COALESCE(SUM(source_rows), 0) FROM ingest_log WHERE source = ? AND period LIKE ?",
+                           (ONTIME_SOURCE, f"{period}%")).fetchone()[0]
+        status = "OK" if got == expected else f"DIFFERENCE {got - expected:+,}"
+        lines.append(f"ontime {period}: {got:,} flights, expected {expected:,}: {status}")
+    return lines
 
 
 def _update_meta(conn: sqlite3.Connection, source: str) -> None:
@@ -175,6 +314,21 @@ def main(argv: list[str] | None = None) -> None:
         # Kept in t100_route_month either way; they just have no name, state or region.
         missing = store.unmatched_origins(conn)
         print(f"origins without an airports match: {len(missing)} {' '.join(missing[:20])}".rstrip())
+
+        months = ingest_ontime(conn, settings.raw_data_dir / ONTIME_DIR)
+        print(f"ontime: {len(months)} months loaded ({', '.join(m.period for m in months) or 'none new'})")
+        if months:
+            n, cancelled = sum(m.flights for m in months), sum(m.cancelled for m in months)
+            print(f"ontime cancelled: {cancelled:,} of {n:,} flights ({cancelled / n:.2%}), "
+                  f"{sum(m.diverted for m in months):,} diverted. Cancelled flights count as scheduled "
+                  "departures (cancellation rate) and never as arrivals; their empty taxi-out and delay "
+                  "fields are skipped, not zero. Reported anyway and kept: "
+                  f"{sum(m.cancelled_with_dep_delay for m in months):,} with DEP_DEL15, "
+                  f"{sum(m.cancelled_with_taxi_out for m in months):,} with taxi-out.")
+        for line in ontime_row_check(conn):
+            print(line)
+        missing = store.unmatched_ontime_airports(conn)
+        print(f"ontime airports without an airports match: {len(missing)} {' '.join(missing)}".rstrip())
 
 
 if __name__ == "__main__":

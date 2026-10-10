@@ -92,7 +92,7 @@ def seed_analysis_db(conn):
     store.init_db(conn)
     conn.executemany("INSERT INTO airports (iata, name, state, region, municipality) VALUES (?,?,?,?,?)", AIRPORTS)
     conn.executemany("INSERT INTO t100_route_month VALUES (?,?,?,?,?,?,?,?,?,?)", _routes())
-    conn.executemany("INSERT INTO ingest_log VALUES ('t100', ?, 1, 'now')",
+    conn.executemany("INSERT INTO ingest_log (source, period, rows, loaded_at) VALUES ('t100', ?, 1, 'now')",
                      [(f"{y}-{m:02d}",) for y in (2024, 2025) for m in range(1, 13)])
     conn.execute("INSERT INTO meta (source, last_period) VALUES ('t100', '2025-12')")
     conn.commit()

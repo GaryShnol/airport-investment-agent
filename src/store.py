@@ -28,8 +28,10 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS ingest_log (
     source TEXT NOT NULL,
     period TEXT NOT NULL,      -- 'YYYY-MM'
-    rows INTEGER NOT NULL,
+    rows INTEGER NOT NULL,     -- rows inserted for this month
     loaded_at TEXT NOT NULL,
+    file_hash TEXT,            -- sha256 of the source file (On-Time: a changed file reloads its month)
+    source_rows INTEGER,       -- data rows read from the source file (On-Time: flights)
     PRIMARY KEY (source, period)
 );
 CREATE TABLE IF NOT EXISTS airports (
@@ -56,14 +58,21 @@ CREATE TABLE IF NOT EXISTS t100_route_month (
     PRIMARY KEY (origin, dest, year, month, config, distance)
 );
 CREATE INDEX IF NOT EXISTS ix_t100_period ON t100_route_month (year, month);
+-- BTS On-Time per airport and month. Departure side (dep_*, taxi_out_*) counts flights with this
+-- airport as ORIGIN; arrival side (arr_*) and cause minutes count flights with it as DEST, because
+-- BTS records delay causes for arrival delays. Counts, not rates: rates are computed at query time.
 CREATE TABLE IF NOT EXISTS ontime_airport_month (
     airport TEXT NOT NULL,
     year INTEGER NOT NULL,
     month INTEGER NOT NULL,
-    dep_flights INTEGER, dep_del15 INTEGER, dep_cancelled INTEGER,
-    taxi_out_sum REAL, taxi_out_n INTEGER,
-    arr_flights INTEGER, arr_del15 INTEGER,
+    dep_flights INTEGER,       -- scheduled departures, including cancelled
+    dep_del15 INTEGER,         -- departures delayed >= 15 min
+    dep_cancelled INTEGER,
+    taxi_out_sum REAL, taxi_out_n INTEGER,   -- minutes and flights with a reported taxi-out
+    arr_flights INTEGER,       -- arrivals operated (ARR_DEL15 reported: not cancelled, not diverted)
+    arr_del15 INTEGER,
     carrier_min REAL, weather_min REAL, nas_min REAL, security_min REAL, late_aircraft_min REAL,
+    dep_del15_n INTEGER,       -- departures with a reported DEP_DEL15 (rate denominator)
     PRIMARY KEY (airport, year, month)
 );
 CREATE TABLE IF NOT EXISTS census_metro (
@@ -96,9 +105,11 @@ def connect_ro(path: Path) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     # Columns added after a DB was first created (CREATE TABLE IF NOT EXISTS does not add them).
-    columns = {r[1] for r in conn.execute("PRAGMA table_info(airports)")}
-    if "municipality" not in columns:
-        conn.execute("ALTER TABLE airports ADD COLUMN municipality TEXT")
+    for table, column, kind in (("airports", "municipality", "TEXT"), ("ingest_log", "file_hash", "TEXT"),
+                                ("ingest_log", "source_rows", "INTEGER"),
+                                ("ontime_airport_month", "dep_del15_n", "INTEGER")):
+        if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
 
 def loaded_periods(conn: sqlite3.Connection, source: str) -> set[str]:
@@ -136,6 +147,9 @@ def unmatched_origins(conn: sqlite3.Connection) -> list[str]:
 
 
 WINDOW_MONTHS = 12
+# Sources the previous 12 months are needed for (growth is T-100 passengers). On-Time is used only
+# inside the window, so its missing previous year must not switch growth off.
+GROWTH_SOURCES = ("t100",)
 
 
 def _shift(period: str, months: int) -> str:
@@ -155,8 +169,9 @@ def _key(period: str) -> int:
 class Window:
     """Analysis window (trailing 12 months) and the previous 12 months used for growth.
 
-    `months` / `prev_months` count months loaded inside each window, for every loaded source
-    (the minimum across sources); fewer than 12 means partial coverage.
+    `months` counts months loaded inside the window (the minimum across loaded sources);
+    `prev_months` the same for the previous 12 months, over GROWTH_SOURCES only. Fewer than 12
+    means partial coverage.
     """
     start: str
     end: str
@@ -179,15 +194,19 @@ def analysis_window(conn: sqlite3.Connection) -> Window:
     start = _shift(end, -(WINDOW_MONTHS - 1))
     prev_end, prev_start = _shift(start, -1), _shift(start, -WINDOW_MONTHS)
 
-    def coverage(lo: str, hi: str) -> int:
+    sources = [source for source, _ in rows]
+    growth_sources = [s for s in sources if s in GROWTH_SOURCES] or sources
+
+    def coverage(lo: str, hi: str, among: list[str]) -> int:
         return min(
             conn.execute(
                 "SELECT COUNT(*) FROM ingest_log WHERE source = ? AND period BETWEEN ? AND ?", (source, lo, hi)
             ).fetchone()[0]
-            for source, _ in rows
+            for source in among
         )
 
-    return Window(start, end, prev_start, prev_end, coverage(start, end), coverage(prev_start, prev_end))
+    return Window(start, end, prev_start, prev_end, coverage(start, end, sources),
+                  coverage(prev_start, prev_end, growth_sources))
 
 
 def airport_metrics(conn: sqlite3.Connection, window: Window, long_haul_miles: int) -> pd.DataFrame:
@@ -224,6 +243,42 @@ def airport_metrics(conn: sqlite3.Connection, window: Window, long_haul_miles: i
     params = {"start": _key(window.start), "end": _key(window.end), "prev_start": _key(window.prev_start),
               "lh": long_haul_miles, **config_params}
     return pd.read_sql_query(sql, conn, params=params)
+
+
+ONTIME_SOURCE = "ontime"
+
+
+def ontime_loaded(conn: sqlite3.Connection) -> bool:
+    """True once any On-Time month is loaded (congestion can then be scored)."""
+    return conn.execute("SELECT 1 FROM ingest_log WHERE source = ? LIMIT 1", (ONTIME_SOURCE,)).fetchone() is not None
+
+
+def ontime_metrics(conn: sqlite3.Connection, window: Window) -> pd.DataFrame:
+    """One row per airport with On-Time data in the window: summed counts and minutes, plus
+    `ontime_months` (months with any row). Rates are left to src/scoring.py.
+
+    Departure-side counts come from flights with the airport as origin, arrival-side counts and
+    cause minutes from flights with it as destination (see the table comment)."""
+    sql = """
+        SELECT airport AS iata, COUNT(*) AS ontime_months,
+               SUM(dep_flights) AS dep_flights, SUM(dep_cancelled) AS dep_cancelled,
+               SUM(dep_del15) AS dep_del15, SUM(dep_del15_n) AS dep_del15_n,
+               SUM(taxi_out_sum) AS taxi_out_sum, SUM(taxi_out_n) AS taxi_out_n,
+               SUM(arr_flights) AS arr_flights, SUM(arr_del15) AS arr_del15,
+               SUM(carrier_min) AS carrier_min, SUM(weather_min) AS weather_min, SUM(nas_min) AS nas_min,
+               SUM(security_min) AS security_min, SUM(late_aircraft_min) AS late_aircraft_min
+        FROM ontime_airport_month
+        WHERE (year * 100 + month) BETWEEN :start AND :end
+        GROUP BY airport ORDER BY airport
+    """
+    return pd.read_sql_query(sql, conn, params={"start": _key(window.start), "end": _key(window.end)})
+
+
+def unmatched_ontime_airports(conn: sqlite3.Connection) -> list[str]:
+    """On-Time airports with no row in `airports` (shown by ingest)."""
+    rows = conn.execute("SELECT DISTINCT airport FROM ontime_airport_month "
+                        "WHERE airport NOT IN (SELECT iata FROM airports) ORDER BY airport")
+    return [r[0] for r in rows]
 
 
 def meta_rows(conn: sqlite3.Connection) -> list[dict]:

@@ -11,14 +11,15 @@ Task status lives in `TASKS.md`. This file holds the design.
 
 ## SQLite schema
 - `meta(source, last_period, upstream_latest, checked_at, fetched_at)`  one row per source (freshness summary)
-- `ingest_log(source, period, rows, loaded_at)`  one row per loaded (source, month); makes ingest idempotent
+- `ingest_log(source, period, rows, loaded_at, file_hash, source_rows)`  one row per loaded (source, month); makes ingest idempotent. `rows` = rows inserted; On-Time also stores the file's sha256 (`file_hash`) and the flights read (`source_rows`, used for the row-count check)
 - `airports(iata, name, state, region, cbsa, lat, lon, municipality)`  municipality = city served, used by `resolve_airport`
 - `t100_route_month(origin, origin_state, dest, year, month, config, distance, departures, seats, passengers)`  origin_state = ORIGIN_STATE_ABR (peer-set filter)  config = pax | cargo | combi | unknown
-- `ontime_airport_month(airport, year, month, dep_flights, dep_del15, dep_cancelled, taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, nas_min, security_min, late_aircraft_min)`  departure side at the origin airport; arrival side and cause minutes at the destination airport
+- `ontime_airport_month(airport, year, month, dep_flights, dep_del15, dep_del15_n, dep_cancelled, taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, nas_min, security_min, late_aircraft_min)`  departure side at the origin airport; arrival side and cause minutes at the destination airport. Counts, not rates. `dep_flights` = scheduled departures incl. cancelled (cancellation rate denominator); `dep_del15_n` = departures reporting DEP_DEL15 (delay-rate denominator: 4,285 cancelled flights in 2025 still report one); `arr_flights` = arrivals operated (ARR_DEL15 reported, so not cancelled or diverted), the denominator for NAS minutes per arrival
 - `census_metro(cbsa, year, population, fetched_at)`
 
 ## Ingest (offline, idempotent, `src/ingest.py`)
 - Reads files from `RAW_DATA_DIR`; skips (source, month) already in `ingest_log`; validates ZIPs with `zipfile`; aggregates On-Time in a stream with `usecols`.
+- On-Time: `RAW_DATA_DIR/ontime/**/ontime_*.zip`, one BTS TranStats monthly download per file (`T_ONTIME_REPORTING.csv`, upper-case column names such as `DEP_DEL15`, `TAXI_OUT`, `NAS_DELAY`), read from the ZIP in chunks. A file whose sha256 is already in `ingest_log` is skipped unread; a new or changed file replaces its month only. The summary prints flights read vs the acceptance counts, the cancelled-flight handling and On-Time airports with no `airports` match. The PREZIP files (`On_Time_Reporting_Carrier_On_Time_Performance_...`) use different, CamelCase column names and are not read yet (P4.5).
 - `--check`: HEAD the next On-Time month (404 = not published) and read T-100 "Latest Available Data"; stores `upstream_latest`, `checked_at`; prints what is missing. No downloads.
 - Optional (stretch): `--download` fetches missing On-Time months (direct URLs) and T-100 (form POST). Any failure falls back to local files.
 - `seed/airport.db` is built from the aggregated tables and committed; the container copies it to the `DB_PATH` volume if absent.
@@ -47,7 +48,7 @@ Every tool returns:
 ## Definitions (fixed; used by ingest, scoring and tools)
 - Passenger service: T-100 rows with AIRCRAFT_CONFIG 1 (passenger) or 3 (combi) and DEPARTURES_PERFORMED > 0. Cargo (2) and undocumented (4) are excluded from passenger metrics; they count only in "all flights" figures.
 - Peer set: airports with a US state or territory (`airports.state`, from OurAirports) and at least `min_passengers_per_year` passenger-service passengers in the window (100,000). Passengers, not departures: a departure floor admitted 9-seat commuter airports (Block Island, Westerly: about 20k passengers) and left out regional airports such as ORH and PSM. Percentiles are computed inside this set. T-100 `ORIGIN_STATE_ABR` is not used for this: it also holds Canadian province codes (YYZ = ON) and TT for the Pacific territories.
-- Window: trailing 12 complete months ending at `min(last_period)`; growth compares with the previous 12.
+- Window: trailing 12 complete months ending at `min(last_period)`; growth compares with the previous 12. Coverage of the previous 12 months is checked only for T-100 (`store.GROWTH_SOURCES`): On-Time is used only inside the window, so its missing 2024 must not switch growth off.
 - On-Time sides: departure delay rate, taxi-out and cancellations belong to the origin airport. Arrival counts and delay-cause minutes belong to the destination airport, because BTS records delay causes for arrival delays.
 
 ## Scoring (`src/scoring.py`, pure functions, unit-tested)

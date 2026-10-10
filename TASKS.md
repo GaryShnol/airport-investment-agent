@@ -2,11 +2,11 @@
 
 Task board for the Airport Investment Intelligence Agent (Deloitte Digital FDE exam, 24h budget).
 Legend: [x] done · [~] written, not yet verified · [ ] todo · (stretch) only if time allows.
-Last updated: 2026-10-10. Current milestone: **M2**.
+Last updated: 2026-10-10. Current milestone: **M3**.
 
 ## Working agreements
 - Build in vertical slices: after M2 the app already answers questions end to end; later milestones add data and depth.
-- One branch per milestone (`m2-vertical-slice`), merged into `main` by pull request. `main` stays green: CI runs `pytest`.
+- One branch per milestone or slice (`m2-vertical-slice`, `m3a-ontime-congestion`), merged into `main` by pull request. `main` stays green: CI runs `pytest`.
 - Commit per task, message prefixed with the task id (for example `P2.2: T-100 ingest`). Tick the task here in the same commit.
 - Tests first for scoring. No hardcoded values: `.env` through `src/config.py`, methodology in `config/weights.yaml`.
 
@@ -41,7 +41,7 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [x] P1.7 Create the real `.env`; smoke-test `get_chat_model` with a local Ollama model (works; finding: the reply contained a `<think>` block, handled in P2.7 and P2.10)
 - [x] P1.8 Check which agent constructor the installed LangGraph/LangChain version provides
 
-## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial) (current)
+## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial)
 - [x] P2.1 `src/store.py`: SQLite schema and queries (schema in `docs/plan.md`)
 - [x] P2.2 Ingest T-100 to `t100_route_month`; verify ANC 87,988 departures and the long-haul shares, and SFO load factor; re-baseline the acceptance values in `docs/plan.md` under the passenger-service definition
 - [x] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
@@ -61,8 +61,9 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [x] P2.14 Agent robustness: check ToolMessages across turns (report); empty model reply -> one retry, then a deterministic message; `OLLAMA_NUM_CTX` in `.env` with a warning near the limit; prompt rules (comment, do not repeat the card; only figures from the card; no unsupported conclusions; always resolve airport names; ask when several match)
 - [ ] P2.10 Small eval (8-10 fixed questions with the expected tool) on local models (qwen3:4b-instruct-2507, lfm2.5:8b, gpt-oss:20b); record tool-choice accuracy and latency; set `num_ctx` in config; decide the reasoning setting (`reasoning` parameter of ChatOllama, verify it exists in the installed version); also change the prompt to "comment on the data, do not repeat it" and measure faithfulness (commentary that contradicts the data card, for example the sign of a growth rate), with and without the change
 
-## M3 - Congestion and depth (Q2 complete, Q4 complete)
-- [ ] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
+## M3 - Congestion and depth (Q2 complete, Q4 complete) (current)
+- [x] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
+  - Verified: 7,001,619 flights for 2025 and 539,747 for January (exact); 352 airports, all matched in `airports`; 1.47% cancelled. Idempotent by file sha256 (rerun reads nothing); a changed file reloads its month only
 - [ ] P3.2 Congestion component (delay rate, taxi-out, NAS delay per arriving flight) in scoring, with tests
 - [ ] P3.3 `compare_airports` (LAX vs SNA, normalized)
 - [ ] P3.4 `explain_demand_gap` for SFO: peak months, dense routes, spill proxy, delay-cause mix; confidence capped at medium
