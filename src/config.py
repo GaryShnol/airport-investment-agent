@@ -57,8 +57,8 @@ class Settings:
             raise ConfigError("LLM_TEMPERATURE must be a number") from exc
 
         return cls(
-            llm_provider=get("LLM_PROVIDER", "openai").lower(),
-            llm_model=get("LLM_MODEL", "gpt-4o-mini"),
+            llm_provider=get("LLM_PROVIDER", "ollama").lower(),
+            llm_model=get("LLM_MODEL", "llama3.1"),
             llm_temperature=temperature,
             llm_base_url=get("LLM_BASE_URL"),
             openai_api_key=get("OPENAI_API_KEY"),

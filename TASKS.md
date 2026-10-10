@@ -86,7 +86,7 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 | Ingest is offline and idempotent, with `--check` | Chat stays fast and stable; freshness is measured, not guessed | No live data in chat |
 | One analysis window (trailing 12 months, `min(last_period)`) | Consistent across sources, easy to explain | Newer months wait for the slower source |
 | Stale means upstream has a newer month | Honest (publication lag is about 2 months) | Needs the network once to know |
-| Provider registry in `src/llm.py`, selected by `.env` | Swap OpenAI and local models without code changes | Local models call tools less reliably |
+| Provider registry in `src/llm.py`, selected by `.env`; local Ollama model by default, OpenAI ready but commented out | Free and offline for development and for the reviewer's first run; OpenAI is one uncommented key away, no code change | Local models call tools less reliably |
 | Methodology in `config/weights.yaml`, infra in `.env` | Reviewable and versioned vs per-deployment and secret | Two config sources, one loader |
 | Score is a capacity-pressure proxy, not a terminal-need measure | No gate or terminal-area data in public sources | Stated as a limit in every answer |
 | Congestion = delay rate, taxi-out, NAS delay per arriving flight; cancellations not scored | Carrier delay is airline-driven, cancellations are mostly weather | Fewer signals |
