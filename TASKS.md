@@ -2,7 +2,7 @@
 
 Task board for the Airport Investment Intelligence Agent (Deloitte Digital FDE exam, 24h budget).
 Legend: [x] done · [~] written, not yet verified · [ ] todo · (stretch) only if time allows.
-Last updated: 2026-10-10. Current milestone: **M4**.
+Last updated: 2026-10-10. Current milestone: **M5**.
 
 ## Working agreements
 - Build in vertical slices: after M2 the app already answers questions end to end; later milestones add data and depth.
@@ -101,10 +101,13 @@ Branch `m5a-docker-seed` (with P4.5).
 - [x] P5.2 Docker: `Dockerfile` (Python slim, `uv sync --locked --no-dev`, non-root, no secrets in the image, healthcheck, entrypoint = bootstrap then Streamlit), `.dockerignore`, `docker-compose.yml` (one `app` service, `env_file: .env`, port from config, named volume for `/app/data`; LLM via OpenAI or a host Ollama, no Ollama service), CI job that runs `docker build` (no push)
   - Verified locally (2026-10-10, Docker 29.1.3): image 1.13 GB, runs as uid 10001, no `.env` or data inside. Fresh volume + stub `SEED_DB_URL` (local HTTP server): seed downloaded, verified, installed, `--check` ran, healthcheck healthy; restart reuses the DB (no download); empty `SEED_DB_URL` exits 1 with the three options; wrong `SEED_DB_SHA256` exits 1, nothing installed; mounted DB with `--network none` starts with freshness unknown
 - [x] P5.3 Seed release procedure for maintainers in the README (rebuild seed -> new GitHub Release -> update `SEED_DB_URL`); the release itself is created by the maintainer
-- [ ] P5.4 Finalize `README.md` quickstart and local-model option
-- [ ] P5.5 `docs/design.md`: scoring methodology, key tradeoffs, where AI is used, limits and assumptions, data validation (from `docs/plan.md`), production path
-- [ ] P5.6 Final check: fresh clone, `docker compose up`, run the four questions plus follow-ups
-- [ ] P5.7 (stretch) Voice input via `st.audio_input`
+
+Branch `m5b-docs-verify`: final docs and verification. Docs link to `docs/plan.md` and `config/weights.yaml` instead of copying details or numbers that can drift.
+- [ ] P5.4 README final (the first thing a reviewer reads): purpose and the four questions; the two mermaid diagrams (kept); quickstart with two paths (Docker: `.env` from `.env.example` with `OPENAI_API_KEY` or a host Ollama, `docker compose up`, open the port; local: `uv sync`, `uv run streamlit run app.py`); first start (seed download); data sources with attribution (BTS, Census, OurAirports); score table (components and meaning, weights in `config/weights.yaml`); tests and eval; updating data (`ingest`, `ingest --check`, freshness states); known limits; maintainer section (kept). Every number and name checked against `config/weights.yaml` and the code
+- [ ] P5.5 `docs/design.md`, the required short design doc (about two pages): problem and approach; architecture (links to the README diagrams); scoring methodology (percentiles in the peer set, renormalization, confidence, rank stability, what the score is not); key tradeoffs; where AI is used and where it is not; answers to the four exam questions as the tools produce them on the shipped data; uncertainty and assumptions policy, known limits, next steps
+- [ ] P5.6 Consistency sweep: `CLAUDE.md`, `docs/plan.md`, README and `TASKS.md` agree (seed as release asset, data period, task statuses, time-budget table with real hours, decision log complete); stale statements fixed, history not rewritten
+- [ ] P5.7 Fresh-clone verification: clone from origin into a temp folder, `.env` with the LLM settings only, `docker compose up --build`, wait for the healthcheck, ask the four exam questions through the CLI inside the container; per question tools called, seconds, and whether card and headline match `docs/design.md`; then `docker compose down -v` and delete the clone
+- [ ] P5.8 (stretch) Voice input via `st.audio_input`
 
 ## Decision log (for the interview)
 | Decision | Why | Trade-off |
