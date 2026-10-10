@@ -418,14 +418,66 @@ def test_several_matches_return_best_and_alternatives(db, scoring_cfg):
                              "Airport), alternatives MDW.")
 
 
-def test_name_and_city_matches_rank_by_passengers(db, scoring_cfg):
-    # a small airport with "Boston" in its name must not beat BOS (city Boston, far more passengers)
-    db.execute("INSERT INTO airports (iata, name, state, municipality) VALUES "
-               "('BSF', 'Boston Small Field', 'MA', 'Quincy')")
-    db.executemany("INSERT INTO t100_route_month VALUES ('BSF', NULL, 'BOS', 2025, ?, 'pax', 10, 1, 9, 5)",
-                   [(m,) for m in range(1, 13)])
-    d = tools.resolve_airport(db, scoring_cfg, "boston")["data"]
-    assert d["best"]["iata"] == "BOS" and [a["iata"] for a in d["alternatives"]] == ["BSF"]
+def add_airports(db, *airports):
+    """(iata, name, state, municipality, passengers per month) with 2025 service to BOS."""
+    for iata, name, state, city, pax in airports:
+        db.execute("INSERT INTO airports (iata, name, state, municipality) VALUES (?, ?, ?, ?)", (iata, name, state, city))
+        db.executemany("INSERT INTO t100_route_month VALUES (?, NULL, 'BOS', 2025, ?, 'pax', 500, 10, ?, ?)",
+                       [(iata, m, pax * 2, pax) for m in range(1, 13)])
+
+
+@pytest.fixture
+def db_names(db):
+    add_airports(db,
+                 ("MHT", "Manchester-Boston Regional Airport", "NH", "Manchester", 900),
+                 ("BSF", "Boston Small Field", "MA", "Quincy", 5),  # below the peer-set floor
+                 ("JFK", "John F. Kennedy International Airport", "NY", "New York", 3000),
+                 ("LGA", "LaGuardia Airport", "NY", "New York", 2000),
+                 ("SWF", "New York Stewart International Airport", "NY", "Newburgh", 200),
+                 ("NYS", "New York Skyports Inc Seaplane Base", "NY", "New York", 2),  # below the floor
+                 ("PDX", "Portland International Airport", "OR", "Portland", 1500))
+    return db
+
+
+def test_boston_is_bos_not_ambiguous(db_names, scoring_cfg):
+    # city and name are exact for BOS; MHT ("Manchester-Boston") and BSF (below the floor) are weaker
+    r = check_envelope(tools.resolve_airport(db_names, scoring_cfg, "Boston"))
+    assert r["data"] == {"query": "Boston", "ambiguous": False, "iata": "BOS",
+                         "name": "Boston Logan International Airport", "state": "MA"}
+    assert r["assumptions"][:2] == ["matched on airport city and name", "weaker matches not used: MHT, BSF"]
+    assert r["confidence"] == "high"
+
+
+def test_exact_city_beats_partial_name(db_names, scoring_cfg):
+    assert tools.resolve_airport(db_names, scoring_cfg, "Santa Ana")["data"]["iata"] == "SNA"
+    d = tools.resolve_airport(db_names, scoring_cfg, "Los Angeles")["data"]
+    assert (d["iata"], d["ambiguous"]) == ("LAX", False)
+
+
+def test_new_york_is_ambiguous_between_equally_strong_exact_matches(db_names, scoring_cfg):
+    # JFK and LGA (city) and SWF (name) are one exact signal each; NYS has two but is below the floor
+    d = tools.resolve_airport(db_names, scoring_cfg, "New York")["data"]
+    assert d["ambiguous"] is True and d["default"] is None
+    assert [c["iata"] for c in d["candidates"]] == ["JFK", "LGA", "SWF"] and d["matches_total"] == 3
+
+
+def test_two_airports_named_portland_stay_ambiguous(db_names, scoring_cfg):
+    r = tools.resolve_airport(db_names, scoring_cfg, "Portland")
+    d = r["data"]
+    assert d["ambiguous"] is True and {d["best"]["iata"], *(a["iata"] for a in d["alternatives"])} == {"PDX", "PWM"}
+    assert r["headline"].startswith("'Portland' matches 2 airports: best match ")
+
+
+def test_only_partial_matches_stay_ambiguous(db_names, scoring_cfg):
+    d = tools.resolve_airport(db_names, scoring_cfg, "Kennedy Inter")["data"]  # no exact signal
+    assert (d["iata"], d["ambiguous"]) == ("JFK", False)  # one partial match resolves
+    d = tools.resolve_airport(db_names, scoring_cfg, "Internat")["data"]
+    assert d["ambiguous"] is True and d["matches_total"] > 2
+
+
+def test_airport_metrics_boston_answers_with_bos(db_names, scoring_cfg):
+    r = tools.airport_metrics(db_names, scoring_cfg, "Boston", topic="demand")
+    assert r["data"]["airport"] == "BOS"
 
 
 def test_exact_iata_wins_over_name_matches(db, scoring_cfg):

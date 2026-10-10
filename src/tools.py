@@ -181,30 +181,56 @@ def _no_match(conn: sqlite3.Connection, query: str, window: store.Window | None)
                          fact("Suggestions", ", ".join(codes) or "none close; " + hint)])
 
 
-def _matches(conn: sqlite3.Connection, query: str, window: store.Window) -> tuple[list[dict], str]:
-    """Matching airports, best first, and how they matched ("iata" or "name or city").
+def _strength(query: str, row: dict) -> int:
+    """Exact signals of a name or city match: the city equals the query, and the query is a whole
+    word (or run of words, split on spaces) of the airport name. 0 = partial match only, so
+    "Boston" is exact for Boston Logan (city and name) but partial for Manchester-Boston Regional."""
+    q = query.lower().split()
+    words = (row["name"] or "").lower().split()
+    in_name = any(words[i:i + len(q)] == q for i in range(len(words) - len(q) + 1))
+    return int((row["municipality"] or "").lower().split() == q) + int(in_name)
+
+
+def _matches(conn: sqlite3.Connection, cfg: ScoringConfig, query: str,
+             window: store.Window) -> tuple[list[dict], str, int]:
+    """Matching airports, best first, how the best matched, and how many share the best rank.
 
     An exact IATA code wins outright. Otherwise airports with passenger service whose name or
-    city contains the query, ranked by passengers in the window (so "New York" puts JFK ahead
-    of "New York Stewart International")."""
+    city contains the query. Exact matches (`_strength` > 0) beat partial ones, and the stronger
+    exact match wins (SFO, city and name "San Francisco", over OAK, name only). Airports below the
+    peer-set passenger floor count as exact only when no larger airport matches exactly, so a
+    seaplane base named "New York ..." never beats JFK. Ties are ranked by passengers; when two or
+    more share the best rank (Portland: PDX and PWM), the caller reports the name as ambiguous."""
     if len(query) == 3 and query.isalpha():
         rows = store.find_airports(conn, "iata", query, window)
         if rows:
-            return rows[:1], "iata"
+            return rows[:1], "iata", 1
     found: dict[str, dict] = {}
     for column in ("name", "municipality"):
         for r in store.find_airports(conn, column, query, window):
             if r["passengers"] > 0:
-                found.setdefault(r["iata"], r)
-    rows = sorted(found.values(), key=lambda r: (-r["passengers"], r["iata"]))
-    return rows, "name or city"
+                found.setdefault(r["iata"], {**r, "strength": _strength(query, r)})
+    exact = [r for r in found.values() if r["strength"]]
+    pool = {r["iata"] for r in [r for r in exact if r["passengers"] >= cfg.min_passengers_per_year] or exact}
+
+    def rank(r: dict) -> int:
+        return r["strength"] if r["iata"] in pool else 0
+
+    rows = sorted(found.values(), key=lambda r: (-rank(r), -r["passengers"], r["iata"]))
+    if not rows:
+        return [], "name or city", 0
+    tied = sum(rank(r) == rank(rows[0]) for r in rows)
+    how = "name or city" if not rank(rows[0]) else (
+        "city and name" if rows[0]["strength"] == 2 else
+        "city" if (rows[0]["municipality"] or "").lower().split() == query.lower().split() else "name")
+    return rows, how, tied
 
 
 def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> dict:
     """Name, city or code -> IATA. Order: configured metro alias (ambiguous, with a default),
-    exact IATA, then name or city ranked by passengers. Several matches -> `ambiguous` with the
-    best match and the alternatives (the agent asks which one); none -> an explicit no-match
-    envelope with suggestions."""
+    exact IATA, then name or city ranked by match strength (`_matches`), then passengers. Two or
+    more equally strong best matches -> `ambiguous` with the best match and the alternatives (the
+    agent asks which one); none -> an explicit no-match envelope with suggestions."""
     query = (text or "").strip()
     if not query:
         return _no_match(conn, query, None)
@@ -226,24 +252,27 @@ def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> 
         headline = f"'{query}' covers several airports; default {query} = {alias['default']}, others: {', '.join(others)}."
         return _envelope(conn, window, data, assumptions, "medium", facts, headline=headline)
 
-    rows, how = _matches(conn, query, window)
+    rows, how, tied = _matches(conn, cfg, query, window)
     if not rows:
         return _no_match(conn, query, window)
-    if len(rows) == 1:
+    if tied == 1:
+        weaker = [r["iata"] for r in rows[1:MAX_LISTED + 1]]
+        assumptions = [] if how == "iata" else [f"matched on airport {how}"]
+        if weaker:
+            assumptions.append(f"weaker matches not used: {', '.join(weaker)}")
         return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])},
-                         [] if how == "iata" else [f"matched on airport {how}"], "high",
-                         [_airport_fact(rows[0])], headline=_resolved(query, rows[0]))
-    shown = [_brief(r) for r in rows[:MAX_LISTED]]
+                         assumptions, "high", [_airport_fact(rows[0])], headline=_resolved(query, rows[0]))
+    shown = [_brief(r) for r in rows[:min(tied, MAX_LISTED)]]
     best, alternatives = shown[0], shown[1:]
     data = {"query": query, "ambiguous": True, "default": None, "best": best, "candidates": shown,
-            "alternatives": alternatives, "matches_total": len(rows)}
+            "alternatives": alternatives, "matches_total": tied}
     alt = ", ".join(a["iata"] for a in alternatives)
     facts = [fact("Best match (most passengers)", f"{best['iata']} ({best['name']})"),
-             fact("Alternatives", alt + (f" and {len(rows) - len(shown)} more" if len(rows) > len(shown) else ""))]
+             fact("Alternatives", alt + (f" and {tied - len(shown)} more" if tied > len(shown) else ""))]
     return _envelope(conn, window, data,
-                     [f"{len(rows)} airports match on {how}; ranked by passengers; ask the user which one"],
+                     [f"{tied} airports match equally well on {how}; ranked by passengers; ask the user which one"],
                      "low", facts,
-                     headline=f"'{query}' matches {len(rows)} airports: best match {best['iata']} "
+                     headline=f"'{query}' matches {tied} airports: best match {best['iata']} "
                               f"({best['name']}), alternatives {alt}.")
 
 
