@@ -2,7 +2,7 @@
 
 Task board for the Airport Investment Intelligence Agent (Deloitte Digital FDE exam, 24h budget).
 Legend: [x] done · [~] written, not yet verified · [ ] todo · (stretch) only if time allows.
-Last updated: 2026-10-10. Current milestone: **M5**.
+Last updated: 2026-10-10. Current milestone: **M6**.
 
 ## Working agreements
 - Build in vertical slices: after M2 the app already answers questions end to end; later milestones add data and depth.
@@ -18,6 +18,7 @@ Last updated: 2026-10-10. Current milestone: **M5**.
 | M3 Congestion | On-Time: congestion, LAX vs SNA, SFO "why", rank stability | 4 h | 17:52-19:07, about 1.25 h |
 | M4 Context and freshness | Census, `ingest --check`, seed DB | 3 h | 19:07-19:48, about 0.75 h |
 | M5 Package and document | Docker, README, design doc, fresh-clone test | 4 h | 19:48- (M5a merged 20:29; M5b from 20:30) |
+| M6 Agent polish | Fixes from the OpenAI eval runs (single-call metrics, resolver ranking, region guard) | from the buffer | |
 | Buffer | Debugging, polish, demo rehearsal | 4 h | |
 
 Actual times are spans between the first and last commit of each milestone; work done before a milestone's first commit falls into the previous span, so they show the order and rough share, not exact effort.
@@ -128,6 +129,14 @@ Branch `m5b-docs-verify`: final docs and verification. Docs link to `docs/plan.m
   - [x] P5.9b Date ranges in commentary: month names, month ranges and years checked against the envelope's data period; sentences whose months or years fall outside it or do not match it are dropped (an exact "January to December 2025" or "2025-01..2025-12" passes); test with the real SFO failure ("Mar 2025 - Dec 2025")
 - [x] P5.10 LLM setup for reviewers: README Docker quickstart leads with OpenAI (set `OPENAI_API_KEY`, `docker compose up`; `.env.example` needs the fewest edits for it); local models (host Ollama, `ollama pull`, `LLM_BASE_URL`, CPU is slow) as a separate optional section; an unreachable LLM or a missing key gives a one-line message naming the setting to fix, never a traceback (unit tested; container started once without a key); one sentence in `docs/design.md` on the model as a swappable service
   - Container started once from this branch with `.env` = `.env.example` (no key): healthy; the app (AppTest inside the container) shows one error and no exception, "The language model is not configured: OPENAI_API_KEY is not set: add it to .env for LLM_PROVIDER=openai (or set LLM_BASE_URL to use a local OpenAI-compatible server)."; the CLI prints the same line (exit 2). With `LLM_PROVIDER=ollama` and an unreachable `LLM_BASE_URL`: "Cannot reach the model server at http://host.docker.internal:9: check LLM_BASE_URL in .env (...) and that the server is running." (exit 1)
+
+## M6 - Agent polish (from the OpenAI eval runs)
+Branch `m6-agent-polish`. Input: `eval/results` of 2026-10-10 (gitignored): `openai-gpt-4o-mini` (12 of 14) and `openai-gpt-5-mini` (11 of 14, two runs).
+- [ ] P6.1 Diagnose first, no code: from the gpt-4o-mini jsonl, what the model called and what came back for `california` and `boston_demand`; from gpt-5-mini for `q3_anchorage_long_haul` and `boston_demand`. A 5-line finding in the decision log (what failed and why)
+- [ ] P6.2 `airport_metrics` takes the airport as code or name and resolves it internally (like `compare_airports` and `explain_demand_gap`); a genuinely ambiguous name returns the ambiguity (best match plus alternatives) instead of data; `resolve_airport` stays for pure lookups. System prompt: one tool call is enough for a single-airport question. Tests: name input, code input, ambiguity, unknown name
+- [ ] P6.3 `resolve_airport` ranking: an exact match on the municipality or on a whole word of the airport name beats partial matches ("Boston" -> BOS, not ambiguous: MHT is only a partial match); ambiguous only when two or more candidates are equally strong exact matches. Tests: Boston, Santa Ana, Los Angeles, New York, Portland (two airports named Portland stay ambiguous)
+- [ ] P6.4 Region guard: an unsupported region (California) always ends in the deterministic configured-regions message, whatever the model passes; a region that is not configured never falls back to another region or the national ranking silently. Prompt rule if P6.1 shows the model remapped the region. Tests
+- Then: rerun the eval with gpt-4o-mini only; decision log with both model results and why gpt-4o-mini is the reviewer default; one sentence in `docs/design.md` with the measured numbers
 
 ## Decision log (for the interview)
 | Decision | Why | Trade-off |
