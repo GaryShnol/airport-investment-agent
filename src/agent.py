@@ -27,7 +27,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from src import store
 from src.config import ConfigError, ScoringConfig, Settings, get_settings, load_scoring
 from src.figure_check import check_commentary, restrict_commentary
-from src.llm import get_chat_model
+from src.llm import get_chat_model, llm_error_message
 from src.prompts import SYSTEM_PROMPT
 from src.render import render_reply
 from src.tools import make_tools
@@ -305,8 +305,7 @@ def build_agent(
         try:
             model = get_chat_model(settings)
         except ConfigError as exc:
-            raise ConfigError(f"The language model is not configured: {exc} "
-                              "Set LLM_PROVIDER and LLM_MODEL in .env (see .env.example).") from exc
+            raise ConfigError(f"The language model is not configured: {exc}") from exc
     if connect is None:
         if not settings.db_path.exists():
             raise ConfigError(f"Database not found at {settings.db_path}. Run `uv run python -m src.ingest` first.")
@@ -335,8 +334,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 - e.g. the model server is not running
-        print(f"Error calling the model ({settings.llm_provider}/{settings.llm_model}): "
-              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"Error: {llm_error_message(settings, exc)}", file=sys.stderr)
         return 1
     print(f"Model: {settings.llm_provider}/{settings.llm_model}")
     print("Tools called:" if reply.tool_calls else "Tools called: none")

@@ -17,7 +17,7 @@ Follow-up questions work in the same chat ("what if growth weighs more?", "which
 - **Guardrails in code, not in the prompt.** Required facts missing from the commentary are appended (`ensure_facts`); commentary sentences with figures that are not in the tool results are removed (`src/figure_check.py`); rankings and comparisons get caveat-only commentary.
 - **Offline data.** An idempotent `ingest` command loads BTS and Census data into a local SQLite DB. Nothing is fetched at chat time.
 - **No hardcoded values.** Infrastructure and secrets come from `.env` ([.env.example](.env.example)); scoring methodology lives in [config/weights.yaml](config/weights.yaml). Both are read only through `src/config.py`.
-- **Swappable model.** `LLM_PROVIDER` selects a local Ollama model (default) or OpenAI / any OpenAI-compatible server, with no code change.
+- **Swappable model.** The model is a service chosen in `.env`: OpenAI for the quickstart, a local Ollama model or any OpenAI-compatible server for development (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`), with no code change.
 
 ## Architecture
 
@@ -135,17 +135,16 @@ graph TD
 ```
 
 ## Quickstart
-Both paths need an LLM: OpenAI (`OPENAI_API_KEY`) or a local Ollama model with tool calling. The data comes ready-made (see First start).
+The data comes ready-made (see First start); you only provide the language model.
 
-### Docker
+### Docker with OpenAI (recommended)
+Set `OPENAI_API_KEY` in `.env`, then `docker compose up`:
 ```bash
 cp .env.example .env
-# edit .env: the LLM settings below
+# in .env, fill in the one empty line:  OPENAI_API_KEY=sk-...
 docker compose up --build
 ```
-Open http://localhost:8501 (or the `APP_PORT` you set). LLM settings in `.env` (the compose file has no Ollama service):
-- OpenAI: `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4o-mini`, `OPENAI_API_KEY=...`
-- Ollama on the host: `LLM_PROVIDER=ollama`, `LLM_MODEL=<a model you pulled>`, `OLLAMA_BASE_URL=http://host.docker.internal:11434`. Docker Desktop resolves `host.docker.internal`; on Linux the `extra_hosts` line in `docker-compose.yml` does, and Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0`). An OpenAI-compatible server works too: `LLM_PROVIDER=openai`, `LLM_BASE_URL=http://host.docker.internal:11434/v1`.
+Open http://localhost:8501 (or the `APP_PORT` you set). `.env.example` already has `LLM_PROVIDER=openai` and `LLM_MODEL=gpt-4o-mini`; change `LLM_MODEL` for another OpenAI model. If the key is missing or wrong, or the model server cannot be reached, the app shows one line naming the setting to fix (`OPENAI_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_PROVIDER`).
 
 One question from the command line, inside the running container:
 ```bash
@@ -154,12 +153,20 @@ docker compose exec app python -m src.agent "Compare LA and Santa Ana airport co
 
 ### Local (uv)
 ```bash
-cp .env.example .env              # LLM settings as above, with OLLAMA_BASE_URL=http://localhost:11434
+cp .env.example .env              # same LLM settings as above
 uv sync
 uv run python -m src.bootstrap    # downloads the seed DB to data/airport.db (skipped if a valid DB is there)
 uv run streamlit run app.py
 ```
 The CLI equivalent is `uv run python -m src.agent "<question>"`.
+
+### Optional: a local model (Ollama)
+For development without an API key. The model runs in Ollama on the host, not in the container (the compose file has no Ollama service), and models come from the Ollama registry, not from Docker Hub or the image:
+1. Install Ollama on the host and pull a model with tool calling, for example `ollama pull llama3.1`.
+2. In `.env`: `LLM_PROVIDER=ollama`, `LLM_MODEL=llama3.1`, `LLM_BASE_URL=http://host.docker.internal:11434` (for a local `uv run`, `http://localhost:11434`), and remove or leave empty `OPENAI_API_KEY`. The commented lines in `.env.example` show these settings; `OLLAMA_NUM_CTX=16384` keeps follow-ups inside the context window.
+3. Docker Desktop resolves `host.docker.internal`; on Linux the `extra_hosts` line in `docker-compose.yml` does, and Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0`).
+
+On CPU only, local models are slow: one to four minutes per answer with 8-20B models on a laptop in our runs, and their commentary is less reliable (the data card is not affected). Any OpenAI-compatible server also works: `LLM_PROVIDER=openai` with `LLM_BASE_URL=http://host.docker.internal:11434/v1`.
 
 ## First start
 The data is not in git or in the image. `src.bootstrap` (the container entrypoint, or the command above) checks `DB_PATH`; if the DB is missing or invalid it downloads the seed DB from `SEED_DB_URL` (a gzipped SQLite file published as a GitHub Release asset), verifies its sha256 and installs it atomically. Later starts reuse it (in Docker it lives in the `data` volume). It then runs `ingest --check` with a short timeout so the sidebar can say whether newer data exists upstream; offline, freshness is "unknown" and the app still starts. If no data can be obtained it stops with three options: set `SEED_DB_URL`, mount an existing `airport.db` at `/app/data/airport.db`, or build the DB with `ingest` from the raw files.

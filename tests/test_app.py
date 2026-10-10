@@ -67,3 +67,18 @@ def test_missing_model_config_shows_a_friendly_error(app_env, monkeypatch):
     at = AppTest.from_file(APP, default_timeout=30).run()
     assert not at.exception
     assert at.error[0].value == "The language model is not configured: set LLM_MODEL in .env."
+
+
+def test_unreachable_model_shows_one_line_naming_the_setting(app_env, monkeypatch, scoring_cfg):
+    import httpx
+    monkeypatch.setenv("LLM_BASE_URL", "http://host.docker.internal:11434")
+    fake_build(monkeypatch, scoring_cfg)
+
+    def unreachable(self, question, thread_id):
+        raise httpx.ConnectError("Connection refused")
+    monkeypatch.setattr(agent_mod.AirportAgent, "ask", unreachable)
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    next(b for b in at.sidebar.button if "New England" in b.label).click().run()
+    assert not at.exception
+    assert at.error[0].value.startswith("Cannot reach the model server at http://host.docker.internal:11434: "
+                                        "check LLM_BASE_URL in .env")

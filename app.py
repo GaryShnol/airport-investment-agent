@@ -15,6 +15,7 @@ import streamlit as st
 from src import agent as agent_mod
 from src import census, render, store, tools
 from src.config import ConfigError, Settings, get_settings, load_scoring
+from src.llm import llm_error_message
 
 SAMPLE_QUESTIONS = [
     "Which airports in New England are strong candidates for terminal expansion?",
@@ -102,9 +103,7 @@ def answer(agent: agent_mod.AirportAgent, settings: Settings, question: str) -> 
     except agent_mod.InputRejected as exc:
         return {"error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - e.g. the model server is not running
-        return {"error": f"Error calling the model ({settings.llm_provider}/{settings.llm_model}): "
-                         f"{type(exc).__name__}: {exc}. Check that the model server is running and "
-                         "the settings in .env."}
+        return {"error": llm_error_message(settings, exc)}
     return {"tool_calls": reply.tool_calls, "tool_results": reply.tool_results, "commentary": reply.commentary,
             "figure_check": reply.figure_check}
 

@@ -28,7 +28,7 @@ Both diagrams are in the [README](../README.md#architecture). The Streamlit chat
 - **ACS population as demand context**: the only Census series covering every metro and micro area; growth over non-overlapping 5-year periods, as consecutive vintages share four of five years.
 - **Seed DB as a release asset**: keeps a 10 MB binary out of git and pins one data version per URL; first start needs the network once.
 - **Restricted commentary for rankings and comparisons**: an ordering or verdict cannot be checked by a figure check, and an early eval run rewrote the New England order, so the model may only add caveats there.
-- **Local-first model, swappable provider**: Ollama by default (free, offline), OpenAI or any compatible server via `.env`; local models call tools less reliably, hence few typed tools.
+- **Swappable model service**: the model is a service selected in `.env`, OpenAI for the reviewer quickstart (fast, reliable tool calls) and a local Ollama model for development (free, offline, slower); local models call tools less reliably, hence few typed tools.
 
 ## 5. Where AI is used, and where it is not
 Used for: understanding the question, choosing the tool, extracting parameters (airport names, region, topic, sort order, scenario weights such as "growth 0.30"), asking when a name is ambiguous, and short commentary.

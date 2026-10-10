@@ -3,8 +3,8 @@
 # later starts reuse it. To use your own DB, put airport.db in the volume (or bind-mount ./data).
 #
 # LLM, set in .env (no Ollama service here):
-#   - OpenAI: LLM_PROVIDER=openai, LLM_MODEL=gpt-4o-mini, OPENAI_API_KEY=...
-#   - Ollama on the host: LLM_PROVIDER=ollama, OLLAMA_BASE_URL=http://host.docker.internal:11434
+#   - OpenAI (the .env.example default): fill in OPENAI_API_KEY=...
+#   - Ollama on the host: LLM_PROVIDER=ollama, LLM_MODEL=<pulled model>, LLM_BASE_URL=http://host.docker.internal:11434
 #     (or an OpenAI-compatible server: LLM_PROVIDER=openai, LLM_BASE_URL=http://host.docker.internal:11434/v1).
 #     Docker Desktop (Windows, macOS) resolves host.docker.internal; on Linux the extra_hosts line does.
 services:

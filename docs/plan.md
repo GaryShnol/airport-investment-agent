@@ -7,7 +7,7 @@ Task status lives in `TASKS.md`. This file holds the design.
 - Why split: env is per-deployment and secret; methodology is reviewable, versioned and part of the design doc.
 
 ## LLM provider
-`src/llm.py`: `PROVIDERS = {"openai": ..., "ollama": ...}`; `get_chat_model(settings)` returns a LangChain `BaseChatModel`. Lazy imports. `openai` accepts `LLM_BASE_URL` for any OpenAI-compatible server (Ollama `/v1`, LM Studio, vLLM). No class hierarchy: LangChain already provides the common interface. Local models are weaker at tool calling, so tools are few, typed and return small JSON; the agent is tested with a fake model too.
+`src/llm.py`: `PROVIDERS = {"openai": ..., "ollama": ...}`; `get_chat_model(settings)` returns a LangChain `BaseChatModel`. Lazy imports. `LLM_BASE_URL` is the server URL for either provider (`OLLAMA_BASE_URL` remains the Ollama fallback). `llm_error_message(settings, exc)` turns a missing key, an unreachable server, a rejected key or an unknown model into one line naming the `.env` setting to fix; the app and the CLI show it instead of a traceback. `.env.example` defaults to OpenAI (the reviewer quickstart needs only the key); a local Ollama model is the optional development path. `openai` accepts `LLM_BASE_URL` for any OpenAI-compatible server (Ollama `/v1`, LM Studio, vLLM). No class hierarchy: LangChain already provides the common interface. Local models are weaker at tool calling, so tools are few, typed and return small JSON; the agent is tested with a fake model too.
 
 ## SQLite schema
 - `meta(source, last_period, upstream_latest, checked_at, fetched_at)`  one row per source (freshness summary)
