@@ -5,7 +5,9 @@ Run: `uv run python -m src.ingest`. The only module that writes to the DB.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
+import io
 import sqlite3
 import time
 import zipfile
@@ -99,27 +101,37 @@ def ingest_t100(conn: sqlite3.Connection, t100_dir: Path) -> int:
     The unit of idempotency is (source, month): a month already loaded is skipped even if it
     appears again in another file, so reruns never duplicate rows.
     """
-    inserted = 0
-    for path in sorted(Path(t100_dir).glob(T100_GLOB)):
-        df = read_t100(path)
-        df["period"] = df["year"].map("{:04d}".format) + "-" + df["month"].map("{:02d}".format)
-        new = df[~df["period"].isin(store.loaded_periods(conn, T100_SOURCE))]
-        if new.empty:
-            continue
-        cols = ["origin", "origin_state", "dest", "year", "month", "config", "distance",
-                "departures", "seats", "passengers"]
-        conn.executemany(
-            f"INSERT INTO t100_route_month ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
-            new[cols].itertuples(index=False, name=None),
-        )
-        loaded_at = _now()
-        conn.executemany(
-            "INSERT INTO ingest_log (source, period, rows, loaded_at) VALUES (?, ?, ?, ?)",
-            [(T100_SOURCE, p, int(n), loaded_at) for p, n in new.groupby("period").size().items()],
-        )
-        inserted += len(new)
-    _update_meta(conn, T100_SOURCE)
+    inserted = sum(len(load_t100_file(conn, path)) for path in sorted(Path(t100_dir).glob(T100_GLOB)))
+    update_meta(conn, T100_SOURCE)
     return inserted
+
+
+def load_t100_file(conn: sqlite3.Connection, path: Path, expect_period: str | None = None) -> pd.DataFrame:
+    """Insert the months of one T-100 file that are not in ingest_log yet; returns the rows inserted.
+
+    A month already loaded is skipped, never replaced (BTS revisions of a loaded month are not
+    picked up). `expect_period` ('YYYY-MM', used by `--update`) raises before any write if the
+    file holds anything else.
+    """
+    df = read_t100(path)
+    df["period"] = df["year"].map("{:04d}".format) + "-" + df["month"].map("{:02d}".format)
+    if expect_period is not None and set(df["period"]) != {expect_period}:
+        raise ValueError(f"{path.name}: expected only {expect_period}, found {sorted(set(df['period']))}")
+    new = df[~df["period"].isin(store.loaded_periods(conn, T100_SOURCE))]
+    if new.empty:
+        return new
+    cols = ["origin", "origin_state", "dest", "year", "month", "config", "distance",
+            "departures", "seats", "passengers"]
+    conn.executemany(
+        f"INSERT INTO t100_route_month ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+        new[cols].itertuples(index=False, name=None),
+    )
+    loaded_at = _now()
+    conn.executemany(
+        "INSERT INTO ingest_log (source, period, rows, loaded_at) VALUES (?, ?, ?, ?)",
+        [(T100_SOURCE, p, int(n), loaded_at) for p, n in new.groupby("period").size().items()],
+    )
+    return new
 
 
 @dataclass(frozen=True)
@@ -154,7 +166,19 @@ def _ontime_csv(path: Path) -> tuple[zipfile.ZipFile, str]:
     return archive, names[0]
 
 
-def read_ontime(path: Path, chunk_rows: int = ONTIME_CHUNK_ROWS) -> OntimeMonth:
+def ontime_source_columns(rename: dict[str, str] | None) -> dict[str, str]:
+    """File column -> our column for every column the aggregation reads. `rename` is the PREZIP
+    mapping (config/sources.yaml); None = a TranStats download, whose names are already ours."""
+    if rename is None:
+        return {c: c for c in ONTIME_COLUMNS}
+    wanted = {ours: src for src, ours in rename.items() if ours in ONTIME_COLUMNS}
+    missing = [c for c in ONTIME_COLUMNS if c not in wanted]
+    if missing:
+        raise ValueError(f"the column mapping has no source for {', '.join(missing)}")
+    return {wanted[c]: c for c in ONTIME_COLUMNS}
+
+
+def read_ontime(path: Path, chunk_rows: int = ONTIME_CHUNK_ROWS, rename: dict[str, str] | None = None) -> OntimeMonth:
     """Stream one monthly On-Time ZIP and aggregate it per airport (docs/plan.md, On-Time sides).
 
     Departure side by ORIGIN: scheduled departures (incl. cancelled), cancellations, DEP_DEL15
@@ -162,15 +186,25 @@ def read_ontime(path: Path, chunk_rows: int = ONTIME_CHUNK_ROWS) -> OntimeMonth:
     operated (ARR_DEL15 reported), ARR_DEL15 and the cause minutes. Empty fields are missing, not
     zero: cancelled flights mostly have no taxi-out or delay, and cause minutes exist only for
     arrivals delayed >= 15 min, so they sum as "no minutes" and never enter a count.
-    Raises if the file spans several months.
+    `rename` reads a PREZIP file (CamelCase columns) through the mapping in config/sources.yaml.
+    Raises if a needed column is missing or the file spans several months.
     """
+    columns = ontime_source_columns(rename)
+    source_of = {ours: src for src, ours in columns.items()}
     archive, name = _ontime_csv(path)
     dep_parts, arr_parts, periods = [], [], set()
     flights = cancelled = diverted = cancelled_dep = cancelled_taxi = 0
+    with archive.open(name) as f:
+        header = next(csv.reader(io.TextIOWrapper(f, encoding="utf-8-sig", newline="")), [])
+        missing = [src for src in columns if src not in header]
+    if missing:
+        archive.close()
+        raise ValueError(f"{path.name} lacks needed columns: {', '.join(missing)}")
     with archive, archive.open(name) as f:
-        chunks = pd.read_csv(f, usecols=ONTIME_COLUMNS, dtype={"ORIGIN": str, "DEST": str},
+        chunks = pd.read_csv(f, usecols=list(columns), dtype={source_of["ORIGIN"]: str, source_of["DEST"]: str},
                              keep_default_na=False, na_values=[""], chunksize=chunk_rows)
         for chunk in chunks:
+            chunk = chunk.rename(columns=columns)
             periods |= set(zip(chunk["YEAR"].astype(int), chunk["MONTH"].astype(int)))
             is_cancelled = chunk["CANCELLED"] == 1
             flights += len(chunk)
@@ -207,27 +241,38 @@ def ingest_ontime(conn: sqlite3.Connection, ontime_dir: Path) -> list[OntimeMont
     A file already loaded (same sha256) is skipped without being read. A new or changed file
     replaces its month only: that month's rows and log entry are deleted, then reinserted.
     """
-    loaded = []
-    for path in sorted(Path(ontime_dir).glob(ONTIME_GLOB)):
-        digest = _sha256(path)
-        if conn.execute("SELECT 1 FROM ingest_log WHERE source = ? AND file_hash = ?",
-                        (ONTIME_SOURCE, digest)).fetchone():
-            continue
-        month = read_ontime(path)
-        year, mon = map(int, month.period.split("-"))
-        conn.execute("DELETE FROM ontime_airport_month WHERE year = ? AND month = ?", (year, mon))
-        conn.execute("DELETE FROM ingest_log WHERE source = ? AND period = ?", (ONTIME_SOURCE, month.period))
-        conn.executemany(
-            f"INSERT INTO ontime_airport_month ({','.join(ONTIME_TABLE_COLUMNS)}) "
-            f"VALUES ({','.join('?' * len(ONTIME_TABLE_COLUMNS))})",
-            month.table.astype(object).itertuples(index=False, name=None),
-        )
-        conn.execute("INSERT INTO ingest_log (source, period, rows, loaded_at, file_hash, source_rows) "
-                     "VALUES (?, ?, ?, ?, ?, ?)",
-                     (ONTIME_SOURCE, month.period, len(month.table), _now(), digest, month.flights))
-        loaded.append(month)
-    _update_meta(conn, ONTIME_SOURCE)
+    loaded = [m for m in (load_ontime_file(conn, path) for path in sorted(Path(ontime_dir).glob(ONTIME_GLOB))) if m]
+    update_meta(conn, ONTIME_SOURCE)
     return loaded
+
+
+def load_ontime_file(conn: sqlite3.Connection, path: Path, rename: dict[str, str] | None = None,
+                     expect_period: str | None = None) -> OntimeMonth | None:
+    """Aggregate one On-Time ZIP and write its month; None if this exact file (sha256) is loaded.
+
+    A new or changed local file replaces its month (`ingest` on raw files). `expect_period`
+    (`--update`) raises before any write if the file holds another month, so an update only ever
+    adds the month it planned. `rename`: the PREZIP column mapping (see `read_ontime`).
+    """
+    digest = _sha256(path)
+    if conn.execute("SELECT 1 FROM ingest_log WHERE source = ? AND file_hash = ?",
+                    (ONTIME_SOURCE, digest)).fetchone():
+        return None
+    month = read_ontime(path, rename=rename)
+    if expect_period is not None and month.period != expect_period:
+        raise ValueError(f"{path.name}: expected {expect_period}, found {month.period}")
+    year, mon = map(int, month.period.split("-"))
+    conn.execute("DELETE FROM ontime_airport_month WHERE year = ? AND month = ?", (year, mon))
+    conn.execute("DELETE FROM ingest_log WHERE source = ? AND period = ?", (ONTIME_SOURCE, month.period))
+    conn.executemany(
+        f"INSERT INTO ontime_airport_month ({','.join(ONTIME_TABLE_COLUMNS)}) "
+        f"VALUES ({','.join('?' * len(ONTIME_TABLE_COLUMNS))})",
+        month.table.astype(object).itertuples(index=False, name=None),
+    )
+    conn.execute("INSERT INTO ingest_log (source, period, rows, loaded_at, file_hash, source_rows) "
+                 "VALUES (?, ?, ?, ?, ?, ?)",
+                 (ONTIME_SOURCE, month.period, len(month.table), _now(), digest, month.flights))
+    return month
 
 
 def ontime_row_check(conn: sqlite3.Connection, expected_rows: dict[str, int],
@@ -264,7 +309,7 @@ def ingest_census(conn: sqlite3.Connection, session, settings: Settings, cfg: Sc
         conn.execute("INSERT INTO ingest_log (source, period, rows, loaded_at) VALUES (?, ?, ?, ?)",
                      (CENSUS_SOURCE, str(vintage), len(rows), now))
     if fetched:  # meta: latest vintage loaded and the retrieval date
-        _update_meta(conn, CENSUS_SOURCE)
+        update_meta(conn, CENSUS_SOURCE)
     return sorted(fetched)
 
 
@@ -322,7 +367,7 @@ def geocode_peer_airports(conn: sqlite3.Connection, session, settings: Settings,
     return summary
 
 
-def _update_meta(conn: sqlite3.Connection, source: str) -> None:
+def update_meta(conn: sqlite3.Connection, source: str) -> None:
     last = conn.execute("SELECT MAX(period) FROM ingest_log WHERE source = ?", (source,)).fetchone()[0]
     if last is None:
         return
