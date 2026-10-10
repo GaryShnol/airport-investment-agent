@@ -40,10 +40,30 @@ def test_data_status(db, scoring_cfg):
     assert r["data"]["regions"] == {"new_england": ["MA", "CT", "RI", "NH", "VT", "ME"]}
 
 
-@pytest.mark.parametrize("upstream, expected", [(None, "unknown"), ("2025-12", "current"), ("2026-07", "behind")])
-def test_freshness_from_meta(db, upstream, expected):
-    db.execute("UPDATE meta SET upstream_latest = ?", (upstream,))
+@pytest.mark.parametrize("upstream, checked, expected", [
+    (None, None, "unknown"),                       # never checked
+    (None, "2026-10-10", "unknown"),               # checked, upstream could not be read
+    ("2025-12", "2026-10-10", "fresh"),
+    ("2026-07", "2026-10-10", "stale (upstream has 2026-07 for t100)"),
+])
+def test_freshness_from_meta(db, scoring_cfg, upstream, checked, expected):
+    db.execute("UPDATE meta SET upstream_latest = ?, checked_at = ?", (upstream, checked))
     assert tools.freshness(db) == expected
+    r = tools.rank_airports(db, scoring_cfg, "new_england")
+    assert r["freshness"] == expected
+    warned = [a for a in r["assumptions"] if a.startswith("data is stale")]
+    assert warned == ([tools.STALE_WARNING.format("2026-07 for t100")] if expected.startswith("stale") else [])
+
+
+def test_data_status_reports_each_source(db, scoring_cfg):
+    seed_ontime(db)
+    db.execute("UPDATE meta SET upstream_latest = '2026-07', checked_at = '2026-10-10T10:00:00+00:00' "
+               "WHERE source = 'ontime'")
+    r = tools.data_status(db, scoring_cfg)
+    v = {f["label"]: f["value"] for f in r["facts"]}
+    assert v["Freshness: ontime"] == "stale (upstream has 2026-07); loaded 2025-12; checked 2026-10-10T10:00:00+00:00"
+    assert v["Freshness: t100"] == "unknown; loaded 2025-12; checked never"
+    assert v["Freshness"] == r["freshness"] == "stale (upstream has 2026-07 for ontime)"
 
 
 # --- resolve_airport ---------------------------------------------------------------------

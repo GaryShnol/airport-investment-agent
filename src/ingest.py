@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src import census, scoring, store
+from src import census, scoring, store, upstream
 from src.config import ScoringConfig, Settings, get_settings, load_scoring
 
 T100_SOURCE = "t100"
@@ -383,9 +383,29 @@ def ingest_airports(conn: sqlite3.Connection, csv_path: Path, regions: dict[str,
     return len(rows)
 
 
+def check(settings: Settings) -> None:
+    """`--check`: loaded period vs upstream latest per source, stored in meta. Downloads nothing."""
+    if not settings.db_path.exists():
+        print(f"No database at {settings.db_path}: run `uv run python -m src.ingest` first")
+        return
+    with store.connect_rw(settings.db_path) as conn:
+        store.init_db(conn)
+        rows = upstream.run_check(conn, census.session(), settings, load_scoring(settings.weights_path))
+        print(f"{'source':<8} {'loaded':<9} {'upstream':<9} freshness")
+        for r in rows:
+            print(f"{r.source:<8} {r.loaded:<9} {r.upstream or 'unknown':<9} {r.freshness}")
+        print(f"overall: {store.overall_freshness(store.meta_rows(conn))}")
+
+
 def main(argv: list[str] | None = None) -> None:
-    argparse.ArgumentParser(description=__doc__).parse_args(argv)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true",
+                        help="compare loaded periods with upstream (stored in meta); no downloads")
+    args = parser.parse_args(argv)
     settings = get_settings()
+    if args.check:
+        check(settings)
+        return
     with store.connect_rw(settings.db_path) as conn:
         store.init_db(conn)
         n = ingest_t100(conn, settings.raw_data_dir / "t100_segment")

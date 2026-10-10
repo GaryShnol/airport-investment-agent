@@ -1,7 +1,7 @@
 """Agent tools. Each tool returns a small JSON-serializable envelope; the LLM only phrases it.
 
 Envelope (docs/plan.md, Tools and envelope):
-    {"headline": "...", "data": ..., "facts": [...], "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
+    {"headline": "...", "data": ..., "facts": [...], "data_period": "2025-01..2025-12", "freshness": "fresh|stale (upstream has ...)|unknown",
      "assumptions": [...], "confidence": "high|medium|low"}
 `headline` is one deterministic sentence with the answer in plain words (rendered above the facts
 card; the model comments on it, never restates it). `facts` is a list of {label, value, required} with pre-formatted strings the model copies verbatim;
@@ -53,19 +53,13 @@ def _pct(value, digits: int = 1) -> float | None:
 
 
 def freshness(conn: sqlite3.Connection) -> str:
-    """current / behind / unknown over all loaded sources (behind wins, then unknown)."""
-    states = []
-    for row in store.meta_rows(conn):
-        if not row["upstream_latest"]:
-            states.append("unknown")
-        elif row["last_period"] and row["upstream_latest"] > row["last_period"]:
-            states.append("behind")
-        else:
-            states.append("current")
-    for state in ("behind", "unknown"):
-        if state in states:
-            return state
-    return "current" if states else "unknown"
+    """fresh / stale (upstream has ...) / unknown over the loaded sources, from the last
+    `ingest --check` stored in `meta` (store.overall_freshness). Never checks upstream itself."""
+    return store.overall_freshness(store.meta_rows(conn))
+
+
+STALE_WARNING = ("data is stale: upstream has newer data than loaded ({}); figures use the loaded data, "
+                 "run `uv run python -m src.ingest` to refresh")
 
 
 def fact(label: str, value: str, required: bool = False) -> dict:
@@ -86,8 +80,11 @@ def _envelope(conn: sqlite3.Connection, window: store.Window | None, data, assum
     period = window.label if window else None
     base = [fact("Data period", period, True)] if period else []
     base.append(fact("Confidence", confidence, True))
+    fresh = freshness(conn)
+    if fresh.startswith("stale"):  # still answered, with a warning (CLAUDE.md)
+        assumptions = [*assumptions, STALE_WARNING.format(fresh.removeprefix("stale (upstream has ").rstrip(")"))]
     return {"headline": headline, "facts": [*(facts or []), *base], "data": data, "data_period": period,
-            "freshness": freshness(conn), "assumptions": assumptions, "confidence": confidence}
+            "freshness": fresh, "assumptions": assumptions, "confidence": confidence}
 
 
 def _error(conn: sqlite3.Connection | None, message: str, candidates: list | None = None,
@@ -129,10 +126,13 @@ def data_status(conn: sqlite3.Connection, cfg: ScoringConfig) -> dict:
         "weights_configured": cfg.weights,
         "regions": {name: list(states) for name, states in cfg.regions.items()},
     }
-    assumptions = ["freshness is unknown until `ingest --check` compares with upstream"] \
-        if freshness(conn) == "unknown" else []
+    assumptions = ["freshness is unknown until `ingest --check` compares with upstream (or it could not tell)"] \
+        if freshness(conn) == store.UNKNOWN else []
     confidence = "high" if window.months == store.WINDOW_MONTHS else "low"
     facts = [fact("Freshness", freshness(conn)),
+             *[fact(f"Freshness: {r['source']}", f"{store.source_freshness(r)}; loaded {r['last_period']}; "
+                                                  f"checked {r['checked_at'] or 'never'}")
+               for r in data["sources"] if r["last_period"]],
              fact("Months loaded in the window", f"{window.months} of {store.WINDOW_MONTHS}")]
     headline = (f"Data loaded for {window.label} ({window.months} of {store.WINDOW_MONTHS} months); "
                 f"freshness {freshness(conn)}.")

@@ -372,6 +372,31 @@ def meta_rows(conn: sqlite3.Connection) -> list[dict]:
     return [dict(zip(("source", "last_period", "upstream_latest", "checked_at"), r)) for r in rows]
 
 
+FRESH, UNKNOWN = "fresh", "unknown"
+
+
+def source_freshness(row: dict) -> str:
+    """One source: "fresh" (upstream has nothing newer), "stale (upstream has <period>)", or "unknown"
+    (never checked, or the last `ingest --check` could not tell). Periods compare as text: 'YYYY-MM'
+    for monthly sources, 'YYYY' (vintage) for Census."""
+    upstream, loaded = row.get("upstream_latest"), row.get("last_period")
+    if not row.get("checked_at") or not upstream or not loaded:
+        return UNKNOWN
+    return f"stale (upstream has {upstream})" if upstream > loaded else FRESH
+
+
+def overall_freshness(rows: list[dict]) -> str:
+    """Over the loaded sources: stale if any is stale (naming each newer period and its source), else
+    unknown if any is unknown or nothing is loaded, else fresh."""
+    loaded = [r for r in rows if r.get("last_period")]
+    stale = [r for r in loaded if source_freshness(r).startswith("stale")]
+    if stale:
+        return "stale (upstream has " + ", ".join(f"{r['upstream_latest']} for {r['source']}" for r in stale) + ")"
+    if not loaded or any(source_freshness(r) == UNKNOWN for r in loaded):
+        return UNKNOWN
+    return FRESH
+
+
 _SEARCH_COLUMNS = ("iata", "name", "municipality")
 
 
