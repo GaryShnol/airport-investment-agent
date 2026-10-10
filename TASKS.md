@@ -39,7 +39,7 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 - [x] P1.5 GitHub Actions: `uv run pytest` on push and pull request
 - [ ] P1.6 Download `airports.csv` (OurAirports) on the user's machine
 - [ ] P1.7 Create the real `.env`; smoke-test `get_chat_model` with the chosen model
-- [ ] P1.8 Check which agent constructor the installed LangGraph/LangChain version provides
+- [x] P1.8 Check which agent constructor the installed LangGraph/LangChain version provides
 
 ## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial)
 - [ ] P2.1 `src/store.py`: SQLite schema and queries (schema in `docs/plan.md`)
@@ -97,6 +97,7 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 | Passenger service = config 1 or 3, peer set = US airports above the departure floor | One explicit definition shared by ingest, scoring and tools | Acceptance values must be re-baselined once |
 | On-Time split into origin and destination sides | BTS records delay causes for arrivals; mixing sides would misattribute them | Slightly wider table |
 | Agent in `st.cache_resource`, SQLite opened read-only per call | Streamlit reruns the script per message; keeps memory and avoids thread errors | None |
+| Agent constructor: `create_agent` from `langchain.agents` (add the `langchain` package in P2.7) | Installed LangGraph 1.2.14 still ships `create_react_agent`, but it warns it is deprecated since V1.0 and removed in V2.0, moved to `langchain.agents` | One more dependency (`langchain`) |
 
 ## Demo script
 1. Which airports in New England are strong candidates for terminal expansion? (ranking, weights, stability, confidence)
