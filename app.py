@@ -70,8 +70,8 @@ def show_data(tool_calls: list[dict], envelopes: list) -> None:
         if not isinstance(env, dict) or env.get("error"):
             st.markdown(render.render_envelope(env, title))
             continue
-        st.markdown("\n\n".join(p for p in (f"**{title}**" if title else "", render.render_facts(env),
-                                            render.render_ranking(env)) if p))
+        st.markdown("\n\n".join(p for p in (f"**{title}**" if title else "", render.render_headline(env),
+                                            render.render_facts(env), render.render_ranking(env)) if p))
         if excluded := render.render_excluded(env):
             with st.expander(render.excluded_title(env)):
                 st.markdown(excluded)
@@ -85,6 +85,7 @@ def show_assistant(msg: dict) -> None:
         return
     show_data(msg["tool_calls"], msg["tool_results"])
     st.markdown("##### Commentary (model)")
+    st.caption("Written by the language model about the data above; the figures come from the data card.")
     st.markdown(msg["commentary"] or "_(the model returned no text)_")
     with st.expander(f"Tools called ({len(msg['tool_calls'])})"):
         st.json([{**c, "result": r} for c, r in zip(msg["tool_calls"], msg["tool_results"])], expanded=False)

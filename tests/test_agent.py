@@ -1,9 +1,10 @@
 """Agent tests with a scripted fake chat model and a tiny SQLite DB (no LLM, no network)."""
+import json
 import sqlite3
 from dataclasses import replace
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from src import agent as agent_mod
 from src.agent import FACTS_FOOTER, InputRejected, build_agent, ensure_facts, missing_facts, strip_reasoning
@@ -225,10 +226,110 @@ def test_ensure_facts_is_deterministic_and_ignores_non_envelopes():
 
 def test_reply_keeps_commentary_apart_from_the_footer(settings, connect, scoring_cfg):
     agent, _ = make(settings, connect, scoring_cfg,
-                    call("airport_metrics", airport="ANC", focus="load_factor"),
+                    call("airport_metrics", airport="ANC", topic="demand"),
                     AIMessage("ANC is busy."))
-    reply = agent.ask("What is the load factor at Anchorage?", "t-focus")
+    reply = agent.ask("What is the load factor at Anchorage?", "t-topic")
     assert reply.commentary == "ANC is busy."
     assert [f["label"] for f in reply.missing_facts] == [
-        "Load factor (passenger service, a demand-pressure proxy)", "Data period", "Confidence"]
+        "Passengers (passenger service)", "Load factor (passenger service, a demand-pressure proxy)",
+        "Data period", "Confidence"]
     assert reply.text.startswith("ANC is busy.\n\n" + FACTS_FOOTER)
+
+
+# --- headline (P2.9c) ------------------------------------------------------------------------
+
+def test_commentary_drops_a_verbatim_headline(settings, connect, scoring_cfg):
+    headline = ("50.8% of all departures from ANC (incl. cargo) are >= 2,500 mi (744 of 1,464); "
+                "passenger service: 16.7% (144 of 864).")
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("airport_metrics", airport="ANC", topic="long_haul"),
+                    AIMessage(f"{headline.upper()}\n\nCargo flights to Asia explain the gap."))
+    reply = agent.ask("What share of ANC flights are long haul?", "t-headline")
+    assert reply.tool_results[0]["headline"] == headline
+    assert reply.commentary == "Cargo flights to Asia explain the gap."
+
+
+def test_drop_restated_headlines_keeps_paraphrases():
+    env = {"headline": "BOS leads."}
+    assert agent_mod.drop_restated_headlines("Boston is first. > BOS  leads.", [env]) == "Boston is first."
+    assert agent_mod.drop_restated_headlines("BOS clearly leads.", [env, "x"]) == "BOS clearly leads."
+
+
+# --- agent robustness (P2.14) ------------------------------------------------------------------
+
+def test_tool_messages_are_kept_across_turns_in_compact_form(settings, connect, scoring_cfg):
+    agent, model = make(settings, connect, scoring_cfg,
+                        call("rank_airports", region="new_england"), AIMessage("BOS leads."),
+                        AIMessage("PWM has the highest load factor in the card."))
+    first = agent.ask("Rank New England airports for expansion", "t-history")
+    agent.ask("Which of these has the highest load factor?", "t-history")
+    tool_messages = [m for m in model.seen[2] if isinstance(m, ToolMessage)]
+    assert len(tool_messages) == 1  # the first turn's result reaches the second turn's prompt
+    card = json.loads(tool_messages[0].content)
+    assert set(card) == {"headline", "facts", "data_period", "confidence"}  # compact: no raw data
+    assert card["headline"] == first.tool_results[0]["headline"]
+    assert any(f["label"].startswith("#1 ") and "utilization (load factor)" in f["value"] for f in card["facts"])
+    # within the turn that called it, the model sees the full envelope
+    assert "data" in json.loads(next(m for m in model.seen[1] if isinstance(m, ToolMessage)).content)
+    # the stored history keeps the full envelope
+    stored = agent.graph.get_state({"configurable": {"thread_id": "t-history"}}).values["messages"]
+    assert "data" in json.loads(next(m for m in stored if isinstance(m, ToolMessage)).content)
+
+
+def test_compact_envelope_leaves_non_envelopes_alone():
+    assert agent_mod.compact_envelope("not json") == "not json"
+    env = {"headline": "h", "facts": [], "data": {"big": 1}, "error": None, "confidence": "low"}
+    assert json.loads(agent_mod.compact_envelope(json.dumps(env))) == {"headline": "h", "confidence": "low"}
+
+
+def test_empty_reply_is_retried_once_with_a_nudge(settings, connect, scoring_cfg):
+    agent, model = make(settings, connect, scoring_cfg, AIMessage(""), AIMessage("Hello, ask me about airports."))
+    reply = agent.ask("Hi", "t-empty")
+    assert reply.commentary == "Hello, ask me about airports." and reply.fallback is False
+    assert model.seen[1][-1].content == agent_mod.RETRY_NUDGE
+    stored = agent.graph.get_state({"configurable": {"thread_id": "t-empty"}}).values["messages"]
+    assert agent_mod.RETRY_NUDGE not in [m.content for m in stored]  # the nudge is never stored
+
+
+def test_reasoning_only_reply_counts_as_empty(settings, connect, scoring_cfg):
+    agent, model = make(settings, connect, scoring_cfg, AIMessage("<think>hmm</think>"), AIMessage("Answer."))
+    assert agent.ask("Hi", "t-think").commentary == "Answer." and len(model.seen) == 2
+
+
+def test_still_empty_after_retry_gives_a_deterministic_message(settings, connect, scoring_cfg):
+    agent, model = make(settings, connect, scoring_cfg, AIMessage(""), AIMessage(""))
+    reply = agent.ask("Hi", "t-empty2")
+    assert reply.commentary == agent_mod.EMPTY_NO_DATA and reply.fallback is True and len(model.seen) == 2
+
+    agent, _ = make(settings, connect, scoring_cfg, call("data_status"), AIMessage(""), AIMessage(" "))
+    reply = agent.ask("What data do you have?", "t-empty3")
+    assert reply.commentary == agent_mod.EMPTY_WITH_DATA and reply.tool_results
+
+
+def test_reply_that_only_repeats_the_headline_is_not_blank(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg, call("data_status"),
+                    AIMessage("Data loaded for 2025-01..2025-12 (12 of 12 months); freshness unknown."))
+    reply = agent.ask("What data do you have?", "t-only-headline")
+    assert reply.commentary == agent_mod.ONLY_HEADLINE and reply.fallback is True
+
+
+def test_context_warning_near_num_ctx(tmp_path, connect, scoring_cfg, caplog):
+    tight = Settings.from_env({"DB_PATH": str(tmp_path / "agent.db"), "OLLAMA_NUM_CTX": "500"})
+    agent, _ = make(tight, connect, scoring_cfg, call("rank_airports", region="new_england"), AIMessage("ok"))
+    with caplog.at_level("WARNING", logger="src.agent"):
+        agent.ask("Rank New England", "t-ctx")
+    assert any("OLLAMA_NUM_CTX=500" in r.getMessage() for r in caplog.records)
+
+
+def test_no_context_warning_without_num_ctx(settings, connect, scoring_cfg, caplog):
+    agent, _ = make(settings, connect, scoring_cfg, call("rank_airports", region="new_england"), AIMessage("ok"))
+    with caplog.at_level("WARNING", logger="src.agent"):
+        agent.ask("Rank New England", "t-noctx")
+    assert not any("OLLAMA_NUM_CTX" in r.getMessage() for r in caplog.records)
+
+
+def test_prompt_rules():
+    for rule in ["do not repeat it", "Use only figures that appear in the card",
+                 "No conclusion without supporting data", "always call resolve_airport first",
+                 "ask the user which airport they mean"]:
+        assert rule in SYSTEM_PROMPT

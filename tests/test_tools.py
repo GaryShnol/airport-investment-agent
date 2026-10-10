@@ -105,7 +105,7 @@ def required(result):
 
 
 def test_airport_metrics_required_facts(db, scoring_cfg):
-    f = facts(tools.airport_metrics(db, scoring_cfg, "ANC", focus="long_haul"))
+    f = facts(tools.airport_metrics(db, scoring_cfg, "ANC", topic="long_haul"))
     required = {k: v["value"] for k, v in f.items() if v["required"]}
     assert required == {
         "Long-haul threshold": "2,500 mi",
@@ -116,31 +116,53 @@ def test_airport_metrics_required_facts(db, scoring_cfg):
         "Data period": "2025-01..2025-12",
         "Confidence": "medium",
     }
-    assert f["Passengers (passenger service)"] == {"value": "115,500", "required": False}
+    assert "Passengers (passenger service)" not in f  # long-haul topic: no demand rows
 
 
-def test_airport_metrics_focus_load_factor_does_not_require_long_haul(db, scoring_cfg):
-    r = tools.airport_metrics(db, scoring_cfg, "ANC", focus="load_factor")
-    assert required(r) == {"Load factor (passenger service, a demand-pressure proxy)": "85.9%",
+def test_airport_metrics_topic_demand_shows_no_long_haul_rows(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", topic="demand")
+    assert required(r) == {"Passengers (passenger service)": "115,500",
+                           "Load factor (passenger service, a demand-pressure proxy)": "85.9%",
                            "Data period": "2025-01..2025-12", "Confidence": "medium"}
-    assert facts(r)["Long-haul threshold"] == {"value": "2,500 mi", "required": False}  # still shown
+    assert not any("ong-haul" in label or label.startswith("Departures >=") for label in facts(r))
+    assert "long_haul" not in r["data"] and r["data"]["topic"] == "demand"
+    assert not any("long haul" in a or "cargo" in a for a in r["assumptions"])
+    assert ">=" not in r["headline"]
 
 
-def test_airport_metrics_focus_growth_and_all(db, scoring_cfg):
-    growth = required(tools.airport_metrics(db, scoring_cfg, "ANC", focus="growth"))
-    assert set(growth) == {"Passenger growth vs 2024-01..2024-12", "Data period", "Confidence"}
-    every = required(tools.airport_metrics(db, scoring_cfg, "ANC"))  # default focus = all
-    assert set(every) == set(required(tools.airport_metrics(db, scoring_cfg, "ANC", focus="long_haul"))) | set(
-        growth) | {"Load factor (passenger service, a demand-pressure proxy)"}
+def test_airport_metrics_topic_growth_rows(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", topic="growth")
+    assert list(facts(r)) == ["Airport", "Passengers 2025-01..2025-12 (passenger service)",
+                              "Passengers 2024-01..2024-12", "Passenger growth vs 2024-01..2024-12",
+                              "Data period", "Confidence"]
+    assert set(required(r)) == {"Passenger growth vs 2024-01..2024-12", "Data period", "Confidence"}
+    assert "load_factor_pct" not in r["data"] and "long_haul" not in r["data"]
 
 
-def test_airport_metrics_unknown_focus_is_an_error(db, scoring_cfg):
-    r = tools.airport_metrics(db, scoring_cfg, "ANC", focus="delays")
-    assert r["data"] is None and "focus must be one of" in r["error"]
+def test_airport_metrics_topic_all_is_the_union(db, scoring_cfg):
+    def labels(topic, only_required=False):
+        r = tools.airport_metrics(db, scoring_cfg, "ANC", topic=topic)
+        return set(required(r) if only_required else facts(r))
+    every = labels("all", True)
+    assert every == labels("long_haul", True) | labels("demand", True) | labels("growth", True)
+    # growth's passenger row is folded into the demand row when both are shown
+    assert labels("all") == labels("long_haul") | labels("demand") | labels("growth") - {
+        "Passengers 2025-01..2025-12 (passenger service)"}
 
 
-def test_error_envelope_has_no_facts(db, scoring_cfg):
-    assert tools.rank_airports(db, scoring_cfg, "Texas")["facts"] == []
+@pytest.mark.parametrize("topic", ["long_haul", "demand", "growth", "all"])
+def test_airport_metrics_always_has_the_data_period(db, scoring_cfg, topic):
+    r = tools.airport_metrics(db, scoring_cfg, "BOS", topic=topic)
+    assert required(r)["Data period"] == "2025-01..2025-12" and r["data_period"] == "2025-01..2025-12"
+
+
+def test_airport_metrics_unknown_topic_is_an_error(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", topic="delays")
+    assert r["data"] is None and "topic must be one of" in r["error"]
+
+
+def test_plain_error_envelope_has_no_facts(db, scoring_cfg):
+    assert tools.airport_metrics(db, scoring_cfg, "ANC", topic="delays")["facts"] == []
 
 
 def test_airport_metrics_custom_threshold_is_added_to_sensitivity(db, scoring_cfg):
@@ -185,7 +207,7 @@ def test_rank_airports_region(db, scoring_cfg):
 
 def test_rank_airports_unknown_region(db, scoring_cfg):
     r = check_envelope(tools.rank_airports(db, scoring_cfg, "Texas"))
-    assert r["data"] is None and r["candidates"] == ["new_england"]
+    assert r["data"] is None and r["candidates"] == ["new_england", "national"]
 
 
 # --- LangChain wrappers ------------------------------------------------------------------
@@ -198,3 +220,189 @@ def test_make_tools_errors_become_envelopes(scoring_cfg):
     assert set(by_name) == {"data_status", "resolve_airport", "airport_metrics", "rank_airports"}
     r = by_name["airport_metrics"].invoke({"airport": "ANC"})
     assert r["data"] is None and "unable to open" in r["error"]
+
+
+# --- headline (P2.9c) --------------------------------------------------------------------
+
+def test_every_envelope_has_a_headline(db, scoring_cfg):
+    results = [tools.data_status(db, scoring_cfg), tools.resolve_airport(db, scoring_cfg, "LA"),
+               tools.resolve_airport(db, scoring_cfg, "Chicago"), tools.resolve_airport(db, scoring_cfg, "Atlantis"),
+               tools.airport_metrics(db, scoring_cfg, "BOS"), tools.rank_airports(db, scoring_cfg, "new_england"),
+               tools.rank_airports(db, scoring_cfg, "Texas")]
+    for r in results:
+        assert isinstance(r["headline"], str) and r["headline"]
+    assert results[0]["headline"] == "Data loaded for 2025-01..2025-12 (12 of 12 months); freshness unknown."
+
+
+def test_long_haul_headline_states_definition_both_bases_and_counts(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", topic="long_haul")
+    # per year: all flights 1,464 departures, 744 >= 2,500 mi; passenger service 864, 144
+    assert r["headline"] == ("50.8% of all departures from ANC (incl. cargo) are >= 2,500 mi (744 of 1,464); "
+                             "passenger service: 16.7% (144 of 864).")
+    assert facts(r)["Departures >= 2,500 mi, all flights"] == {"value": "744 of 1,464", "required": False}
+
+
+def test_metrics_headline_follows_topic(db, scoring_cfg):
+    load = tools.airport_metrics(db, scoring_cfg, "ANC", topic="demand")["headline"]
+    assert load == "ANC in 2025-01..2025-12: 115,500 passengers on 134,400 seats (passenger service), load factor 85.9%."
+    growth = tools.airport_metrics(db, scoring_cfg, "ANC", topic="growth")["headline"]
+    assert growth.startswith("ANC passengers changed +10.0% in 2025-01..2025-12")
+
+
+def test_ranking_headline_names_the_top(db, scoring_cfg):
+    r = tools.rank_airports(db, scoring_cfg, "new_england")
+    top = ", ".join(f"{x['rank']} {x['iata']}" for x in r["data"]["ranked"])
+    assert r["headline"] == f"new_england terminal-expansion ranking by score: {top} (3 ranked, 1 excluded)."
+
+
+# --- rank_airports: sort_by and scenario weights (P2.11) ----------------------------------
+
+def test_rank_default_is_base_mode_with_config_weights(db, scoring_cfg):
+    d = tools.rank_airports(db, scoring_cfg, "new_england")["data"]
+    assert d["mode"] == "base" and d["sort_by"] == "score"
+    assert all("base_rank" not in x and "score_rank" not in x for x in d["ranked"])
+
+
+@pytest.mark.parametrize("sort_by, column", [("growth", "growth_pct"), ("load_factor", "load_factor_pct"),
+                                             ("passengers", "passengers")])
+def test_rank_sort_by_metric_is_done_in_code(db, scoring_cfg, sort_by, column):
+    r = tools.rank_airports(db, scoring_cfg, "new_england", sort_by=sort_by)
+    ranked = r["data"]["ranked"]
+    values = [x["sort_value"] for x in ranked]
+    assert values == sorted(values, reverse=True)
+    assert [x["rank"] for x in ranked] == [1, 2, 3]
+    base = {x["iata"]: x["rank"] for x in tools.rank_airports(db, scoring_cfg, "new_england")["data"]["ranked"]}
+    assert {x["iata"]: x["score_rank"] for x in ranked} == base  # score rank kept next to the sort order
+    assert facts(r)["Sorted by"]["required"] is True
+    assert r["data"]["ties"] == []
+
+
+def test_rank_sort_by_passengers_order(db, scoring_cfg):
+    ranked = tools.rank_airports(db, scoring_cfg, "new_england", sort_by="passengers")["data"]["ranked"]
+    assert [x["iata"] for x in ranked] == ["BOS", "PWM", "BTV"]  # 2025 passengers: BOS > PWM > BTV
+
+
+def test_rank_unknown_sort_by_is_an_error(db, scoring_cfg):
+    r = tools.rank_airports(db, scoring_cfg, "new_england", sort_by="delays")
+    assert r["data"] is None and "sort_by must be one of" in r["error"]
+
+
+def test_scenario_weights_are_labeled_and_show_base_vs_scenario_rank(db, scoring_cfg):
+    r = check_envelope(tools.rank_airports(db, scoring_cfg, "new_england", weights={"growth": 0.6, "scale": 0}))
+    d = r["data"]
+    assert d["mode"] == "scenario" and r["headline"].startswith("Scenario weights: new_england")
+    assert d["weights_requested"] == {"growth": 0.6, "scale": 0.0}
+    # merged with config (utilization 0.25, long_haul 0.10), renormalized over built components
+    total = 0.25 + 0.6 + 0.10
+    assert d["weights_used"] == {"utilization": round(0.25 / total, 3), "scale": 0.0,
+                                 "growth": round(0.6 / total, 3), "long_haul": round(0.10 / total, 3)}
+    assert d["weights_base"] == tools.rank_airports(db, scoring_cfg, "new_england")["data"]["weights_used"]
+    base = {x["iata"]: x["rank"] for x in tools.rank_airports(db, scoring_cfg, "new_england")["data"]["ranked"]}
+    assert {x["iata"]: x["base_rank"] for x in d["ranked"]} == base
+    f = facts(r)
+    assert f["Ranking"]["value"].startswith("scenario") and f["Ranking"]["required"]
+    assert any(k.startswith("Scenario weights used") and v["required"] for k, v in f.items())
+    assert any(a.startswith("scenario:") for a in r["assumptions"])
+
+
+def test_scenario_weight_for_unbuilt_component_is_ignored_and_said(db, scoring_cfg):
+    r = tools.rank_airports(db, scoring_cfg, "new_england", weights={"congestion": 0.5})
+    assert "congestion" not in r["data"]["weights_used"]
+    assert any("ignored (component not built): congestion" in a for a in r["assumptions"])
+
+
+@pytest.mark.parametrize("weights, message", [
+    ({"price": 0.2}, "Unknown weight(s) price"),
+    ({"growth": -0.1}, "non-negative"),
+    ({"growth": "high"}, "non-negative"),
+    ({"growth": True}, "non-negative"),
+    ({"utilization": 0, "scale": 0, "growth": 0, "long_haul": 0}, "no weight to any available component"),
+])
+def test_invalid_scenario_weights_are_errors(db, scoring_cfg, weights, message):
+    r = check_envelope(tools.rank_airports(db, scoring_cfg, "new_england", weights=weights))
+    assert r["data"] is None and message in r["error"]
+
+
+def test_scenario_does_not_change_config(db, scoring_cfg):
+    before = dict(scoring_cfg.weights)
+    tools.rank_airports(db, scoring_cfg, "new_england", weights={"growth": 0.9})
+    assert scoring_cfg.weights == before
+
+
+def test_rank_list_is_capped_by_config(db, scoring_cfg):
+    from dataclasses import replace
+    r = tools.rank_airports(db, replace(scoring_cfg, max_ranked=2), "new_england", top_n=50)
+    assert len(r["data"]["ranked"]) == 2 and r["data"]["ranked_total"] == 3
+    assert "list capped at 2 airports" in r["assumptions"]
+
+
+def test_rank_tool_schema_exposes_sort_by_and_weights(scoring_cfg):
+    rank = {t.name: t for t in tools.make_tools(lambda: None, scoring_cfg)}["rank_airports"]
+    props = rank.args
+    assert props["sort_by"]["enum"] == ["score", "growth", "load_factor", "passengers"]
+    assert "weights" in props and "growth" in rank.description
+
+
+# --- resolve_airport ranking, no match, regions (P2.12) -------------------------------------
+
+def test_no_match_is_explicit_with_suggestions(db, scoring_cfg):
+    r = check_envelope(tools.resolve_airport(db, scoring_cfg, "Anchorge"))
+    assert r["data"] is None and r["error"] == "No airport with passenger service matches 'Anchorge'"
+    assert facts(r)["Match"] == {"value": "no match for 'Anchorge'", "required": True}
+    assert r["suggestions"][0]["iata"] == "ANC" and r["candidates"][0] == "ANC"
+    assert r["headline"].startswith("No airport with passenger service matches 'Anchorge'. Did you mean: ANC (")
+
+
+def test_no_match_without_close_names_still_gives_a_hint(db, scoring_cfg):
+    r = tools.resolve_airport(db, scoring_cfg, "Atlantis")
+    assert r["suggestions"] == [] and "IATA code" in r["headline"]
+    assert facts(r)["Match"]["required"] is True
+
+
+def test_several_matches_return_best_and_alternatives(db, scoring_cfg):
+    r = tools.resolve_airport(db, scoring_cfg, "Chicago")
+    d = r["data"]
+    assert d["ambiguous"] is True and d["best"]["iata"] == "ORD"
+    assert [a["iata"] for a in d["alternatives"]] == ["MDW"] and d["matches_total"] == 2
+    assert r["headline"] == ("'Chicago' matches 2 airports: best match ORD (Chicago O'Hare International "
+                             "Airport), alternatives MDW.")
+
+
+def test_name_and_city_matches_rank_by_passengers(db, scoring_cfg):
+    # a small airport with "Boston" in its name must not beat BOS (city Boston, far more passengers)
+    db.execute("INSERT INTO airports (iata, name, state, municipality) VALUES "
+               "('BSF', 'Boston Small Field', 'MA', 'Quincy')")
+    db.executemany("INSERT INTO t100_route_month VALUES ('BSF', NULL, 'BOS', 2025, ?, 'pax', 10, 1, 9, 5)",
+                   [(m,) for m in range(1, 13)])
+    d = tools.resolve_airport(db, scoring_cfg, "boston")["data"]
+    assert d["best"]["iata"] == "BOS" and [a["iata"] for a in d["alternatives"]] == ["BSF"]
+
+
+def test_exact_iata_wins_over_name_matches(db, scoring_cfg):
+    d = tools.resolve_airport(db, scoring_cfg, "ORD")["data"]
+    assert d == {"query": "ORD", "ambiguous": False, "iata": "ORD", "name": "Chicago O'Hare International Airport",
+                 "state": "IL"}
+
+
+def test_metrics_for_an_ambiguous_name_return_best_and_alternatives(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "Chicago")
+    assert r["data"] is None and r["best"] == "ORD" and r["alternatives"] == ["MDW"]
+    assert r["headline"].startswith("'Chicago' matches 2 airports")
+
+
+def test_unsupported_region_lists_configured_regions_and_suggests_national(db, scoring_cfg):
+    r = check_envelope(tools.rank_airports(db, scoring_cfg, "California"))
+    assert r["data"] is None
+    assert r["error"] == ("Region 'California' is not configured. Configured regions: new_england "
+                          "(MA, CT, RI, NH, VT, ME). Use region 'national' for a ranking of all US airports, "
+                          "or ask about a specific airport (airport_metrics).")
+    assert r["candidates"] == ["new_england", "national"]
+    assert facts(r)["Configured regions"] == {"value": "new_england (MA, CT, RI, NH, VT, ME)", "required": True}
+
+
+def test_national_ranking_covers_the_whole_peer_set(db, scoring_cfg):
+    r = check_envelope(tools.rank_airports(db, scoring_cfg, "national", top_n=50))
+    d = r["data"]
+    assert d["region"] == "national" and d["states"] == "all US states and territories"
+    assert d["ranked_total"] == d["peer_set_size"] == 8  # the 9 seeded origins except HYA
+    assert d["excluded"] == [e for e in d["excluded"] if e.startswith("HYA")]

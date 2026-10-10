@@ -88,7 +88,7 @@ def cfg():
         long_haul_miles=2500, long_haul_sensitivity_miles=(1500, 2500, 3000),
         long_haul_min_share=0.02, min_passengers_per_year=5_000, target_load_factor=0.8,
         sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1,
-        regions={"north": ("AA", "BB"), "south": ("CC",)},
+        regions={"north": ("AA", "BB"), "south": ("CC",)}, max_ranked=25,
     )
 
 

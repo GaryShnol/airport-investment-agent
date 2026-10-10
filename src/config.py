@@ -36,6 +36,7 @@ class Settings:
     llm_base_url: str | None
     openai_api_key: str | None = field(repr=False)
     ollama_base_url: str
+    ollama_num_ctx: int | None     # Ollama context window in tokens; None = the server's default
     census_api_key: str | None = field(repr=False)
     db_path: Path
     seed_db_path: Path
@@ -62,6 +63,13 @@ class Settings:
             raise ConfigError("MAX_INPUT_CHARS must be a whole number") from exc
         if max_input_chars <= 0:
             raise ConfigError("MAX_INPUT_CHARS must be positive")
+        num_ctx = get("OLLAMA_NUM_CTX")
+        try:
+            num_ctx = int(num_ctx) if num_ctx is not None else None
+        except ValueError as exc:
+            raise ConfigError("OLLAMA_NUM_CTX must be a whole number of tokens") from exc
+        if num_ctx is not None and num_ctx <= 0:
+            raise ConfigError("OLLAMA_NUM_CTX must be positive")
 
         return cls(
             llm_provider=get("LLM_PROVIDER", "ollama").lower(),
@@ -70,6 +78,7 @@ class Settings:
             llm_base_url=get("LLM_BASE_URL"),
             openai_api_key=get("OPENAI_API_KEY"),
             ollama_base_url=get("OLLAMA_BASE_URL", "http://localhost:11434"),
+            ollama_num_ctx=num_ctx,
             census_api_key=get("CENSUS_API_KEY"),
             db_path=_resolve(get("DB_PATH", "data/airport.db")),
             seed_db_path=_resolve(get("SEED_DB_PATH", "seed/airport.db")),
@@ -93,6 +102,7 @@ class ScoringConfig:
     sensitivity_jitter: float
     sensitivity_seed: int
     regions: dict[str, tuple[str, ...]]
+    max_ranked: int            # longest ranking a tool returns (keeps tool results small)
     # name -> {"default": IATA, "candidates": (IATA, ...)}; e.g. LA -> LAX by default
     metro_aliases: dict[str, dict] = field(default_factory=dict)
 
@@ -110,6 +120,12 @@ def _check_weights(name: str, weights: Mapping[str, float], expected: set[str]) 
     if abs(total - 1.0) > _TOLERANCE:
         raise ConfigError(f"{name} must sum to 1.0 (got {total:.4f})")
     return {k: float(v) for k, v in weights.items()}
+
+
+def _positive_int(name: str, value) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigError(f"{name} must be a positive whole number (got {value!r})")
+    return value
 
 
 def load_scoring(path: Path) -> ScoringConfig:
@@ -131,6 +147,7 @@ def load_scoring(path: Path) -> ScoringConfig:
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),
             sensitivity_seed=int(raw["sensitivity"]["seed"]),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
+            max_ranked=_positive_int("max_ranked", raw["max_ranked"]),
             metro_aliases={k.upper(): {"default": v["default"], "candidates": tuple(v["candidates"])}
                            for k, v in (raw.get("metro_aliases") or {}).items()},
         )

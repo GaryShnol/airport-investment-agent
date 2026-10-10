@@ -262,6 +262,22 @@ def find_airports(conn: sqlite3.Connection, column: str, text: str, window: Wind
     return [dict(zip(cols, r)) for r in conn.execute(sql, params)]
 
 
+def served_airports(conn: sqlite3.Connection, window: Window) -> list[dict]:
+    """Airports with passenger service in the window (iata, name, state, municipality, passengers),
+    largest first. Used to suggest names when resolve_airport finds no match."""
+    configs = ",".join("?" * len(PASSENGER_CONFIGS))
+    sql = f"""
+        SELECT a.iata, a.name, a.state, a.municipality, SUM(t.passengers) AS passengers
+        FROM t100_route_month t JOIN airports a ON a.iata = t.origin
+        WHERE t.config IN ({configs}) AND (t.year * 100 + t.month) BETWEEN ? AND ?
+        GROUP BY a.iata HAVING SUM(t.passengers) > 0
+        ORDER BY passengers DESC, a.iata
+    """
+    cols = ("iata", "name", "state", "municipality", "passengers")
+    params = [*PASSENGER_CONFIGS, _key(window.start), _key(window.end)]
+    return [dict(zip(cols, r)) for r in conn.execute(sql, params)]
+
+
 def long_haul_counts(
     conn: sqlite3.Connection,
     origin: str,

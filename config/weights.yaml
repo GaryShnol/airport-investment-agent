@@ -29,6 +29,10 @@ sensitivity:                    # rank stability under weight perturbation
   weight_jitter: 0.25           # +/- relative change per weight, then renormalized
   seed: 42
 
+# Longest ranking rank_airports returns, whatever top_n asks for (scenario or not). Keeps tool
+# results within a local model's context window.
+max_ranked: 25
+
 regions:
   new_england: [MA, CT, RI, NH, VT, ME]
 

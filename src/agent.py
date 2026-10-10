@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sqlite3
 import sys
@@ -18,6 +19,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Callable
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -28,6 +30,8 @@ from src.llm import get_chat_model
 from src.prompts import SYSTEM_PROMPT
 from src.render import render_reply
 from src.tools import make_tools
+
+log = logging.getLogger(__name__)
 
 # Reasoning models (qwen3, gpt-oss via some servers) may prefix the answer with a <think> block,
 # sometimes without the opening tag. Neither must reach the user.
@@ -134,12 +138,104 @@ def ensure_facts(answer: str, envelopes: list[Any]) -> str:
     return f"{answer}\n\n{FACTS_FOOTER}\n{lines}".strip()
 
 
+def drop_restated_headlines(commentary: str, envelopes: list[Any]) -> str:
+    """Remove verbatim copies of tool headlines from the commentary (case and spacing ignored).
+
+    The headline is rendered above the data card, so a model that copies it adds nothing;
+    paraphrases are left alone (the prompt asks for commentary, not a restatement)."""
+    for env in envelopes:
+        headline = env.get("headline") if isinstance(env, dict) else None
+        if headline:
+            pattern = r"(?:^|(?<=\s))(?:>\s*)?" + r"\s+".join(map(re.escape, headline.split()))
+            commentary = re.sub(pattern, "", commentary, flags=re.IGNORECASE)
+    return re.sub(r"\n{3,}", "\n\n", commentary).strip()
+
+
 def _parse(content: Any) -> Any:
     """Tool envelopes reach the message history as JSON text; give callers the dict back."""
     try:
         return json.loads(content) if isinstance(content, str) else content
     except json.JSONDecodeError:
         return content
+
+
+# --- model-call guard: compact history, context warning, empty-reply retry -------------------
+
+# Rough token estimate for the context warning: about 4 characters per token for English and JSON.
+CHARS_PER_TOKEN = 4
+# Warn when the estimated prompt reaches this share of OLLAMA_NUM_CTX.
+CONTEXT_WARN_RATIO = 0.8
+# What an earlier turn's tool result keeps in the prompt: the card the user saw (headline and
+# facts, which include one line per ranked airport), not the raw `data`.
+COMPACT_KEYS = ("headline", "facts", "data_period", "confidence", "error", "candidates")
+RETRY_NUDGE = "Your last reply was empty. Reply to the user now, in text, using the tool results above."
+EMPTY_WITH_DATA = "The model returned no commentary; the data above comes from the tools."
+EMPTY_NO_DATA = "The model returned no answer. Please try again or rephrase the question."
+ONLY_HEADLINE = "The model's reply only repeated the headline above."
+
+
+def compact_envelope(content: Any) -> Any:
+    """An envelope reduced to COMPACT_KEYS (JSON text); anything else is returned unchanged."""
+    env = _parse(content)
+    if not isinstance(env, dict):
+        return content
+    return json.dumps({k: env[k] for k in COMPACT_KEYS if env.get(k) not in (None, [], "")}, ensure_ascii=False)
+
+
+def compact_history(messages: list) -> list:
+    """Tool results from earlier turns (before the last user message) in compact form.
+
+    The checkpointer keeps every ToolMessage, so follow-ups ("which of these has the highest
+    load factor?") can be answered from the earlier card; full envelopes would fill a local
+    model's context in two or three turns, and Ollama then silently cuts the oldest messages.
+    Only the prompt is compacted; the stored history and the Reply keep the full envelopes."""
+    humans = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    last_human = humans[-1] if humans else len(messages)
+    return [m.model_copy(update={"content": compact_envelope(m.content)})
+            if isinstance(m, ToolMessage) and i < last_human else m for i, m in enumerate(messages)]
+
+
+def _chars(content: Any) -> int:
+    return len(content if isinstance(content, str) else json.dumps(content, default=str))
+
+
+def estimate_tokens(request: ModelRequest) -> tuple[int, int]:
+    """(whole prompt, largest tool result) in estimated tokens: system prompt, messages, tool schemas."""
+    system = _chars(request.system_message.content) if request.system_message else 0
+    schemas = sum(len(getattr(t, "description", "") or "") + _chars(getattr(t, "args", {})) for t in request.tools)
+    tool_results = [_chars(m.content) for m in request.messages if isinstance(m, ToolMessage)]
+    total = system + schemas + sum(_chars(m.content) for m in request.messages)
+    return total // CHARS_PER_TOKEN, max(tool_results, default=0) // CHARS_PER_TOKEN
+
+
+def _last_message(response: Any) -> Any:
+    return response.result[-1] if isinstance(response, ModelResponse) else response
+
+
+def is_empty_reply(message: Any) -> bool:
+    """An AI message with no tool call and no text once reasoning is stripped."""
+    return isinstance(message, AIMessage) and not message.tool_calls and not strip_reasoning(message.text)
+
+
+def turn_guard(num_ctx: int | None):
+    """Middleware around every model call: compact earlier tool results, warn when the prompt
+    nears `num_ctx` (OLLAMA_NUM_CTX; no check when unset), and retry an empty reply once with
+    a short nudge (the nudge is sent to the model only, never stored)."""
+    @wrap_model_call(name="TurnGuard")
+    def guard(request: ModelRequest, handler: Callable) -> Any:
+        request = request.override(messages=compact_history(request.messages))
+        if num_ctx:
+            total, largest = estimate_tokens(request)
+            if total >= CONTEXT_WARN_RATIO * num_ctx:
+                log.warning("Prompt is about %s tokens (%.0f%% of OLLAMA_NUM_CTX=%s; largest tool result about %s); "
+                            "the model server may cut the oldest messages. Raise OLLAMA_NUM_CTX or start a new chat.",
+                            f"{total:,}", 100 * total / num_ctx, f"{num_ctx:,}", f"{largest:,}")
+        response = handler(request)
+        if is_empty_reply(_last_message(response)):
+            log.warning("The model returned an empty reply; retrying once.")
+            response = handler(request.override(messages=[*request.messages, HumanMessage(RETRY_NUDGE)]))
+        return response
+    return guard
 
 
 @dataclass
@@ -151,6 +247,14 @@ class Reply:
     tool_results: list[Any] = field(default_factory=list)    # envelopes, same order
     missing_facts: list[dict] = field(default_factory=list)  # required facts appended by ensure_facts
     commentary: str = ""                                     # the model's text, reasoning stripped
+    fallback: bool = False                                   # commentary is a fixed message (empty reply)
+
+
+def _fallback(raw: str, results: list[Any]) -> str:
+    """Deterministic commentary when the model's text is empty after cleaning (never blank)."""
+    if raw:
+        return ONLY_HEADLINE
+    return EMPTY_WITH_DATA if results else EMPTY_NO_DATA
 
 
 @dataclass
@@ -170,8 +274,12 @@ class AirportAgent:
                  for c in m.tool_calls]
         results = [_parse(m.content) for m in turn if isinstance(m, ToolMessage)]
         final = next((m for m in reversed(turn) if isinstance(m, AIMessage)), None)
-        answer = strip_reasoning(final.text if final else "")
-        return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results), answer)
+        raw = strip_reasoning(final.text if final else "")
+        answer = drop_restated_headlines(raw, results)
+        fallback = not answer
+        if fallback:
+            answer = _fallback(raw, results)
+        return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results), answer, fallback)
 
 
 def build_agent(
@@ -196,8 +304,9 @@ def build_agent(
         def connect() -> sqlite3.Connection:
             return store.connect_ro(db_path)
 
+    num_ctx = settings.ollama_num_ctx if settings.llm_provider == "ollama" else None
     graph = create_agent(model, make_tools(connect, cfg), system_prompt=SYSTEM_PROMPT,
-                         checkpointer=InMemorySaver())
+                         middleware=[turn_guard(num_ctx)], checkpointer=InMemorySaver())
     return AirportAgent(graph, settings.max_input_chars)
 
 

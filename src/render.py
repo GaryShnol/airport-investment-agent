@@ -31,6 +31,15 @@ def _table(header: list[str], rows: list[list[Any]]) -> str:
     return "\n".join(lines)
 
 
+def render_headline(envelope: dict) -> str:
+    """The envelope's deterministic one-sentence answer, as a quote above the card; empty for
+    errors whose headline only repeats the error message (render_error shows it)."""
+    headline = envelope.get("headline") or ""
+    if not headline or headline == envelope.get("error"):
+        return ""
+    return f"> {headline}"
+
+
 def render_facts(envelope: dict) -> str:
     """Facts card: one row per fact, then freshness unless a fact already states it.
 
@@ -48,16 +57,21 @@ def render_ranking(envelope: dict) -> str:
     ranked = data.get("ranked") if isinstance(data, dict) else None
     if not ranked:
         return ""
+    # Extra rank columns: a scenario shows the base rank, a non-score sort shows the score rank.
+    extra = [(key, label) for key, label in (("score_rank", "Score rank"), ("base_rank", "Base rank"))
+             if any(key in r for r in ranked)]
     rows = []
     for r in ranked:
         comp = r.get("components", {})
         passengers = comp.get("scale", {}).get("passengers")
-        rows.append([r["rank"], r["iata"], r["name"], f"{r['score']:.3f}",
+        rows.append([r["rank"], *[r.get(key, "n/a") for key, _ in extra], r["iata"], r["name"], f"{r['score']:.3f}",
                      "n/a" if passengers is None else f"{passengers:,}",
                      _pct(comp.get("utilization", {}).get("load_factor_pct")),
                      _pct(comp.get("growth", {}).get("growth_pct"), signed=True),
                      r["confidence"]])
-    table = _table(["Rank", "Airport", "Name", "Score", "Passengers", "Load factor", "Growth", "Confidence"], rows)
+    header = ["Rank", *[label for _, label in extra], "Airport", "Name", "Score", "Passengers", "Load factor",
+              "Growth", "Confidence"]
+    table = _table(header, rows)
     total = data.get("ranked_total", len(ranked))
     if total > len(ranked):
         table += f"\n\nTop {len(ranked)} of {total} ranked airports."
@@ -89,7 +103,11 @@ def render_assumptions(envelope: dict) -> str:
 
 
 def render_error(envelope: dict) -> str:
-    text = f"**Tool error:** {envelope['error']}"
+    """Error line (unless the headline above already gives a fuller sentence), facts, candidates."""
+    parts = [] if render_headline(envelope) else [f"**Tool error:** {envelope['error']}"]
+    if envelope.get("facts"):  # explained errors: no match, unknown region
+        parts.append(render_facts(envelope))
+    text = "\n\n".join(parts)
     if envelope.get("candidates"):
         text += f"\n\nCandidates: {', '.join(map(str, envelope['candidates']))}"
     if envelope.get("default"):
@@ -98,11 +116,13 @@ def render_error(envelope: dict) -> str:
 
 
 def render_envelope(envelope: Any, title: str | None = None) -> str:
-    """Whole envelope as markdown: title, error or facts card, ranking, excluded, assumptions."""
+    """Whole envelope as markdown: title, headline, error or facts card, ranking, excluded, assumptions."""
     parts = [f"**{title}**"] if title else []
     if not isinstance(envelope, dict):  # a tool result that was not JSON
         parts.append(f"```\n{envelope if isinstance(envelope, str) else json.dumps(envelope)}\n```")
         return "\n\n".join(parts)
+    if headline := render_headline(envelope):
+        parts.append(headline)
     if envelope.get("error"):
         parts.append(render_error(envelope))
         return "\n\n".join(parts)

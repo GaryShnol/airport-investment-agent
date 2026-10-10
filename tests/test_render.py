@@ -100,3 +100,18 @@ def test_reply_titles_each_envelope_with_its_tool():
                       [METRICS, METRICS])
     assert md.count("**resolve_airport**") == 1 and "\n\n---\n\n**airport_metrics**" in md
     assert render_reply([], []) == ""
+
+
+def test_headline_is_rendered_above_the_card():
+    md = render_envelope({**METRICS, "headline": "43.2% of all departures from ANC are long haul."}, "airport_metrics")
+    assert md.startswith("**airport_metrics**\n\n> 43.2% of all departures from ANC are long haul.\n\n| Fact | Value |")
+    err = {"data": None, "facts": [], "error": "Unknown region", "headline": "Unknown region"}
+    assert render_envelope(err) == "**Tool error:** Unknown region"  # not shown twice
+
+
+def test_scenario_ranking_shows_base_rank_column():
+    env = {**RANKING, "data": {**RANKING["data"], "ranked": [{**r, "base_rank": 2 - i}
+                                                             for i, r in enumerate(RANKING["data"]["ranked"])]}}
+    lines = render_ranking(env).splitlines()
+    assert lines[0] == "| Rank | Base rank | Airport | Name | Score | Passengers | Load factor | Growth | Confidence |"
+    assert lines[2].startswith("| 1 | 2 | BOS |")
