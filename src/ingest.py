@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from src import census, scoring, store, upstream
-from src.config import ScoringConfig, Settings, get_settings, load_scoring
+from src.config import ScoringConfig, Settings, get_settings, load_scoring, load_sources
 
 T100_SOURCE = "t100"
 T100_GLOB = "t100*.csv"  # BTS exports; documentation.csv in the same folder is not data
@@ -43,8 +43,6 @@ ONTIME_TABLE_COLUMNS = [
     "arr_flights", "arr_del15", *ONTIME_CAUSES.values(), "dep_del15_n",
 ]
 ONTIME_CHUNK_ROWS = 200_000      # a month is ~540k-640k flights; read it in a few chunks
-# Data validation reference (docs/plan.md, Acceptance values): BTS row counts for the 2025 files.
-ONTIME_EXPECTED_ROWS = {"2025": 7_001_619, "2025-01": 539_747}
 
 CENSUS_SOURCE = store.CENSUS_SOURCE   # ingest_log period = vintage ('2024'); meta last_period = latest vintage loaded
 
@@ -232,10 +230,16 @@ def ingest_ontime(conn: sqlite3.Connection, ontime_dir: Path) -> list[OntimeMont
     return loaded
 
 
-def ontime_row_check(conn: sqlite3.Connection) -> list[str]:
-    """Flights read per reference period (ONTIME_EXPECTED_ROWS) against the expected BTS counts."""
+def ontime_row_check(conn: sqlite3.Connection, expected_rows: dict[str, int],
+                     periods: list[str] | None = None) -> list[str]:
+    """Flights read per reference period against the BTS counts in config/sources.yaml
+    (`ontime.expected_rows`, docs/plan.md Acceptance values). Only periods listed there are checked:
+    a month with no reference count (e.g. 2026) is skipped, never a failure. `periods` limits the
+    check to those exact keys (the months an update loaded)."""
     lines = []
-    for period, expected in ONTIME_EXPECTED_ROWS.items():
+    for period, expected in expected_rows.items():
+        if periods is not None and period not in periods:
+            continue
         got = conn.execute("SELECT COALESCE(SUM(source_rows), 0) FROM ingest_log WHERE source = ? AND period LIKE ?",
                            (ONTIME_SOURCE, f"{period}%")).fetchone()[0]
         status = "OK" if got == expected else f"DIFFERENCE {got - expected:+,}"
@@ -427,7 +431,7 @@ def main(argv: list[str] | None = None) -> None:
                   "fields are skipped, not zero. Reported anyway and kept: "
                   f"{sum(m.cancelled_with_dep_delay for m in months):,} with DEP_DEL15, "
                   f"{sum(m.cancelled_with_taxi_out for m in months):,} with taxi-out.")
-        for line in ontime_row_check(conn):
+        for line in ontime_row_check(conn, load_sources(settings.sources_path).ontime_expected_rows):
             print(line)
         missing = store.unmatched_ontime_airports(conn)
         print(f"ontime airports without an airports match: {len(missing)} {' '.join(missing)}".rstrip())

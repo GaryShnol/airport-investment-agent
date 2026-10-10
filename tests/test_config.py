@@ -90,3 +90,37 @@ def test_upstream_settings_defaults():
     assert "{year}" in s.ontime_prezip_url and "{month}" in s.ontime_prezip_url
     with pytest.raises(ConfigError, match="HTTP_TIMEOUT_S"):
         Settings.from_env({"HTTP_TIMEOUT_S": "0"})
+
+
+def test_download_settings_defaults_and_validation():
+    s = Settings.from_env({})
+    assert (s.download_timeout_s, s.download_delay_s, s.download_retries) == (120.0, 2.0, 2)
+    assert s.sources_path.name == "sources.yaml" and "airport-investment-agent" in s.http_user_agent
+    with pytest.raises(ConfigError, match="DOWNLOAD_RETRIES"):
+        Settings.from_env({"DOWNLOAD_RETRIES": "many"})
+    with pytest.raises(ConfigError, match="DOWNLOAD_TIMEOUT_S must be positive"):
+        Settings.from_env({"DOWNLOAD_TIMEOUT_S": "0"})
+
+
+def test_sources_yaml_loads_and_covers_the_ingest_columns():
+    from src import ingest
+    from src.config import load_sources
+    src = load_sources(Settings.from_env({}).sources_path)
+    assert sorted(src.ontime_prezip_columns.values()) == sorted(ingest.ONTIME_COLUMNS)
+    assert set(ingest.T100_COLUMNS) <= set(src.t100_fields)
+    assert src.ontime_expected_rows == {"2025": 7_001_619, "2025-01": 539_747}
+
+
+def test_sources_yaml_rejects_bad_values(tmp_path):
+    from src.config import load_sources
+    good = Settings.from_env({}).sources_path.read_text(encoding="utf-8")
+    bad = tmp_path / "sources.yaml"
+    bad.write_text(good.replace('"2025-01": 539747', '"2025-13": 539747'), encoding="utf-8")
+    with pytest.raises(ConfigError, match="2025-13"):
+        load_sources(bad)
+    bad.write_text(good.replace("max_mb: 200", "max_mb: 0"), encoding="utf-8")
+    with pytest.raises(ConfigError, match="download.max_mb"):
+        load_sources(bad)
+    bad.write_text(good.replace("Origin: ORIGIN", "Origin: DEST"), encoding="utf-8")
+    with pytest.raises(ConfigError, match="different name"):
+        load_sources(bad)

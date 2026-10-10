@@ -128,13 +128,20 @@ def test_not_a_zip_is_rejected(tmp_path):
         ingest.read_ontime(path)
 
 
-def test_row_check_reports_differences(conn, ontime_dir, monkeypatch):
-    monkeypatch.setattr(ingest, "ONTIME_EXPECTED_ROWS", {"2025": 5, "2025-01": 6})
+def test_row_check_reports_differences(conn, ontime_dir):
     ingest.ingest_ontime(conn, ontime_dir)
-    assert ingest.ontime_row_check(conn) == [
+    assert ingest.ontime_row_check(conn, {"2025": 5, "2025-01": 6}) == [
         "ontime 2025: 5 flights, expected 5: OK",
         "ontime 2025-01: 5 flights, expected 6: DIFFERENCE -1",
     ]
+
+
+def test_row_check_skips_periods_without_a_reference(conn, ontime_dir):
+    """Expectations are data: a month with no reference count (a 2026 update) is not checked."""
+    ingest.ingest_ontime(conn, ontime_dir)
+    assert ingest.ontime_row_check(conn, {"2025-01": 5}, periods=["2026-01"]) == []
+    assert ingest.ontime_row_check(conn, {"2025-01": 5}, periods=["2025-01"]) == [
+        "ontime 2025-01: 5 flights, expected 5: OK"]
 
 
 def test_unmatched_ontime_airports(conn, ontime_dir):
