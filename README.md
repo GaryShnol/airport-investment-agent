@@ -179,6 +179,16 @@ LLM from the container, set in `.env` (there is no Ollama service in the compose
 - OpenAI: `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4o-mini`, `OPENAI_API_KEY=...`
 - Ollama on the host: `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://host.docker.internal:11434` (or `LLM_PROVIDER=openai` with `LLM_BASE_URL=http://host.docker.internal:11434/v1`). Docker Desktop resolves `host.docker.internal`; on Linux the `extra_hosts: host.docker.internal:host-gateway` line in `docker-compose.yml` does. Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0`) for the container to reach it on Linux.
 
+## Maintainers: publishing a new seed DB
+The seed DB is a GitHub Release asset, not a file in git. Each data version gets its own release tag, so an old URL keeps serving the data it was published with.
+1. Refresh the data: `uv run python -m src.ingest` (raw files in `data/raw`), then `uv run python -m src.ingest --check`.
+2. Rebuild the seed: `uv run python -m src.seed build` writes `data/seed/airport.db.gz` and `airport.db.gz.sha256` and prints the sizes (it stops above `SEED_MAX_MB`).
+3. Publish a new release with both files (new tag, e.g. `data-2026-07`):
+   ```bash
+   gh release create data-2026-07 data/seed/airport.db.gz data/seed/airport.db.gz.sha256      --title "Seed data 2026-07" --notes "Aggregated SQLite seed DB, window ending 2026-07. sha256 in airport.db.gz.sha256."
+   ```
+4. Point `SEED_DB_URL` in `.env.example` to `https://github.com/<owner>/<repo>/releases/download/<tag>/airport.db.gz` and commit. Existing volumes keep their DB until it is invalid (bump `store.SCHEMA_VERSION` when the schema changes) or the volume is removed (`docker compose down -v`).
+
 ## Testing
 - `uv run pytest`: unit and golden tests, no model and no network (CI runs them on every push). The golden tests (`tests/test_golden.py`) put the four exam questions and the edge cases (unknown airport, unsupported region, scenario weights, ambiguity) through the agent's tools on a small fixture database; agent tests use a scripted fake model.
 - `uv run python scripts/eval.py`: the eval harness, and the model-comparison tool. It asks the questions in [eval/questions.yaml](eval/questions.yaml) (the four exam questions, follow-ups in one conversation, single airports, an unknown airport, an unsupported region, an out-of-scope question and a prompt-injection attempt) to the real agent with the model set in `.env`, and checks per question: the tools called against the expected ones, the must-have facts, the commentary figure check, an empty or cut-off reply, and the time taken. To compare models, change `LLM_PROVIDER` / `LLM_MODEL` in `.env` and run it again. Each answer is appended to `eval/results/<timestamp>-<model>.jsonl` as soon as it is done (a stopped run keeps its results; the folder is not committed), and a markdown table is printed at the end.
