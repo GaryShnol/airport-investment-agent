@@ -2,7 +2,7 @@
 
 Task board for the Airport Investment Intelligence Agent (Deloitte Digital FDE exam, 24h budget).
 Legend: [x] done · [~] written, not yet verified · [ ] todo · (stretch) only if time allows.
-Last updated: 2026-10-10. Current milestone: **M3**.
+Last updated: 2026-10-10. Current milestone: **M4**.
 
 ## Working agreements
 - Build in vertical slices: after M2 the app already answers questions end to end; later milestones add data and depth.
@@ -62,7 +62,7 @@ Last updated: 2026-10-10. Current milestone: **M3**.
 - [x] P2.10 (superseded by P3.7b for the evaluation scope) Small eval (8-10 fixed questions with the expected tool) on local models (qwen3:4b-instruct-2507, lfm2.5:8b, gpt-oss:20b); record tool-choice accuracy and latency; set `num_ctx` in config; decide the reasoning setting (`reasoning` parameter of ChatOllama, verify it exists in the installed version); also change the prompt to "comment on the data, do not repeat it" and measure faithfulness (commentary that contradicts the data card, for example the sign of a growth rate), with and without the change
   - Covered by P3.7b: `scripts/eval.py` runs fixed questions with expected tools on whichever model `.env` selects and records tool choice, latency and faithfulness (figure check), so models are compared by rerunning it. Done elsewhere: the "comment, do not repeat" prompt (P2.14), `OLLAMA_NUM_CTX` in `.env` (P2.14). Not decided: the reasoning setting (not measured)
 
-## M3 - Congestion and depth (Q2 complete, Q4 complete) (current)
+## M3 - Congestion and depth (Q2 complete, Q4 complete)
 - [x] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
   - Verified: 7,001,619 flights for 2025 and 539,747 for January (exact); 352 airports, all matched in `airports`; 1.47% cancelled. Idempotent by file sha256 (rerun reads nothing); a changed file reloads its month only
 - [x] P3.2 Congestion component (delay rate, taxi-out, NAS delay per arriving flight) in scoring, with tests
@@ -81,13 +81,18 @@ Last updated: 2026-10-10. Current milestone: **M3**.
   - New England 2025: BOS long haul 96 / growth 29; BTV congestion 79 / long haul 43; BGR growth 91 / scale 35; PWM utilization 87 / congestion 36. Airports under the 2% long-haul floor share one percentile (43), stated in the assumptions
 - [x] P3.8d Wording: `compare_airports` headline ends with a deterministic overall sentence (mixed / X higher on every measure / no meaningful difference) and a note when departures differ by more than a configured ratio; `explain_demand_gap` spill proxy worded as passengers above the target load level (excess over target x seats), definition in the assumptions
 
-## M4 - Context and freshness
-- [ ] P4.1 Census ingest: airport to CBSA via the Census Geocoder (cached), population from the API; attribution in the UI
-- [ ] P4.2 `demand_context` component and weights back to the full formula
-- [ ] P4.3 `ingest --check` (HEAD next On-Time month, T-100 "Latest Available Data") and `meta` freshness fields; `data_status` reports current, behind or unknown
-- [ ] P4.4 Build and commit `seed/airport.db`
-- [ ] P4.5 (stretch) `ingest --download` for On-Time (direct URLs) and T-100 (form POST), falling back to local files
-- [ ] P4.6 (stretch) Extend the window to 2026-07 using P4.5
+## M4 - Context and freshness (current)
+Branch `m4a-census-freshness`.
+- [x] P4.1 Census ingest into `census_metro`: population by CBSA (metropolitan and micropolitan) from the Census API, vintage from config; idempotent via `ingest_log`; vintage and retrieval date in `meta`; API errors give a clear message and no partial writes; key only from `.env`, never printed; Census attribution in the README and the sidebar
+  - Verified against the real Census API (2026-10-10, ACS 5-year B01003_001E): 935 CBSAs for vintage 2024, 938 for 2019; meta census = 2024 with the retrieval date. All 226 geocoded peer airports have a 2024 population; 222 have growth: ASE (Rifle micro 40090), SWF (Kiryas Joel-Poughkeepsie-Newburgh 28880), CLE (Cleveland 17410) and ACK (Nantucket micro 34880) have CBSA codes from the 2023 delineation with no 2019 figure, so they are scored without demand_context (medium confidence). `ingest --check`: census 2024 = upstream 2024, fresh. New England top 5 with demand_context: BOS, BTV, PWM, BGR, PVD (HVN drops to 6th)
+- [x] P4.2 Airport to CBSA: Census Geocoder (coordinates -> geographies) for peer-set airports, from `airports` lat/lon; results cached in a table so reruns do not call the API; report matched airports and those with no CBSA; polite rate limit, failures tolerated per airport
+  - Real run (2026-10-10, Geocoder vintage ACS2024_Current): 226 of 233 peer-set airports matched to a CBSA in 233 requests; no CBSA: BET, GUM, SCC, SIT, SPN, STT, STX; no failures. A rerun uses the cache (0 requests)
+- [x] P4.3 `demand_context` component as defined in `docs/plan.md` (weight 0.10 from config); open details decided in the decision log; missing CBSA -> weights renormalized and confidence lowered; shown in the card, in "weights used" and in the `rank_airports` drivers block. Fix: a component on the tie floor (airports under the long-haul floor, percentile 43) is never an airport's "strongest" driver
+- [x] P4.4 `ingest --check` and freshness: per source loaded period vs upstream latest (On-Time by HEAD on the PREZIP URL, 404 = not published; T-100 unknown unless it can be checked reliably; Census vintage vs latest available); result and timestamp in `meta`; freshness "fresh" / "stale (upstream has YYYY-MM)" / "unknown" in `data_status` and every envelope; never runs during chat; network failures give "unknown"
+  - Real run (2026-10-10): ontime 2025-12 vs upstream 2026-07, t100 2025-12 vs 2026-07 (page label "Latest Available Data: July 2026"), both stale; Census not loaded yet, so not checked
+- [ ] P4.5 Build and commit `seed/airport.db`
+- [ ] P4.6 (stretch) `ingest --download` for On-Time (direct URLs) and T-100 (form POST), falling back to local files
+- [ ] P4.7 (stretch) Extend the window to 2026-07 using P4.6
 
 ## M5 - Package and document
 - [ ] P5.1 `Dockerfile`, `docker-compose.yml`, entrypoint that seeds the DB volume
@@ -129,6 +134,8 @@ Last updated: 2026-10-10. Current milestone: **M3**.
 | Commentary figure check removes whole sentences with figures not in the envelopes (or swapped between compared airports, or a wrong airport name, or a known misreading); all removed -> a fixed "withheld" note | The card is authoritative, but a wrong number in fluent prose is what a reader remembers. Removing the sentence is deterministic and needs no second model call; real failures from UI tests (LAX credited with SNA's 13.2%/12.5%, BTV called "Bradley", "43.2% of long-haul flights leave Anchorage") are unit tests | Checks presence, not meaning: a correct number in a wrong claim passes unless it is a swap, a name mismatch or a listed misreading. Rounding is permissive (82% passes for 81.6%). Names are judged only against airports named in the envelopes |
 | Eval harness (`scripts/eval.py`, `eval/questions.yaml`) outside CI; golden tests through the tools inside CI | Model behavior (tool choice, faithfulness, latency) cannot be unit-tested, and manual UI testing did not leave a record; one JSON line per question, written immediately, makes runs comparable across models and survives a stopped run. Golden tests keep the deterministic part (every figure) in CI without a model | Pass/fail is a set of checks (expected tools, must-have facts, figure check, empty or cut reply), not a judgment of commentary quality; a local model run takes minutes per question |
 | Rankings and comparisons get restricted commentary (caveats and next steps only: no digits, codes or airport names), configured in `commentary.restricted_tools` | Their answer is an ordering or a verdict, which a figure check cannot verify: the first eval run rewrote the New England ranking with real figures (BDL first, a made-up TWE, ORH twice) and a rerun called LAX's longer taxi-out shorter. The tools already state the order, the verdicts and (P3.8c) the drivers, so the model's restatement adds risk and nothing else | Less model prose on the two most visual answers; a claim with no name and no number ("the second airport grows faster") still passes; names are judged only against airports in the envelopes |
+| demand_context = metro population growth, ACS 5-year 2020-2024 vs 2015-2019 (B01003_001E), by CBSA (metro and micro areas) from the airport's coordinates; population level shown, not scored (P4.3, details plan.md left open) | ACS 5-year is the only Census series that covers every metro and micro area (ACS 1-year stops at 65,000 people); Census advises comparing non-overlapping 5-year periods, and consecutive vintages share four of five years, so their difference is mostly noise. Growth, not size: scale already measures size, and the plan defines the component as growth. The CBSA the airport sits in, not the city in its name, is the only mapping that needs no judgment | The 2019 vintage uses the 2018 CBSA delineation and 2024 the 2023 one: a CBSA whose code is new or disappeared has no growth (missing, renormalized; 4 of 226 in 2025: ASE, SWF, CLE, ACK), and one whose counties changed under the same code mixes boundary change into growth. Airports in one metro share a value. 7 peer airports (rural Alaska, Pacific and Caribbean territories) have no CBSA |
+| A component on the tie floor is never an airport's strongest driver (`scoring.tie_floor`): the lowest value in the peer set, shared by several airports | Tied values share the mean of their ranks, so 201 airports with no material long haul all sit at percentile 43, which read as a strength for small airports (BTV's "strongest" was long haul). Defined generally (lowest value, shared), not as a long-haul special case | The floor component can still be the weakest, which is true; if every component is on the floor the strongest is "none" |
 | Agent constructor: `create_agent` from `langchain.agents` (add the `langchain` package in P2.7) | Installed LangGraph 1.2.14 still ships `create_react_agent`, but it warns it is deprecated since V1.0 and removed in V2.0, moved to `langchain.agents` | One more dependency (`langchain`) |
 
 ## Demo script

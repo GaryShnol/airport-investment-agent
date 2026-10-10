@@ -72,3 +72,21 @@ def test_ollama_num_ctx_from_env():
     for bad in ("big", "0", "-1"):
         with pytest.raises(ConfigError, match="OLLAMA_NUM_CTX"):
             Settings.from_env({"OLLAMA_NUM_CTX": bad})
+
+
+def test_census_config_and_base_vintage_check(tmp_path):
+    cfg = load_scoring(Settings.from_env({}).weights_path)
+    assert cfg.census_base_vintage < cfg.census_vintage
+    text = Settings.from_env({}).weights_path.read_text(encoding="utf-8")
+    bad = tmp_path / "w.yaml"
+    bad.write_text(text.replace("base_vintage: 2019", "base_vintage: 2030"), encoding="utf-8")
+    with pytest.raises(ConfigError, match="base_vintage"):
+        load_scoring(bad)
+
+
+def test_upstream_settings_defaults():
+    s = Settings.from_env({})
+    assert s.census_api_url == "https://api.census.gov/data"
+    assert "{year}" in s.ontime_prezip_url and "{month}" in s.ontime_prezip_url
+    with pytest.raises(ConfigError, match="HTTP_TIMEOUT_S"):
+        Settings.from_env({"HTTP_TIMEOUT_S": "0"})

@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-from src import tools
-from tests.conftest import seed_analysis_db, seed_ontime, seed_sfo
+from src import scoring, store, tools
+from tests.conftest import seed_analysis_db, seed_census, seed_ontime, seed_sfo
 
 ENVELOPE_KEYS = {"facts", "data", "data_period", "freshness", "assumptions", "confidence"}
 
@@ -36,14 +36,34 @@ def test_data_status(db, scoring_cfg):
     assert r["data_period"] == "2025-01..2025-12"
     assert r["freshness"] == "unknown"  # ingest --check never ran
     assert r["data"]["months_in_window"] == 12
-    assert "congestion" in r["data"]["score_components_not_built"]
+    assert "congestion" in r["data"]["score_components_unavailable"]
     assert r["data"]["regions"] == {"new_england": ["MA", "CT", "RI", "NH", "VT", "ME"]}
 
 
-@pytest.mark.parametrize("upstream, expected", [(None, "unknown"), ("2025-12", "current"), ("2026-07", "behind")])
-def test_freshness_from_meta(db, upstream, expected):
-    db.execute("UPDATE meta SET upstream_latest = ?", (upstream,))
+@pytest.mark.parametrize("upstream, checked, expected", [
+    (None, None, "unknown"),                       # never checked
+    (None, "2026-10-10", "unknown"),               # checked, upstream could not be read
+    ("2025-12", "2026-10-10", "fresh"),
+    ("2026-07", "2026-10-10", "stale (upstream has 2026-07 for t100)"),
+])
+def test_freshness_from_meta(db, scoring_cfg, upstream, checked, expected):
+    db.execute("UPDATE meta SET upstream_latest = ?, checked_at = ?", (upstream, checked))
     assert tools.freshness(db) == expected
+    r = tools.rank_airports(db, scoring_cfg, "new_england")
+    assert r["freshness"] == expected
+    warned = [a for a in r["assumptions"] if a.startswith("data is stale")]
+    assert warned == ([tools.STALE_WARNING.format("2026-07 for t100")] if expected.startswith("stale") else [])
+
+
+def test_data_status_reports_each_source(db, scoring_cfg):
+    seed_ontime(db)
+    db.execute("UPDATE meta SET upstream_latest = '2026-07', checked_at = '2026-10-10T10:00:00+00:00' "
+               "WHERE source = 'ontime'")
+    r = tools.data_status(db, scoring_cfg)
+    v = {f["label"]: f["value"] for f in r["facts"]}
+    assert v["Freshness: ontime"] == "stale (upstream has 2026-07); loaded 2025-12; checked 2026-10-10T10:00:00+00:00"
+    assert v["Freshness: t100"] == "unknown; loaded 2025-12; checked never"
+    assert v["Freshness"] == r["freshness"] == "stale (upstream has 2026-07 for ontime)"
 
 
 # --- resolve_airport ---------------------------------------------------------------------
@@ -469,9 +489,9 @@ def test_rank_with_ontime_uses_the_congestion_weight(db_ontime, scoring_cfg):
 
 
 def test_data_status_lists_congestion_only_until_ontime_is_loaded(db, scoring_cfg):
-    assert "congestion" in tools.data_status(db, scoring_cfg)["data"]["score_components_not_built"]
+    assert "congestion" in tools.data_status(db, scoring_cfg)["data"]["score_components_unavailable"]
     seed_ontime(db)
-    assert "congestion" not in tools.data_status(db, scoring_cfg)["data"]["score_components_not_built"]
+    assert "congestion" not in tools.data_status(db, scoring_cfg)["data"]["score_components_unavailable"]
 
 
 # --- compare_airports (P3.3) -------------------------------------------------------------------
@@ -663,10 +683,67 @@ def test_stable_top_airport_has_no_note(db_ontime, scoring_cfg):
 
 def test_rank_airports_drivers_block(db_ontime, scoring_cfg):
     r = tools.rank_airports(db_ontime, scoring_cfg, "new_england")
+    window = store.analysis_window(db_ontime)
+    result = scoring.score(store.scoring_metrics(db_ontime, window, scoring_cfg.long_haul_miles), scoring_cfg, window)
     for x in r["data"]["ranked"]:
         pcts = {c: v["percentile"] for c, v in x["components"].items() if v["percentile"] is not None}
-        assert x["drivers"]["strongest"]["percentile"] == max(pcts.values())
+        floor = set(next(row for _, row in result.table.iterrows() if row["iata"] == x["iata"])["at_floor"])
+        assert x["drivers"]["strongest"]["percentile"] == max(p for c, p in pcts.items() if c not in floor)
+        assert x["drivers"]["strongest"]["component"] not in floor
         assert x["drivers"]["weakest"]["percentile"] == min(pcts.values())
         f = next(f for f in r["facts"] if f["label"] == f"Drivers: {x['iata']}")
         assert f["ranked"] == x["iata"] and f["value"].startswith("strongest: ")
     assert any(a.startswith("drivers = ") for a in r["assumptions"])
+
+
+# --- demand_context (P4.3) ---------------------------------------------------------------------
+
+@pytest.fixture
+def db_full(db_ontime):
+    seed_census(db_ontime)
+    return db_ontime
+
+
+def labels(r):
+    return {f["label"]: f["value"] for f in r["facts"]}
+
+
+def test_demand_card_shows_the_metro_context(db_full, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db_full, scoring_cfg, "BOS", topic="demand"))
+    v = labels(r)
+    assert v["Metro area (CBSA)"] == "Boston-Cambridge-Newton, MA-NH Metro Area (14460)"
+    assert v["Metro population (ACS 5-year 2020-2024)"] == "4,900,000"
+    assert v["Metro population growth vs ACS 5-year 2015-2019 (demand context)"] == "+2.1%"
+    assert "Demand context percentile in the peer set" in v
+    assert any(a.startswith("demand context = population growth") for a in r["assumptions"])
+    assert any("not endorsed or certified by the Census Bureau" in a for a in r["assumptions"])
+
+
+def test_airport_without_cbsa_says_so_and_is_medium(db_full, scoring_cfg):
+    r = tools.airport_metrics(db_full, scoring_cfg, "BTV", topic="demand")
+    assert labels(r)["Metro area (CBSA)"].startswith("none: the airport lies outside every metro and micro area")
+    assert r["confidence"] == "medium"
+
+
+def test_card_before_census_is_loaded(db_ontime, scoring_cfg):
+    r = tools.airport_metrics(db_ontime, scoring_cfg, "BOS", topic="demand")
+    assert labels(r)["Metro population (demand context)"].startswith("not available: Census population not loaded")
+    assert "demand_context" in tools.data_status(db_ontime, scoring_cfg)["data"]["score_components_unavailable"]
+
+
+def test_ranking_uses_demand_context_in_weights_and_drivers(db_full, scoring_cfg):
+    r = tools.rank_airports(db_full, scoring_cfg, "new_england")
+    assert labels(r)["Weights used"] == ("utilization 0.25, congestion 0.25, scale 0.15, growth 0.15, "
+                                         "long_haul 0.1, demand_context 0.1")
+    assert "demand_context" not in tools.data_status(db_full, scoring_cfg)["data"]["score_components_unavailable"]
+    bos = next(x for x in r["data"]["ranked"] if x["iata"] == "BOS")
+    assert bos["components"]["demand_context"]["metro_growth_pct"] == 2.1
+    assert "demand context (metro population growth) 2.1%" in labels(r)[f"#{bos['rank']} BOS ({bos['name']})"]
+    # BTV has no CBSA: scored without demand_context (and without congestion), its own weights shown
+    btv = next(x for x in r["data"]["ranked"] if x["iata"] == "BTV")
+    assert "demand_context" in btv["missing"] and "demand_context" not in btv["weights_used"]
+    # drivers cover demand_context: PWM (fastest-growing metro) ties it with utilization at 100, and
+    # utilization is listed first in the weights
+    pwm = next(x for x in r["data"]["ranked"] if x["iata"] == "PWM")
+    assert pwm["components"]["demand_context"]["percentile"] == 100
+    assert labels(r)["Drivers: PWM"].startswith("strongest: utilization (load factor), percentile 100")

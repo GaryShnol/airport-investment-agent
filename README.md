@@ -121,7 +121,7 @@ graph TD
 
     D -- "Enough data" --> K["LLM writes answer using only envelope numbers"]
     K --> L["Figure check in code: sentences with figures not in the tool results are removed; ensure_facts adds missing required facts"]
-    L --> N["Final response: answer, period, assumptions, confidence, weights, freshness warning if behind"]
+    L --> N["Final response: answer, period, assumptions, confidence, weights, freshness warning if stale"]
 
     subgraph OFFLINE ["Offline refresh (CLI, never during chat)"]
         O["ingest --check"] --> P{"Upstream has newer month than meta.last_period?"}

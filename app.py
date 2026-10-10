@@ -13,11 +13,9 @@ from contextlib import closing
 import streamlit as st
 
 from src import agent as agent_mod
-from src import render, store, tools
+from src import census, render, store, tools
 from src.config import ConfigError, Settings, get_settings, load_scoring
 
-CENSUS_ATTRIBUTION = ("This product uses the Census Bureau Data API but is not endorsed or certified "
-                      "by the Census Bureau.")
 SAMPLE_QUESTIONS = [
     "Which airports in New England are strong candidates for terminal expansion?",
     "Compare LA and Santa Ana airport congestion levels.",
@@ -58,7 +56,7 @@ def sidebar(settings: Settings) -> None:
         st.subheader("Sample questions")
         for q in SAMPLE_QUESTIONS:
             st.button(q, on_click=ask_sample, args=(q,), width="stretch")
-        st.caption(CENSUS_ATTRIBUTION)
+        st.caption(census.ATTRIBUTION)
 
 
 def show_data(tool_calls: list[dict], envelopes: list) -> None:

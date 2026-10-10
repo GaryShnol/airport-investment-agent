@@ -154,3 +154,26 @@ def scoring_cfg():
 
     from src.config import ROOT, load_scoring
     return replace(load_scoring(ROOT / "config" / "weights.yaml"), min_passengers_per_year=1000)
+
+
+# CBSA per airport and metro population (2024, 2019). HYA and BTV lie outside every CBSA here.
+CENSUS = {"BOS": ("14460", "Boston-Cambridge-Newton, MA-NH Metro Area", 4_900_000, 4_800_000),
+          "PWM": ("38860", "Portland-South Portland, ME Metro Area", 560_000, 530_000),
+          "LAX": ("31080", "Los Angeles-Long Beach-Anaheim, CA Metro Area", 13_000_000, 13_200_000),
+          "SNA": ("31080", "Los Angeles-Long Beach-Anaheim, CA Metro Area", 13_000_000, 13_200_000),
+          "ANC": ("11260", "Anchorage, AK Metro Area", 400_000, 400_000),
+          "ORD": ("16980", "Chicago-Naperville-Elgin, IL-IN Metro Area", 9_400_000, 9_500_000),
+          "MDW": ("16980", "Chicago-Naperville-Elgin, IL-IN Metro Area", 9_400_000, 9_500_000)}
+
+
+def seed_census(conn, vintage=2024, base=2019):
+    """airports.cbsa as the Geocoder step leaves it, census_metro for both vintages, ingest_log."""
+    conn.executemany("UPDATE airports SET cbsa = ? WHERE iata = ?", [(c[0], i) for i, c in CENSUS.items()])
+    metros = {c[0]: c for c in CENSUS.values()}
+    conn.executemany("INSERT INTO census_metro (cbsa, year, population, fetched_at, name) VALUES (?,?,?,?,?)",
+                     [(cbsa, year, pop, "now", name) for cbsa, name, now_pop, base_pop in metros.values()
+                      for year, pop in ((vintage, now_pop), (base, base_pop))])
+    conn.executemany("INSERT INTO ingest_log (source, period, rows, loaded_at) VALUES ('census', ?, 1, 'now')",
+                     [(str(vintage),), (str(base),)])
+    conn.execute("INSERT INTO meta (source, last_period, fetched_at) VALUES ('census', ?, 'now')", (str(vintage),))
+    conn.commit()

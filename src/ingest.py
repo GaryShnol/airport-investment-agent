@@ -7,15 +7,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sqlite3
+import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from src import store
-from src.config import get_settings, load_scoring
+from src import census, scoring, store, upstream
+from src.config import ScoringConfig, Settings, get_settings, load_scoring
 
 T100_SOURCE = "t100"
 T100_GLOB = "t100*.csv"  # BTS exports; documentation.csv in the same folder is not data
@@ -44,6 +45,12 @@ ONTIME_TABLE_COLUMNS = [
 ONTIME_CHUNK_ROWS = 200_000      # a month is ~540k-640k flights; read it in a few chunks
 # Data validation reference (docs/plan.md, Acceptance values): BTS row counts for the 2025 files.
 ONTIME_EXPECTED_ROWS = {"2025": 7_001_619, "2025-01": 539_747}
+
+CENSUS_SOURCE = store.CENSUS_SOURCE   # ingest_log period = vintage ('2024'); meta last_period = latest vintage loaded
+
+# Geocoder: stop after this many failures in a row (the service or the network is down; the rest is
+# retried on the next run instead of waiting for a timeout per airport).
+GEOCODER_MAX_CONSECUTIVE_FAILURES = 5
 
 AIRPORTS_FILE = "airports.csv"  # OurAirports, in RAW_DATA_DIR
 # US territories have their own iso_country in OurAirports; T-100 uses the same code as
@@ -236,6 +243,81 @@ def ontime_row_check(conn: sqlite3.Connection) -> list[str]:
     return lines
 
 
+def ingest_census(conn: sqlite3.Connection, session, settings: Settings, cfg: ScoringConfig) -> list[int]:
+    """Load CBSA population for the configured vintage and growth base, skipping vintages already in
+    ingest_log (a rerun makes no request). Every needed vintage is fetched before anything is
+    written, so a failed request leaves the tables untouched (no partial writes). Returns the
+    vintages loaded; raises census.CensusError with a printable message (never the key)."""
+    loaded = store.loaded_periods(conn, CENSUS_SOURCE)
+    needed = [v for v in (cfg.census_vintage, cfg.census_base_vintage) if str(v) not in loaded]
+    fetched = {v: census.fetch_population(session, settings.census_api_url, cfg.census_dataset, cfg.census_variable,
+                                          v, settings.census_api_key, settings.http_timeout_s) for v in needed}
+    now = _now()
+    for vintage, rows in fetched.items():
+        conn.execute("DELETE FROM census_metro WHERE year = ?", (vintage,))
+        conn.executemany("INSERT INTO census_metro (cbsa, year, population, fetched_at, name) VALUES (?, ?, ?, ?, ?)",
+                         [(cbsa, vintage, population, now, name) for cbsa, name, population in rows])
+        conn.execute("INSERT INTO ingest_log (source, period, rows, loaded_at) VALUES (?, ?, ?, ?)",
+                     (CENSUS_SOURCE, str(vintage), len(rows), now))
+    if fetched:  # meta: latest vintage loaded and the retrieval date
+        _update_meta(conn, CENSUS_SOURCE)
+    return sorted(fetched)
+
+
+@dataclass
+class GeocodeSummary:
+    """Peer-set airports by Geocoder outcome (IATA codes, sorted)."""
+    matched: list[str] = field(default_factory=list)      # inside a metro or micro area
+    no_cbsa: list[str] = field(default_factory=list)      # outside every CBSA (rural, or a territory)
+    failed: list[str] = field(default_factory=list)       # request failed, not cached, retried next run
+    requested: int = 0                                    # Geocoder requests made (0 on a cached rerun)
+
+    @property
+    def total(self) -> int:
+        return len(self.matched) + len(self.no_cbsa) + len(self.failed)
+
+
+def geocode_peer_airports(conn: sqlite3.Connection, session, settings: Settings, cfg: ScoringConfig,
+                          sleep=time.sleep) -> GeocodeSummary:
+    """Airport -> CBSA for peer-set airports via the Census Geocoder (coordinates from `airports`).
+
+    A cached answer (same Geocoder vintage and coordinates) is reused without a request, including
+    "no CBSA". Requests are spaced by `geocoder_delay_s`; a failed request is reported and not
+    cached; after GEOCODER_MAX_CONSECUTIVE_FAILURES in a row the rest count as failed without a
+    request. Finally `airports.cbsa` is refreshed from the cache."""
+    window = store.analysis_window(conn)
+    metrics = store.airport_metrics(conn, window, cfg.long_haul_miles)
+    peer = set(metrics.loc[scoring.in_peer_set(metrics, cfg), "iata"])
+    coords = conn.execute("SELECT iata, lat, lon FROM airports WHERE lat IS NOT NULL AND lon IS NOT NULL").fetchall()
+    cache = store.cached_cbsa(conn, cfg.geocoder_vintage)
+    summary, streak = GeocodeSummary(), 0
+    for iata, lat, lon in sorted(c for c in coords if c[0] in peer):
+        hit = cache.get(iata)
+        if hit and (hit["lat"], hit["lon"]) == (lat, lon):
+            (summary.matched if hit["cbsa"] else summary.no_cbsa).append(iata)
+            continue
+        if streak >= GEOCODER_MAX_CONSECUTIVE_FAILURES:
+            summary.failed.append(iata)
+            continue
+        if summary.requested:
+            sleep(settings.geocoder_delay_s)
+        summary.requested += 1
+        try:
+            found = census.geocode(session, settings.census_geocoder_url, cfg.geocoder_benchmark,
+                                   cfg.geocoder_vintage, lat, lon, settings.http_timeout_s)
+        except census.CensusError:
+            summary.failed.append(iata)
+            streak += 1
+            continue
+        streak = 0
+        conn.execute("INSERT OR REPLACE INTO airport_cbsa (iata, lat, lon, cbsa, cbsa_name, kind, geocoder_vintage, "
+                     "geocoded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                     (iata, lat, lon, found.cbsa, found.name, found.kind, cfg.geocoder_vintage, _now()))
+        (summary.matched if found.cbsa else summary.no_cbsa).append(iata)
+    store.apply_cbsa(conn, cfg.geocoder_vintage)
+    return summary
+
+
 def _update_meta(conn: sqlite3.Connection, source: str) -> None:
     last = conn.execute("SELECT MAX(period) FROM ingest_log WHERE source = ?", (source,)).fetchone()[0]
     if last is None:
@@ -301,9 +383,29 @@ def ingest_airports(conn: sqlite3.Connection, csv_path: Path, regions: dict[str,
     return len(rows)
 
 
+def check(settings: Settings) -> None:
+    """`--check`: loaded period vs upstream latest per source, stored in meta. Downloads nothing."""
+    if not settings.db_path.exists():
+        print(f"No database at {settings.db_path}: run `uv run python -m src.ingest` first")
+        return
+    with store.connect_rw(settings.db_path) as conn:
+        store.init_db(conn)
+        rows = upstream.run_check(conn, census.session(), settings, load_scoring(settings.weights_path))
+        print(f"{'source':<8} {'loaded':<9} {'upstream':<9} freshness")
+        for r in rows:
+            print(f"{r.source:<8} {r.loaded:<9} {r.upstream or 'unknown':<9} {r.freshness}")
+        print(f"overall: {store.overall_freshness(store.meta_rows(conn))}")
+
+
 def main(argv: list[str] | None = None) -> None:
-    argparse.ArgumentParser(description=__doc__).parse_args(argv)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true",
+                        help="compare loaded periods with upstream (stored in meta); no downloads")
+    args = parser.parse_args(argv)
     settings = get_settings()
+    if args.check:
+        check(settings)
+        return
     with store.connect_rw(settings.db_path) as conn:
         store.init_db(conn)
         n = ingest_t100(conn, settings.raw_data_dir / "t100_segment")
@@ -329,6 +431,27 @@ def main(argv: list[str] | None = None) -> None:
             print(line)
         missing = store.unmatched_ontime_airports(conn)
         print(f"ontime airports without an airports match: {len(missing)} {' '.join(missing)}".rstrip())
+
+        cfg = load_scoring(settings.weights_path)
+        http = census.session()
+        if not settings.census_api_key:
+            print("census: skipped, CENSUS_API_KEY is not set in .env (the Census Data API requires a key)")
+        else:
+            try:
+                vintages = ingest_census(conn, http, settings, cfg)
+                print(f"census: vintages loaded {', '.join(map(str, vintages)) or 'none new'} "
+                      f"({cfg.census_dataset} {cfg.census_variable}, CBSAs)")
+            except census.CensusError as exc:
+                print(f"census: not loaded, nothing written: {exc}")
+
+        geo = geocode_peer_airports(conn, http, settings, cfg)
+        print(f"geocoder: {len(geo.matched)} of {geo.total} peer-set airports matched to a CBSA "
+              f"({geo.requested} requests, the rest from the cache)")
+        print(f"geocoder: no CBSA (outside every metro and micro area): {len(geo.no_cbsa)} {' '.join(geo.no_cbsa)}"
+              .rstrip())
+        if geo.failed:
+            print(f"geocoder: failed, retried next run: {len(geo.failed)} {' '.join(geo.failed)}")
+        print(f"census: {census.ATTRIBUTION}")
 
 
 if __name__ == "__main__":

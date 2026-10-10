@@ -75,12 +75,27 @@ CREATE TABLE IF NOT EXISTS ontime_airport_month (
     dep_del15_n INTEGER,       -- departures with a reported DEP_DEL15 (rate denominator)
     PRIMARY KEY (airport, year, month)
 );
+-- Census population per CBSA (metropolitan or micropolitan area); year = vintage (ACS 5-year: last year).
 CREATE TABLE IF NOT EXISTS census_metro (
     cbsa TEXT NOT NULL,
     year INTEGER NOT NULL,
     population INTEGER,
     fetched_at TEXT,
+    name TEXT,                 -- CBSA name as the Census API returns it for that vintage
     PRIMARY KEY (cbsa, year)
+);
+-- Census Geocoder cache: the CBSA each airport's coordinates fall in (null = outside every metro
+-- and micro area). Reused while the coordinates and the Geocoder vintage are unchanged, so reruns make
+-- no request. Failed requests are not cached (retried on the next run).
+CREATE TABLE IF NOT EXISTS airport_cbsa (
+    iata TEXT PRIMARY KEY,
+    lat REAL,
+    lon REAL,
+    cbsa TEXT,
+    cbsa_name TEXT,
+    kind TEXT,                 -- metro | micro | null
+    geocoder_vintage TEXT,
+    geocoded_at TEXT
 );
 """
 
@@ -107,13 +122,28 @@ def init_db(conn: sqlite3.Connection) -> None:
     # Columns added after a DB was first created (CREATE TABLE IF NOT EXISTS does not add them).
     for table, column, kind in (("airports", "municipality", "TEXT"), ("ingest_log", "file_hash", "TEXT"),
                                 ("ingest_log", "source_rows", "INTEGER"),
-                                ("ontime_airport_month", "dep_del15_n", "INTEGER")):
+                                ("ontime_airport_month", "dep_del15_n", "INTEGER"), ("census_metro", "name", "TEXT")):
         if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
 
 def loaded_periods(conn: sqlite3.Connection, source: str) -> set[str]:
     return {r[0] for r in conn.execute("SELECT period FROM ingest_log WHERE source = ?", (source,))}
+
+
+def cached_cbsa(conn: sqlite3.Connection, geocoder_vintage: str) -> dict[str, dict]:
+    """Geocoder cache rows of one vintage, by IATA (lat, lon, cbsa, cbsa_name, kind)."""
+    rows = conn.execute("SELECT iata, lat, lon, cbsa, cbsa_name, kind FROM airport_cbsa WHERE geocoder_vintage = ?",
+                        (geocoder_vintage,))
+    return {r[0]: dict(zip(("lat", "lon", "cbsa", "cbsa_name", "kind"), r[1:])) for r in rows}
+
+
+def apply_cbsa(conn: sqlite3.Connection, geocoder_vintage: str) -> int:
+    """Copy cached CBSAs of one Geocoder vintage into `airports.cbsa` (ingest_airports resets it on
+    every run). Returns the number of airports with a CBSA."""
+    conn.execute("UPDATE airports SET cbsa = (SELECT c.cbsa FROM airport_cbsa c "
+                 "WHERE c.iata = airports.iata AND c.geocoder_vintage = ?)", (geocoder_vintage,))
+    return conn.execute("SELECT COUNT(*) FROM airports WHERE cbsa IS NOT NULL").fetchone()[0]
 
 
 def route_totals(
@@ -147,6 +177,9 @@ def unmatched_origins(conn: sqlite3.Connection) -> list[str]:
 
 
 WINDOW_MONTHS = 12
+# Monthly sources that set the analysis window. Census (a yearly vintage, context only) is in `meta`
+# too but never moves the window.
+WINDOW_SOURCES = ("t100", "ontime")
 # Sources the previous 12 months are needed for (growth is T-100 passengers). On-Time is used only
 # inside the window, so its missing previous year must not switch growth off.
 GROWTH_SOURCES = ("t100",)
@@ -187,7 +220,9 @@ class Window:
 
 def analysis_window(conn: sqlite3.Connection) -> Window:
     """Trailing 12 months ending at the minimum `last_period` over loaded sources (docs/plan.md)."""
-    rows = conn.execute("SELECT source, last_period FROM meta WHERE last_period IS NOT NULL").fetchall()
+    marks = ",".join("?" * len(WINDOW_SOURCES))
+    rows = conn.execute(f"SELECT source, last_period FROM meta WHERE last_period IS NOT NULL AND source IN ({marks})",
+                        WINDOW_SOURCES).fetchall()
     if not rows:
         raise ValueError("No data loaded: run `uv run python -m src.ingest` first")
     end = min(last for _, last in rows)
@@ -295,20 +330,71 @@ def unmatched_ontime_airports(conn: sqlite3.Connection) -> list[str]:
     return [r[0] for r in rows]
 
 
-def scoring_metrics(conn: sqlite3.Connection, window: Window, long_haul_miles: int) -> pd.DataFrame:
-    """`airport_metrics` plus the On-Time columns of `ontime_metrics` (left join on IATA) once
-    On-Time is loaded; airports without On-Time rows get missing values. Without On-Time the
-    columns are absent and scoring treats congestion as unavailable."""
+CENSUS_SOURCE = "census"
+
+
+def census_loaded(conn: sqlite3.Connection, vintages: Iterable[int]) -> bool:
+    """True when every given Census vintage is in ingest_log."""
+    return {str(v) for v in vintages} <= loaded_periods(conn, CENSUS_SOURCE)
+
+
+def metro_metrics(conn: sqlite3.Connection, vintage: int, base_vintage: int) -> pd.DataFrame:
+    """One row per airport: its CBSA (`airports.cbsa`, from the Geocoder cache), the CBSA name and
+    population in `vintage` and in `base_vintage`. Missing where the airport has no CBSA, or the
+    CBSA code has no row in that vintage (delineations change between vintages)."""
+    sql = """
+        SELECT a.iata, a.cbsa, c.name AS cbsa_name, c.population AS metro_population,
+               b.population AS metro_population_base
+        FROM airports a
+        LEFT JOIN census_metro c ON c.cbsa = a.cbsa AND c.year = :vintage
+        LEFT JOIN census_metro b ON b.cbsa = a.cbsa AND b.year = :base
+    """
+    return pd.read_sql_query(sql, conn, params={"vintage": vintage, "base": base_vintage})
+
+
+def scoring_metrics(conn: sqlite3.Connection, window: Window, long_haul_miles: int,
+                    census_vintages: tuple[int, int] | None = None) -> pd.DataFrame:
+    """`airport_metrics` plus, once loaded, the On-Time columns of `ontime_metrics` and the metro
+    columns of `metro_metrics` for `census_vintages` (vintage, base vintage), left-joined on IATA;
+    airports without such rows get missing values. A source not loaded leaves its columns out and
+    scoring treats its component as unavailable."""
     metrics = airport_metrics(conn, window, long_haul_miles)
-    if not ontime_loaded(conn):
-        return metrics
-    return metrics.merge(ontime_metrics(conn, window), on="iata", how="left")
+    if ontime_loaded(conn):
+        metrics = metrics.merge(ontime_metrics(conn, window), on="iata", how="left")
+    if census_vintages and census_loaded(conn, census_vintages):
+        metrics = metrics.merge(metro_metrics(conn, *census_vintages), on="iata", how="left")
+    return metrics
 
 
 def meta_rows(conn: sqlite3.Connection) -> list[dict]:
     """Freshness summary, one dict per loaded source."""
     rows = conn.execute("SELECT source, last_period, upstream_latest, checked_at FROM meta ORDER BY source")
     return [dict(zip(("source", "last_period", "upstream_latest", "checked_at"), r)) for r in rows]
+
+
+FRESH, UNKNOWN = "fresh", "unknown"
+
+
+def source_freshness(row: dict) -> str:
+    """One source: "fresh" (upstream has nothing newer), "stale (upstream has <period>)", or "unknown"
+    (never checked, or the last `ingest --check` could not tell). Periods compare as text: 'YYYY-MM'
+    for monthly sources, 'YYYY' (vintage) for Census."""
+    upstream, loaded = row.get("upstream_latest"), row.get("last_period")
+    if not row.get("checked_at") or not upstream or not loaded:
+        return UNKNOWN
+    return f"stale (upstream has {upstream})" if upstream > loaded else FRESH
+
+
+def overall_freshness(rows: list[dict]) -> str:
+    """Over the loaded sources: stale if any is stale (naming each newer period and its source), else
+    unknown if any is unknown or nothing is loaded, else fresh."""
+    loaded = [r for r in rows if r.get("last_period")]
+    stale = [r for r in loaded if source_freshness(r).startswith("stale")]
+    if stale:
+        return "stale (upstream has " + ", ".join(f"{r['upstream_latest']} for {r['source']}" for r in stale) + ")"
+    if not loaded or any(source_freshness(r) == UNKNOWN for r in loaded):
+        return UNKNOWN
+    return FRESH
 
 
 _SEARCH_COLUMNS = ("iata", "name", "municipality")

@@ -114,7 +114,9 @@ def render_comparison(envelope: dict) -> str:
     return f"{names}\n\n" + _table(["Metric", *codes, "Verdict"], rows)
 
 
-def _driver_cell(d: dict) -> str:
+def _driver_cell(d: dict | None) -> str:
+    if d is None:  # every component on the tie floor
+        return "none"
     return f"{d['component'].replace('_', ' ')} ({d['percentile']:.0f})"
 
 
