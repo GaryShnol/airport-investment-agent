@@ -78,7 +78,8 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 ## Packaging
 Dockerfile + `docker-compose.yml` (app service, `env_file: .env`, volume for the DB, entrypoint seeds the DB). Local model from a container: `OLLAMA_BASE_URL=http://host.docker.internal:11434`. GitHub Actions runs `pytest`. README: two-command quickstart. `docs/design.md`: scoring methodology, tradeoffs, where AI is used, limits, production path (scheduled ingest, tracing, secrets, evals).
 
-## Acceptance values (calendar 2025; become golden tests in P3.5)
+## Acceptance values (calendar 2025, real data)
+Checked against `data/airport.db`, which CI does not have. CI runs the golden tests instead (`tests/test_golden.py`, P3.7): the four exam questions and the edge cases (unknown airport, unsupported region, scenario weights, ambiguity) through the agent's tools on a small fixture DB, with every expected value worked out by hand. Model behavior (tool choice, commentary) is measured by the eval harness (`scripts/eval.py`, P3.7b), not in CI.
 Re-baselined in P2.2 from `t100_route_month` under the Definitions above (passenger service = config 1 or 3). Only the passenger figures moved, because combi flights are now included; the exploratory pass used config 1 only.
 - T-100 2025 ANC, all configs: 87,988 departures; share >= 2,500 mi = 43.2% (unchanged).
 - T-100 2025 ANC, passenger service: share >= 2,500 mi = 11.5% (was 11.4% with config 1 only). Sensitivity: >= 1,500 mi 19.3%, >= 3,000 mi 4.3% (were 19.4% and 4.0%).
