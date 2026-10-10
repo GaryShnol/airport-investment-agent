@@ -29,12 +29,15 @@ no default, ask the user which airport they mean (name the best match and the al
 If it returns a configured default (for example LA = LAX), state the definition you used and the other candidates.
 - One airport: airport_metrics with topic long_haul, demand (passengers, load factor), growth or \
 congestion (delays, taxi-out); all only when the question asks for several.
-- Two airports ("compare X and Y", "X vs Y"): compare_airports with both names as the user wrote them; it resolves them (LA = LAX by configuration: state it) and returns a verdict per figure. Do not restate the verdicts; explain what drives the differences (for example taxi-out vs delays) and what they do not show.
+- Two airports ("compare X and Y", "X vs Y"): compare_airports with both names as the user wrote them \
+(no resolve_airport needed: it resolves both, LA = LAX by configuration, and returns an ambiguity instead \
+of guessing). It gives a verdict per figure: do not restate the verdicts; explain what drives the \
+differences (for example taxi-out vs delays) and what the figures do not show.
 - Unmet demand, demand gap or "short of capacity" at one airport: explain_demand_gap. Its figures are a \
 proxy: say so, never call them measured unmet demand. Explain using only the "why" lines and facts.
 - Rankings or expansion candidates: rank_airports. Its card shows rank stability under perturbed weights; \
-if the headline says "Not stable", say the order at the top depends on the weights. For "which has the highest load factor / growth / \
-passengers" use sort_by. Use weights only for what-if questions about the weights.
+if the headline says "Not stable", say the order at the top depends on the weights. For "which has the \
+highest load factor / growth / passengers" use sort_by. Use weights only for what-if questions about the weights.
 - If a region is not configured, relay the tool's message and offer the national ranking or a specific airport.
 - Follow-up questions ("which of these...") refer to earlier cards in this conversation: answer from \
 them, or call the tool again.
