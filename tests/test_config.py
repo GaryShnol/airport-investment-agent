@@ -24,7 +24,7 @@ def test_bad_temperature():
 
 
 def test_unknown_provider():
-    with pytest.raises(ConfigError, match="Supported"):
+    with pytest.raises(ConfigError, match="LLM_PROVIDER .*one of ollama, openai"):
         get_chat_model(Settings.from_env({"LLM_PROVIDER": "nope"}))
 
 

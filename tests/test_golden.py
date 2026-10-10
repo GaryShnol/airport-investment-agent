@@ -46,7 +46,8 @@ def test_q1_new_england_ranking(tools):
                              "(3 ranked, 1 excluded).")
     assert [(x["iata"], x["score"]) for x in r["data"]["ranked"]] == [("BOS", 0.738), ("PWM", 0.537), ("BTV", 0.291)]
     # HYA: 2 departures a month, round(5 x 1.1) = 6 passengers x 12 months, below the test floor of 1,000
-    assert r["data"]["excluded"] == ["HYA: 72 passenger-service passengers, below the 1,000 floor"]
+    assert r["data"]["excluded"] == [{"iata": "HYA", "name": "Cape Cod Gateway Airport",
+                                      "reason": "72 passenger-service passengers, below the 1,000 floor"}]
     # BTV has 600 On-Time departures, under min_ontime_flights: scored without congestion
     assert r["data"]["ranked"][2]["missing"] == ["congestion"]
     assert values(r)["Weights used (renormalized without demand_context)"] == (

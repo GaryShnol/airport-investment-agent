@@ -9,8 +9,12 @@ Pure functions (commentary and envelopes in, cleaned commentary out), applied by
   LAX") that belongs to the other (in the other airport's column and not in this one's);
 - an airport name in parentheses next to a code (or the reverse) that is another airport's name in
   the envelopes, such as "Bradley (BTV)" when Bradley is BDL;
-- a known misreading of a definition (MISREADINGS).
-Ignored: years, periods (2025-01), numbers glued to letters (T-100, A320, 2nd) and whole numbers up
+- a known misreading of a definition (MISREADINGS);
+- a month or year outside the data periods of the envelopes, or a month range that is not one of
+  them ("Mar 2025 - Dec 2025" when the data is 2025-01..2025-12; "January to December 2025" and
+  "2025-01..2025-12" pass). Single months and years pass when a period covers them or the envelopes
+  name them (peak months, the upstream month of a freshness note, Census vintages).
+Ignored as figures: years, periods (2025-01), numbers glued to letters (T-100, A320, 2nd) and whole numbers up
 to IGNORE_SMALL_INTEGERS without a % sign (counts such as "3 airports", "12 months"). If nothing is left, the
 commentary is replaced by WITHHELD. The data card stays the authoritative answer either way.
 
@@ -241,6 +245,105 @@ def _swapped(sentence: str, numbers: list[Written], columns) -> list[str]:
     return reasons
 
 
+# --- periods -------------------------------------------------------------------------------
+
+_MONTH_NAMES = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9,
+                "oct": 10, "nov": 11, "dec": 12}
+# Capitalized month names and abbreviations ("Mar", "March", "Sept."); lower-case "may" is a verb.
+_MONTH = (r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?"
+          r"|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?")
+_RANGE_SEP = r"\s*(?:\.\.|[-‐‑‒–—]|\bto\b|\bthrough\b|\bthru\b|\buntil\b)\s*"
+_ISO_RANGE = re.compile(rf"\b(\d{{4}})-(\d{{2}}){_RANGE_SEP}(\d{{4}})-(\d{{2}})\b")
+_NAMED_RANGE = re.compile(rf"\b({_MONTH})(?:\s+(\d{{4}}))?{_RANGE_SEP}({_MONTH})(?:\s+(\d{{4}}))?(?![\w])")
+_NAMED_MONTH = re.compile(rf"\b({_MONTH})(?:\s+(\d{{4}}))?(?![\w])")
+_ISO_MONTH = re.compile(r"\b(\d{4})-(\d{2})\b(?!-\d)")
+_YEAR = re.compile(r"(?<![\d,.-])\b((?:19|20)\d{2})\b(?![\d,.]\d|-\d)")
+_PERIOD_IN_DATA = re.compile(r"(\d{4})-(\d{2})\.\.(\d{4})-(\d{2})")
+
+
+def _ym(year: int | str, month: int) -> int:
+    return int(year) * 12 + month - 1
+
+
+def _month(name: str) -> int:
+    return _MONTH_NAMES[name.lower()[:3]]
+
+
+@dataclass(frozen=True)
+class Periods:
+    """What the envelopes cover: data periods (as month indexes), months and years they name."""
+    ranges: frozenset[tuple[int, int]]
+    months: frozenset[int]
+    years: frozenset[int]
+
+    def covers(self, ym: int) -> bool:
+        return ym in self.months or any(a <= ym <= b for a, b in self.ranges)
+
+    def covers_year(self, year: int) -> bool:
+        return year in self.years or any(a // 12 <= year <= b // 12 for a, b in self.ranges)
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
+def data_periods(envelopes: list[Any]) -> Periods:
+    text = "\n".join(_strings(envelopes))
+    ranges = {(_ym(a, int(b)), _ym(c, int(d))) for a, b, c, d in _PERIOD_IN_DATA.findall(text)}
+    months = {_ym(y, int(m)) for y, m in re.findall(r"\b(\d{4})-(\d{2})\b", text) if 1 <= int(m) <= 12}
+    years = {int(y) for y in re.findall(r"\b((?:19|20)\d{2})\b", text)}
+    return Periods(frozenset(ranges), frozenset(months), frozenset(years))
+
+
+def _blank(text: str, m: re.Match) -> str:
+    return text[:m.start()] + " " * (m.end() - m.start()) + text[m.end():]
+
+
+def period_problems(sentence: str, periods: Periods) -> list[str]:
+    """Months, month ranges and years the data does not cover (empty list: fine, or no period known)."""
+    if not periods.ranges:
+        return []
+    reasons, text = [], sentence
+    for m in list(_ISO_RANGE.finditer(text)):
+        span = (_ym(m.group(1), int(m.group(2))), _ym(m.group(3), int(m.group(4))))
+        if span not in periods.ranges:
+            reasons.append(f"'{m.group().strip().rstrip('.')}' is not the data period")
+        text = _blank(text, m)
+    for m in list(_NAMED_RANGE.finditer(text)):
+        (m1, y1), (m2, y2) = (_month(m.group(1)), m.group(2)), (_month(m.group(3)), m.group(4))
+        if y1 or y2:
+            y2 = int(y2 or y1)
+            y1 = int(y1) if y1 else (y2 if m1 <= m2 else y2 - 1)
+            ok = (_ym(y1, m1), _ym(y2, m2)) in periods.ranges
+        else:  # "March to December": the months must be a period's first and last
+            ok = any(a % 12 + 1 == m1 and b % 12 + 1 == m2 for a, b in periods.ranges)
+        if not ok:
+            reasons.append(f"'{m.group().strip().rstrip('.')}' is not the data period")
+        text = _blank(text, m)
+    for m in list(_NAMED_MONTH.finditer(text)):
+        month, year = _month(m.group(1)), m.group(2)
+        if year:
+            if not periods.covers(_ym(year, month)):
+                reasons.append(f"'{m.group().strip().rstrip('.')}' is outside the data period")
+            text = _blank(text, m)
+        elif m.group(1) != "May" and not any(month - 1 in {ym % 12 for ym in range(a, b + 1)}
+                                             for a, b in periods.ranges):
+            reasons.append(f"'{m.group().strip().rstrip('.')}' is outside the data period")
+    for m in list(_ISO_MONTH.finditer(text)):
+        if 1 <= int(m.group(2)) <= 12 and not periods.covers(_ym(m.group(1), int(m.group(2)))):
+            reasons.append(f"'{m.group()}' is outside the data period")
+        text = _blank(text, m)
+    reasons += [f"{y} is outside the data period" for y in dict.fromkeys(_YEAR.findall(text))
+                if not periods.covers_year(int(y))]
+    return reasons
+
+
 # --- the check -----------------------------------------------------------------------------
 
 def _sentences(commentary: str) -> list[list[str]]:
@@ -248,14 +351,17 @@ def _sentences(commentary: str) -> list[list[str]]:
     return [[s for s in _SENTENCE_END.split(line) if s.strip()] for line in commentary.split("\n")]
 
 
-def sentence_problems(sentence: str, envelopes: list[Any], allowed: set[Decimal] | None = None) -> list[str]:
+def sentence_problems(sentence: str, envelopes: list[Any], allowed: set[Decimal] | None = None,
+                      periods: Periods | None = None) -> list[str]:
     """Why a sentence is unsupported (empty list: it is fine)."""
     allowed = allowed if allowed is not None else _numbers_in(envelopes, set())
+    periods = periods if periods is not None else data_periods(envelopes)
     numbers = _written_numbers(sentence)
     reasons = [f"{n.value}{'%' if n.percent else ''} is not in the data" for n in numbers if not _supported(n, allowed)]
     reasons += _swapped(sentence, numbers, _compare_columns(envelopes))
     reasons += _name_mismatches(sentence, _airport_names(envelopes))
     reasons += [reason for pattern, reason in MISREADINGS if pattern.search(sentence)]
+    reasons += period_problems(sentence, periods)
     return reasons
 
 
@@ -281,8 +387,8 @@ def check_commentary(commentary: str, envelopes: list[Any]) -> FigureCheck:
     `envelopes` should hold every tool result of the conversation: a follow-up may quote an
     earlier card. Non-dict results are ignored."""
     envelopes = [e for e in envelopes if isinstance(e, dict)]
-    allowed = _numbers_in(envelopes, set())
-    text, removed = _filter(commentary, lambda s: sentence_problems(s, envelopes, allowed))
+    allowed, periods = _numbers_in(envelopes, set()), data_periods(envelopes)
+    text, removed = _filter(commentary, lambda s: sentence_problems(s, envelopes, allowed, periods))
     if removed and not re.search(r"\w", text):
         return FigureCheck(WITHHELD, removed, True)
     return FigureCheck(text, removed, False)

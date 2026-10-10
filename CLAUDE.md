@@ -2,12 +2,12 @@
 
 LangGraph ReAct agent over a local SQLite DB, with deterministic scoring. Data: BTS T-100 Segment, BTS On-Time, Census API. 24h take-home for a Deloitte Digital FDE role: clarity and reasoning over completeness. Everything here is reviewed in an interview, so keep it simple, explainable and tidy.
 Must answer: (1) New England expansion candidates (2) LAX vs SNA congestion (3) % long-haul out of ANC (4) SFO unmet demand and why.
-Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before building a step). Task board and status: `TASKS.md` (update it as you work).
+Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before building a step). Design doc for reviewers: `docs/design.md`. Task board and status: `TASKS.md` (update it as you work).
 
-## Commands (uv; no pip, no manual venv). Commands marked (planned) are not built yet; see TASKS.md
+## Commands (uv; no pip, no manual venv)
 - `uv sync` install · `uv add <pkg>` add a dependency · `uv run pytest`
-- (planned) `uv run python -m src.ingest` load new files into SQLite (idempotent) · `uv run python -m src.ingest --check` report whether upstream has newer months
-- (planned) `uv run streamlit run app.py` · `docker compose up` (first start downloads the seed DB from `SEED_DB_URL`, a GitHub Release asset; needs only `.env` with an LLM key or a local model)
+- `uv run python -m src.ingest` load new files into SQLite (idempotent) · `uv run python -m src.ingest --check` report whether upstream has newer months
+- `uv run python -m src.bootstrap` install the seed DB if `DB_PATH` is missing or invalid · `uv run streamlit run app.py` · `uv run python -m src.agent "<question>"` (CLI) · `uv run python scripts/eval.py` (eval, needs a model) · `uv run python -m src.seed build` (maintainers) · `docker compose up` (first start downloads the seed DB from `SEED_DB_URL`, a GitHub Release asset; needs only `.env` with an LLM key or a local model)
 - Do not run uv or pip inside the cloud sandbox against the user's folder: it would create a Linux `.venv` in a Windows project.
 
 ## Rules
@@ -32,7 +32,7 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - Load factor = passengers / seats on passenger flights; it is a demand-pressure proxy, not terminal utilization (no gate or terminal-area data). "Unmet demand" is a proxy (spill estimate), never a field.
 - Definitions (passenger service, peer set, window, On-Time origin vs destination sides) are fixed in `docs/plan.md`; do not redefine them in code. BTS records delay causes for arrival delays, so cause minutes belong to the destination airport; departure delay and taxi-out belong to the origin.
 - Delay causes: carrier delay is airline-driven, not infrastructure; weather is not fixable by a terminal. Congestion uses delay rate, taxi-out and NAS-delay minutes per flight.
-- BTS On-Time direct files exist: `https://transtats.bts.gov/PREZIP/On_Time_Reporting_Carrier_On_Time_Performance_1987_present_{YYYY}_{M}.zip` (~30 MB, full columns). A missing month returns 404 with `text/html`; validate the ZIP and Content-Type. Latest available as of 2026-10-10: 2026-07 (publication lag about 1.5-2 months).
+- BTS On-Time direct files exist: `https://transtats.bts.gov/PREZIP/On_Time_Reporting_Carrier_On_Time_Performance_1987_present_{YYYY}_{M}.zip` (~30 MB, full columns). A missing month returns 404 with `text/html`; validate the ZIP and Content-Type. Latest available as of 2026-10-10: 2026-07 (publication lag about 1.5-2 months). `ingest --check` probes these URLs; `ingest` itself reads TranStats custom downloads (`T_ONTIME_REPORTING.csv`, other column names), not PREZIP files (see the decision log).
 - BTS T-100 Segment download is an ASP.NET form (`DL_SelectFields.aspx?gnoyr_VQ=FMG&QO_fu146_anzr=Nv4%20Pn44vr45`): POST with `__VIEWSTATE`, `__VIEWSTATEGENERATOR`, `__EVENTVALIDATION`, `cboYear`, `cboPeriod`, field checkboxes, `chkDownloadZip`, `btnDownload`. Page says "Latest Available Data: July 2026". Not yet verified end to end; manual download + local file is the fallback. One request at a time; validate ZIPs with `zipfile`.
 - Census: key in the query string (`key=`), kept in `.env` as `CENSUS_API_KEY` (needed only by ingest); ACS 5-year is smoothed and values come back as strings; Boston CBSA = 14460. UI must show: "This product uses the Census Bureau Data API but is not endorsed or certified by the Census Bureau."
 - The cloud sandbox cannot reach external sites (api.census.gov, transtats.bts.gov, davidmegginson.github.io); run network fetches on the user's machine.

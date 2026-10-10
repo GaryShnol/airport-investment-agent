@@ -189,6 +189,74 @@ def test_restricted_mode_catches_names_without_codes_but_not_unnamed_claims(sent
     assert bool(out.removed) is expected_removed
 
 
+# lfm2.5:8b in the fresh-clone run (P5.7): excluded airports named, with a wrong reason (they are
+# below the passenger floor, not missing demand context). Excluded entries carry code and name.
+NE_WITH_EXCLUDED = {**NE_RANKING, "data": {**NE_RANKING["data"], "excluded": [
+    {"iata": "MVY", "name": "Martha's Vineyard Airport", "reason": "87,587 passenger-service passengers, below the 100,000 floor"},
+    {"iata": "PSM", "name": "Portsmouth International Airport at Pease",
+     "reason": "85,102 passenger-service passengers, below the 100,000 floor"}]}}
+
+
+@pytest.mark.parametrize("sentence", [
+    "Some components (e.g., demand context for MVY, PSM) are missing due to lack of data; these gaps are noted.",
+    "Portsmouth and Martha's Vineyard lack demand context data.",
+])
+def test_restricted_mode_drops_sentences_naming_excluded_airports(sentence):
+    caveat = "Scores are relative to the national peer set."
+    out = restrict_commentary(f"{sentence} {caveat}", [NE_WITH_EXCLUDED])
+    assert out.text == caveat
+    assert out.removed[0]["reasons"][-1].startswith("names an airport (")
+
+
 def test_restricted_mode_with_nothing_left_hides_the_commentary():
     out = restrict_commentary("BOS ranks first with 0.799.", [NE_RANKING])
     assert out.hidden and out.text == "" and not out.withheld
+
+
+# --- periods (P5.9b) -------------------------------------------------------------------------
+
+SFO_GAP = {"headline": "PROXY, not a measurement: SFO load factor was above the 80% target in 10 of 12 months "
+                       "in 2025-01..2025-12 (peak 2025-06 89.4%).",
+           "facts": [f("Months with load factor above 80%", "10 of 12"),
+                     f("Peak months (load factor)", "2025-06 89.4%, 2025-07 84.8%, 2025-12 84.0%"),
+                     f("Passenger growth vs 2024-01..2024-12", "+4.7%"),
+                     f("Freshness", "stale (upstream has 2026-07 for ontime)")],
+           "data_period": "2025-01..2025-12"}
+
+
+def test_period_check_drops_the_real_sfo_failure():
+    # lfm2.5:8b in the fresh-clone run (P5.7): the window is 2025-01..2025-12, not March to December
+    row = ("| **Load factor above 80 %** | In 10 of the 12 months (Mar 2025 – Dec 2025) SFO’s load factor "
+           "was > 80 %, peaking at 89.4 % in June and still high in several other months. |")
+    out = check_commentary(f"{row}\nDemand presses hardest in summer.", [SFO_GAP])
+    assert "Mar 2025" not in out.text and out.text.endswith("Demand presses hardest in summer.")
+    assert out.removed[0]["reasons"] == ["'Mar 2025 – Dec 2025' is not the data period"]
+
+
+@pytest.mark.parametrize("sentence", [
+    "The data covers January to December 2025.",
+    "The window is 2025-01..2025-12.",
+    "Jan–Dec 2025 shows a steady load.",
+    "Load factor peaked in June 2025.",
+    "It peaked in 2025-06 and stayed high in July.",
+    "Passengers grew compared with 2024.",
+    "Upstream already has 2026-07.",
+    "Growth is measured against 2024-01..2024-12.",
+])
+def test_period_check_accepts_periods_the_data_covers(sentence):
+    assert check_commentary(sentence, [SFO_GAP]).removed == []
+
+
+@pytest.mark.parametrize("sentence, reason", [
+    ("Load factor stayed above target from March to December.", "'March to December' is not the data period"),
+    ("The window is 2025-03..2025-12.", "'2025-03..2025-12' is not the data period"),
+    ("Load factor peaked in June 2023.", "'June 2023' is outside the data period"),
+    ("In 2022 the airport was less busy.", "2022 is outside the data period"),
+])
+def test_period_check_drops_periods_the_data_does_not_cover(sentence, reason):
+    out = check_commentary(sentence, [SFO_GAP])
+    assert out.removed and out.removed[0]["reasons"] == [reason]
+
+
+def test_period_check_needs_a_data_period():
+    assert check_commentary("Load factor peaked in June 2023.", [{"headline": "x", "facts": []}]).removed == []
