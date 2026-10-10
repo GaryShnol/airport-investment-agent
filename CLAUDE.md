@@ -25,7 +25,7 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - Work in small steps; update `TASKS.md` and commit per task.
 
 ## Traps
-- ANC is cargo-dominated: long-haul share differs hugely with/without cargo (all configs 43.2% vs passenger-only 11.4% at 2,500 mi, 2025). Always report both, the threshold and a sensitivity (1,500 / 2,500 / 3,000 mi).
+- ANC is cargo-dominated: long-haul share differs hugely with/without cargo (all configs 43.2% vs passenger-only at 2,500 mi, 2025: 11.4% for config 1 only, 11.5% for passenger service = config 1 and 3). Always report both, the threshold and a sensitivity (1,500 / 2,500 / 3,000 mi).
 - T-100: read AIRCRAFT_CONFIG/CLASS/AIRCRAFT_TYPE as strings; config 1=pax, 2=cargo, 3=both, 4=undocumented. Drop rows with DEPARTURES_PERFORMED = 0. ORIGIN_STATE_ABR is null for foreign origins. T-100 totals are higher than the ArcGIS NTAD layer (ratio 1.0-1.45); T-100 is the source of truth, see Data validation in `docs/plan.md`.
 - On-Time: ~7M rows for 2025. Stream and aggregate, never load all; read only needed columns. Numbers are strings like `0.00`; FL_DATE looks like `1/1/2025 12:00:00 AM`; delay-cause columns are empty unless the flight was delayed (empty is not zero). Domestic, large carriers only, so small airports can be missing: renormalize and lower confidence.
 - Load factor = passengers / seats on passenger flights; it is a demand-pressure proxy, not terminal utilization (no gate or terminal-area data). "Unmet demand" is a proxy (spill estimate), never a field.

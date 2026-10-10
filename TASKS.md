@@ -45,7 +45,7 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [x] P2.1 `src/store.py`: SQLite schema and queries (schema in `docs/plan.md`)
 - [x] P2.2 Ingest T-100 to `t100_route_month`; verify ANC 87,988 departures and the long-haul shares, and SFO load factor; re-baseline the acceptance values in `docs/plan.md` under the passenger-service definition
 - [x] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
-- [ ] P2.4 Scoring tests first: percentile, load factor, long-haul share, growth, renormalization when a component is missing
+- [x] P2.4 Scoring tests first: percentile, load factor, long-haul share, growth, renormalization when a component is missing
 - [ ] P2.5 `src/scoring.py` with the available components (utilization, scale, growth, long haul) and deterministic confidence
 - [ ] P2.6 Tool envelope and tools: `data_status`, `resolve_airport` (handles "LA" ambiguity), `airport_metrics`, `rank_airports`
 - [ ] P2.7 `src/agent.py`: LangGraph ReAct agent, memory by `thread_id`, system prompt (scope, assumptions, clarify, user language), light input guard; strip any reasoning (`<think>`) block from model output before it reaches the user
