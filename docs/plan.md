@@ -78,3 +78,9 @@ Re-baselined in P2.2 from `t100_route_month` under the Definitions above (passen
 - Cross-check against the ArcGIS NTAD 2024 layer (T-100 / ArcGIS): passengers ANC 1.01, SNA 1.04, BOS 1.26, SFO 1.43, LAX 1.45; departures 1.03 to 1.33. The layer looks like a subset, with the largest hubs most affected (hypothesis; confirm against FAA enplanement totals). T-100 is used as the source of truth.
 - ANC share of departures by distance (all configs / passenger-only), 2025: >=1,500 mi 49.1% / 19.4%; >=2,500 mi 43.2% / 11.4%; >=3,000 mi 31.0% / 4.0%. Cargo-config alone: 68.4% at 2,500 mi. 2024 is lower (40.0% / 8.2% at 2,500 mi).
 - SFO load factor 82.3% in 2025 (83.2% in 2024), 6th of 55 airports with at least 5M seats. Monthly range 77.2% (January) to 89.4% (June). Densest routes: HNL 90.6%, EWR 89.2%, MIA 89.2%, JFK 88.2%.
+
+## Known limits of the score (observed on real data, 2025 window)
+- The passenger floor is a policy line, not a fact: PSM (85,102 passengers) is excluded just under the 100,000 floor. The floor is in `config/weights.yaml` and the excluded list states the reason for each airport.
+- Long haul separates only the big hubs: 201 of 233 peer airports have no material long-haul share, so the component mainly adds a bonus for about 30 hubs (BOS in New England). It stays at 0.10 for that reason.
+- Exact score ties occur (19 of them) when all components are equal; they are broken by IATA code and should be reported as ties.
+- Scores are relative to the peer set, so adding or removing airports moves the percentiles. The rank-stability check (P3.5) shows how sensitive the ranking is to the weights: with growth at 0.30, BGR moves to first and BOS to fifth in New England.
