@@ -185,8 +185,7 @@ docs/       design plan (and later design.md)
 tests/      unit and golden tests (CI)
 eval/       eval questions; results/ (not committed) from scripts/eval.py
 scripts/    eval.py (eval harness, model comparison)
-seed/       prebuilt aggregated database (committed)
-data/       raw downloads (not committed)
+data/       raw downloads, airport.db, seed/ (built seed DB); not committed
 ```
 
 ## Limits

@@ -43,7 +43,8 @@ class Settings:
     ollama_num_ctx: int | None     # Ollama context window in tokens; None = the server's default
     census_api_key: str | None = field(repr=False)
     db_path: Path
-    seed_db_path: Path
+    seed_db_path: Path           # gzipped seed DB written by `src.seed build`
+    seed_max_mb: float           # `src.seed build` stops if the compressed seed is larger
     raw_data_dir: Path
     weights_path: Path
     log_level: str
@@ -81,6 +82,12 @@ class Settings:
             raise ConfigError("HTTP_TIMEOUT_S and GEOCODER_DELAY_S must be numbers of seconds") from exc
         if http_timeout_s <= 0 or geocoder_delay_s < 0:
             raise ConfigError("HTTP_TIMEOUT_S must be positive and GEOCODER_DELAY_S not negative")
+        try:
+            seed_max_mb = float(get("SEED_MAX_MB", "50"))
+        except ValueError as exc:
+            raise ConfigError("SEED_MAX_MB must be a number of megabytes") from exc
+        if seed_max_mb <= 0:
+            raise ConfigError("SEED_MAX_MB must be positive")
         num_ctx = get("OLLAMA_NUM_CTX")
         try:
             num_ctx = int(num_ctx) if num_ctx is not None else None
@@ -99,7 +106,8 @@ class Settings:
             ollama_num_ctx=num_ctx,
             census_api_key=get("CENSUS_API_KEY"),
             db_path=_resolve(get("DB_PATH", "data/airport.db")),
-            seed_db_path=_resolve(get("SEED_DB_PATH", "seed/airport.db")),
+            seed_db_path=_resolve(get("SEED_DB_PATH", "data/seed/airport.db.gz")),
+            seed_max_mb=seed_max_mb,
             raw_data_dir=_resolve(get("RAW_DATA_DIR", "data/raw")),
             weights_path=_resolve(get("WEIGHTS_PATH", "config/weights.yaml")),
             log_level=get("LOG_LEVEL", "INFO").upper(),

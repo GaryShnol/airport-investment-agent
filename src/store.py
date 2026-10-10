@@ -15,6 +15,11 @@ import pandas as pd
 
 # Passenger service = AIRCRAFT_CONFIG 1 (pax) or 3 (combi); see Definitions in docs/plan.md.
 PASSENGER_CONFIGS: tuple[str, ...] = ("pax", "combi")
+# Stamped as PRAGMA user_version by init_db; bump it when SCHEMA changes so an old seed DB is replaced.
+SCHEMA_VERSION = 1
+# Every table in SCHEMA: what the seed DB carries and what a valid DB must have rows in.
+SCHEMA_TABLES: tuple[str, ...] = ("meta", "ingest_log", "airports", "airport_cbsa", "t100_route_month",
+                                  "ontime_airport_month", "census_metro")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -125,6 +130,27 @@ def init_db(conn: sqlite3.Connection) -> None:
                                 ("ontime_airport_month", "dep_del15_n", "INTEGER"), ("census_metro", "name", "TEXT")):
         if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def db_problem(path: Path, check_version: bool = True) -> str | None:
+    """Why the DB at `path` cannot be used as is (missing, wrong schema version, a table empty), or None."""
+    if not Path(path).is_file():
+        return f"no database at {path}"
+    try:
+        conn = connect_ro(path)
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if check_version and version != SCHEMA_VERSION:
+                return f"schema version {version}, expected {SCHEMA_VERSION}"
+            for table in SCHEMA_TABLES:
+                if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is None:
+                    return f"table {table} is empty"
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        return f"not a usable SQLite database ({exc})"
+    return None
 
 
 def loaded_periods(conn: sqlite3.Connection, source: str) -> set[str]:
