@@ -827,3 +827,19 @@ def test_ranking_uses_demand_context_in_weights_and_drivers(db_full, scoring_cfg
     pwm = next(x for x in r["data"]["ranked"] if x["iata"] == "PWM")
     assert pwm["components"]["demand_context"]["percentile"] == 100
     assert labels(r)["Drivers: PWM"].startswith("strongest: utilization (load factor), percentile 100")
+
+
+# --- region guard (P6.4) -------------------------------------------------------------------
+
+@pytest.mark.parametrize("question, region, expected", [
+    ("Rank the airports in California for terminal expansion.", "national", "California"),
+    ("Rank the airports in California for terminal expansion.", "new_england", "California"),
+    ("Rank the airports in california", "New England", "California"),
+    ("Which airports in West Virginia should expand?", "national", "West Virginia"),
+    ("Which airports in Maine and Vermont are candidates?", "new_england", None),   # inside the region
+    ("Which airports in New England are strong candidates?", "new_england", None),
+    ("Rank all US airports for terminal expansion.", "national", None),
+    ("Rank the airports in California", "California", None),   # not configured: the tool answers itself
+])
+def test_unsupported_region_reads_the_question(scoring_cfg, question, region, expected):
+    assert tools.unsupported_region(question, region, scoring_cfg) == expected

@@ -16,6 +16,7 @@ numbers in src/scoring.py. Shares are returned as percentages rounded for displa
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
@@ -549,6 +550,44 @@ def _unknown_region(conn: sqlite3.Connection, cfg: ScoringConfig, region: str) -
 
 def _region_key(region: str) -> str:
     return (region or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+# State names for the region guard (reference data, not methodology): a question that names a
+# state must not be answered with a ranking of a region that does not contain it.
+US_STATES = {
+    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA", "Colorado": "CO",
+    "Connecticut": "CT", "Delaware": "DE", "District of Columbia": "DC", "Florida": "FL", "Georgia": "GA",
+    "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS",
+    "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA",
+    "Michigan": "MI", "Minnesota": "MN", "Mississippi": "MS", "Missouri": "MO", "Montana": "MT",
+    "Nebraska": "NE", "Nevada": "NV", "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM",
+    "New York": "NY", "North Carolina": "NC", "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK",
+    "Oregon": "OR", "Pennsylvania": "PA", "Puerto Rico": "PR", "Rhode Island": "RI", "South Carolina": "SC",
+    "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX", "Utah": "UT", "Vermont": "VT", "Virginia": "VA",
+    "Washington": "WA", "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
+}
+# Longest names first, so "West Virginia" is read as one state, not as "Virginia".
+_STATE_NAMES = re.compile(r"\b(" + "|".join(map(re.escape, sorted(US_STATES, key=len, reverse=True))) + r")\b",
+                          re.IGNORECASE)
+
+
+def unsupported_region(question: str, region: str, cfg: ScoringConfig) -> str | None:
+    """The state named in `question` that the ranking for `region` does not stand for, or None.
+
+    A model can answer "rank the airports in California" by passing a configured region (national,
+    new_england): the tool cannot tell that from a real national request, so the agent checks the
+    question here. A state counts as covered only by a configured region that contains it; the
+    national ranking covers no single state. A region that is not configured needs no check: the
+    tool already returns the configured-regions message."""
+    key = _region_key(region)
+    if key not in cfg.regions and key != scoring.NATIONAL:
+        return None
+    covered = set(cfg.regions.get(key, ()))
+    for match in _STATE_NAMES.finditer(question or ""):
+        name = next(n for n in US_STATES if n.lower() == match.group(1).lower())
+        if US_STATES[name] not in covered:
+            return name
+    return None
 
 
 SortBy = Literal["score", "growth", "load_factor", "passengers"]

@@ -401,3 +401,33 @@ def test_single_airport_tools_keep_the_figure_check(settings, connect, scoring_c
     agent, _ = make(settings, connect, scoring_cfg,
                     call("airport_metrics", airport="ANC", topic="demand"), AIMessage("ANC is busy."))
     assert agent.ask("Anchorage passengers?", "t-figures").figure_check["mode"] == "figures"
+
+
+# --- region guard (P6.4) -------------------------------------------------------------------
+
+@pytest.mark.parametrize("region", ["national", "new_england"])
+def test_unconfigured_state_never_falls_back_to_another_ranking(settings, connect, scoring_cfg, region):
+    agent, _ = make(settings, connect, scoring_cfg, call("rank_airports", region=region),
+                    AIMessage("Here is the national ranking instead."))
+    reply = agent.ask("Rank the airports in California for terminal expansion.", "t-ca")
+    assert reply.tool_calls == [{"name": "rank_airports", "args": {"region": "California"}}]
+    env = reply.tool_results[0]
+    assert env["data"] is None and env["error"].startswith("Region 'California' is not configured.")
+    assert "Configured regions" in {f["label"] for f in env["facts"]}
+    assert reply.commentary == agent_mod.REGION_GUARD.format(state="California", region=region)
+    assert "national ranking instead" not in reply.text and reply.figure_check["mode"] == "region_guard"
+
+
+def test_region_passed_as_written_gets_the_tool_message_and_model_text(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg, call("rank_airports", region="California"),
+                    AIMessage("California is not configured; ask for the national ranking instead."))
+    reply = agent.ask("Rank the airports in California for terminal expansion.", "t-ca2")
+    assert reply.tool_results[0]["error"].startswith("Region 'California' is not configured.")
+    assert reply.figure_check["mode"] != "region_guard"
+
+
+def test_configured_region_is_not_guarded(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg, call("rank_airports", region="new_england"),
+                    AIMessage("Scores are relative to the national peer set."))
+    reply = agent.ask("Which airports in Maine or Massachusetts are expansion candidates?", "t-ne")
+    assert reply.tool_results[0]["data"]["region"] == "new_england"
