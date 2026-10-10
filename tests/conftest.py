@@ -127,6 +127,26 @@ def seed_ontime(conn):
     conn.commit()
 
 
+def seed_sfo(conn):
+    """SFO for explain_demand_gap: HNL is full in June-August (950 of 1,000 seats, else 700), LAX
+    flat at 1,500 of 2,000; 2024 is lower (growth). On-Time with every delay cause (minutes/month:
+    carrier 100, weather 20, NAS 300, security 0, late aircraft 180)."""
+    conn.execute("INSERT INTO airports (iata, name, state, region, municipality) VALUES "
+                 "('SFO', 'San Francisco International Airport', 'CA', NULL, 'San Francisco')")
+    rows = []
+    for year, summer, other, lax in ((2024, 800, 600, 1400), (2025, 950, 700, 1500)):
+        for month in range(1, 13):
+            rows += [("SFO", None, "HNL", year, month, "pax", 2398, 5, 1000, summer if month in (6, 7, 8) else other),
+                     ("SFO", None, "LAX", year, month, "pax", 337, 10, 2000, lax)]
+    conn.executemany("INSERT INTO t100_route_month VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+    conn.executemany("INSERT INTO ontime_airport_month (airport, year, month, dep_flights, dep_del15, dep_del15_n, "
+                     "dep_cancelled, taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, "
+                     "nas_min, security_min, late_aircraft_min) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     [("SFO", 2025, m, 500, 100, 495, 5, 20.0 * 495, 495, 495, 90, 100.0, 20.0, 300.0, 0.0, 180.0)
+                      for m in range(1, 13)])
+    conn.commit()
+
+
 @pytest.fixture
 def scoring_cfg():
     """Real config/weights.yaml with a passenger floor that fits the tiny dataset."""

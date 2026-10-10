@@ -99,6 +99,9 @@ class ScoringConfig:
     min_passengers_per_year: int
     min_ontime_flights: int    # On-Time departures in the window needed to score congestion
     target_load_factor: float
+    target_sensitivity: tuple[float, ...]   # spill proxy also at these target load factors (range)
+    peak_months: int                        # explain_demand_gap: months listed as peaks
+    top_routes: int                         # explain_demand_gap: routes listed
     sensitivity_runs: int
     sensitivity_jitter: float
     sensitivity_seed: int
@@ -152,7 +155,11 @@ def load_scoring(path: Path) -> ScoringConfig:
             long_haul_sensitivity_miles=tuple(int(x) for x in raw["long_haul_sensitivity_miles"]),
             min_passengers_per_year=int(raw["min_passengers_per_year"]),
             min_ontime_flights=_positive_int("min_ontime_flights", raw["min_ontime_flights"]),
-            target_load_factor=float(raw["unmet_demand"]["target_load_factor"]),
+            target_load_factor=_share("unmet_demand.target_load_factor", raw["unmet_demand"]["target_load_factor"]),
+            target_sensitivity=tuple(_share("unmet_demand.target_sensitivity", x)
+                                     for x in raw["unmet_demand"]["target_sensitivity"]),
+            peak_months=_positive_int("unmet_demand.peak_months", raw["unmet_demand"]["peak_months"]),
+            top_routes=_positive_int("unmet_demand.top_routes", raw["unmet_demand"]["top_routes"]),
             sensitivity_runs=int(raw["sensitivity"]["runs"]),
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),
             sensitivity_seed=int(raw["sensitivity"]["seed"]),

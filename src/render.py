@@ -101,6 +101,13 @@ def render_comparison(envelope: dict) -> str:
     return f"{names}\n\n" + _table(["Metric", *codes, "Verdict"], rows)
 
 
+def render_why(envelope: dict) -> str:
+    """explain_demand_gap's "why": sentences built by the tool from its own facts, as a list."""
+    data = envelope.get("data") or {}
+    why = data.get("why") if isinstance(data, dict) else None
+    return "Why (built only from the facts above):\n\n" + "\n".join(f"- {w}" for w in why) if why else ""
+
+
 def render_excluded(envelope: dict) -> str:
     """Airports left out of a ranking, with the reason, as a short list."""
     data = envelope.get("data") or {}
@@ -147,7 +154,7 @@ def render_envelope(envelope: Any, title: str | None = None) -> str:
     if envelope.get("error"):
         parts.append(render_error(envelope))
         return "\n\n".join(parts)
-    parts += [render_comparison(envelope), render_facts(envelope), render_ranking(envelope)]
+    parts += [render_comparison(envelope), render_facts(envelope), render_why(envelope), render_ranking(envelope)]
     if excluded := render_excluded(envelope):
         parts.append(f"{excluded_title(envelope)}:\n\n{excluded}")
     if assumptions := render_assumptions(envelope):

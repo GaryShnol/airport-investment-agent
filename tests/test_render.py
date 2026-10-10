@@ -156,3 +156,9 @@ def test_comparison_is_a_two_column_table_and_its_facts_leave_the_card():
             "| Passengers | 36,778,508 | 5,532,646 | LAX higher (full count) |") in out
     assert render_facts(COMPARISON) == ("| Fact | Value |\n|---|---|\n| Data period * | 2025-01..2025-12 |\n"
                                         "| Freshness | unknown |")
+
+
+def test_demand_gap_why_is_rendered_as_a_list_under_the_card():
+    env = {"headline": "PROXY, not a measurement: ...", "facts": [], "data": {"why": ["First.", "Second."]},
+           "assumptions": [], "confidence": "medium"}
+    assert "Why (built only from the facts above):\n\n- First.\n- Second." in render_envelope(env)

@@ -183,7 +183,7 @@ data/       raw downloads (not committed)
 
 ## Limits
 - Load factor is a demand-pressure proxy, not terminal utilization: public sources have no gate or terminal-area data.
-- "Unmet demand" is an estimate (seats needed to bring dense routes down to a target load factor), never an observed value.
+- "Unmet demand" is a labeled proxy (passengers carried above a target load factor, per route and month), never an observed value: the data has no booking or spill records.
 - On-Time covers domestic flights of large carriers only, so some small airports have partial coverage.
 - Cargo-heavy airports such as ANC need passenger-only and all-flights numbers side by side.
 

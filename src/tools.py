@@ -785,6 +785,140 @@ def compare_airports(conn: sqlite3.Connection, cfg: ScoringConfig, a: str, b: st
     return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
 
 
+# --- explain_demand_gap ------------------------------------------------------------------
+
+UNMET_DEMAND_PROXY = ("unmet demand is not observable in this data: T-100 counts passengers carried, never "
+                      "passengers turned away; every figure here is a PROXY, not a measurement")
+NEEDED_TO_MEASURE = ("measuring unmet demand would need booking and denied-booking data, fares by date and "
+                     "airline spill models")
+# BTS delay-cause categories (fixed definitions, not an interpretation of this airport).
+CAUSE_LABELS = {"nas": "NAS", "carrier": "carrier", "late_aircraft": "late aircraft", "weather": "weather",
+                "security": "security"}
+CAUSE_DEFINITIONS = ("delay causes as BTS defines them: NAS = national aviation system (traffic volume, airport "
+                     "operations, non-extreme weather); carrier = within the airline's control; late aircraft = "
+                     "a previous flight with the same aircraft arrived late; weather = extreme weather; shares of "
+                     "delay minutes on arrivals at the airport")
+# Proxy results are capped at this confidence: a proxy is never "high" (docs/plan.md, Scoring).
+PROXY_CONFIDENCE_CAP = "medium"
+
+
+def _month_label(year, month) -> str:
+    return f"{int(year)}-{int(month):02d}"
+
+
+def _lf(value) -> str:
+    return _share(_pct(value))
+
+
+def _target(value: float) -> str:
+    """A target load factor from config as a whole percentage (0.8 -> 80%)."""
+    return f"{value:.0%}"
+
+
+def explain_demand_gap(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str) -> dict:
+    """A labeled PROXY for unmet demand at one airport, with a "why" built only from its facts.
+
+    Unmet demand cannot be observed here (no booking or spill data). The proxy, all in code: months
+    with load factor above the configured target and the peak months; the routes with the most
+    passengers and with the most passengers above the target; passengers carried above the target
+    load per route and month (spill proxy), also at each sensitivity target; the delay-cause mix
+    (arrivals, On-Time); growth. Confidence is capped at medium."""
+    code, err = _resolve_code(conn, cfg, airport)
+    if err:
+        return err
+    window = _window(conn)
+    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    rows = result.table[result.table["iata"] == code]
+    routes = store.route_months(conn, code, window)
+    if rows.empty or routes.empty:
+        return _error(conn, f"{code} has no passenger service in {window.label}")
+    row = rows.iloc[0]
+    target, targets = cfg.target_load_factor, sorted({cfg.target_load_factor, *cfg.target_sensitivity})
+    t_text = _target(target)
+
+    months = routes.groupby(["year", "month"], as_index=False)[["passengers", "seats"]].sum()
+    months["load_factor"] = scoring.load_factor(months["passengers"], months["seats"])
+    months["label"] = [_month_label(y, m) for y, m in zip(months["year"], months["month"])]
+    above = months[months["load_factor"] > target]
+    peaks = months.sort_values(["load_factor", "label"], ascending=[False, True], kind="stable").head(cfg.peak_months)
+    peak_text = ", ".join(f"{p['label']} {_lf(p['load_factor'])}" for _, p in peaks.iterrows())
+
+    spill = {t: int(round(scoring.above_target(routes["passengers"], routes["seats"], t).sum())) for t in targets}
+    routes["spill"] = scoring.above_target(routes["passengers"], routes["seats"], target)
+    by_route = routes.groupby("dest").agg(passengers=("passengers", "sum"), seats=("seats", "sum"),
+                                          spill=("spill", "sum"))
+    by_route["load_factor"] = scoring.load_factor(by_route["passengers"], by_route["seats"])
+    busiest = by_route.sort_values("passengers", ascending=False, kind="stable").head(cfg.top_routes)
+    spilling = by_route[by_route["spill"] > 0].sort_values("spill", ascending=False, kind="stable").head(cfg.top_routes)
+    total_pax = int(row["passengers"])
+    spill_share = _pct(spill[target] / total_pax) if total_pax else None
+    top_spill_share = _pct(spilling["spill"].sum() / spill[target]) if spill[target] else None
+
+    causes = (scoring.delay_cause_mix({c: row[f"{c}_min"] for c in scoring.DELAY_CAUSES})
+              if f"{scoring.DELAY_CAUSES[0]}_min" in row.index else None)
+    growth_pct = _pct(row["growth"])
+    previous = f"{window.prev_start}..{window.prev_end}"
+
+    data = {
+        "airport": code, "name": row["name"], "proxy": True, "target_load_factor": target,
+        "load_factor_pct": _pct(row["load_factor"]), "passengers": total_pax, "growth_pct": growth_pct,
+        "months": [{"month": m["label"], "load_factor_pct": _pct(m["load_factor"])} for _, m in months.iterrows()],
+        "months_above_target": [m["label"] for _, m in above.iterrows()],
+        "spill_proxy": {f"{t:.2f}": spill[t] for t in targets},
+        "routes_by_passengers": [{"dest": d, "passengers": int(r["passengers"]), "load_factor_pct": _pct(r["load_factor"])}
+                                 for d, r in busiest.iterrows()],
+        "routes_by_spill": [{"dest": d, "spill_proxy": int(round(r["spill"])), "load_factor_pct": _pct(r["load_factor"])}
+                            for d, r in spilling.iterrows()],
+        "delay_cause_mix_pct": {c: _pct(s) for c, s in causes.items()} if causes else None,
+    }
+    range_text = (f"{spill[targets[0]]:,} at {_target(targets[0])} to {spill[targets[-1]]:,} at {_target(targets[-1])}"
+                  if len(targets) > 1 else f"{spill[target]:,}")
+    facts = [
+        fact("Unmet demand", "not observable in this data; the figures below are a proxy", True),
+        fact(f"Months with load factor above {t_text}", f"{len(above)} of {len(months)}", True),
+        fact("Peak months (load factor)", peak_text),
+        fact(f"Spill proxy: passengers carried above {t_text} load (per route and month)",
+             f"{spill[target]:,} ({_share(spill_share)} of passengers)", True),
+        fact("Spill proxy sensitivity (target load factor)", range_text, True),
+        fact("Routes with the most passengers (load factor)",
+             "; ".join(f"{code}-{d} {r['passengers']:,} ({_share(r['load_factor_pct'])})"
+                       for d, r in zip(busiest.index, data["routes_by_passengers"]))),
+        fact(f"Routes with the most passengers above {t_text} load",
+             ("; ".join(f"{code}-{r['dest']} {r['spill_proxy']:,}" for r in data["routes_by_spill"])
+              + f" ({_share(top_spill_share)} of the spill proxy)") if spilling.size else "none"),
+        fact("Load factor (passenger service, a demand-pressure proxy)", _share(data["load_factor_pct"])),
+        fact(f"Passenger growth vs {previous}", _signed(growth_pct), True),
+        fact("Delay-cause mix (share of delay minutes, arrivals)",
+             ", ".join(f"{CAUSE_LABELS[c]} {_share(p)}" for c, p in data["delay_cause_mix_pct"].items())
+             if causes else "not available (no On-Time delay minutes)", True),
+    ]
+
+    why = [f"Airport-wide load factor was above the {t_text} target in {len(above)} of {len(months)} months, "
+           f"highest in {peak_text}." if len(above) else
+           f"Airport-wide load factor stayed at or below the {t_text} target in every month (highest {peak_text})."]
+    if spilling.size:
+        why.append(f"Above-target loads are concentrated on routes to {', '.join(spilling.index[:3])} "
+                   f"({_share(top_spill_share)} of the spill proxy on "
+                   + ("that route)." if len(spilling) == 1 else f"the top {len(spilling)} routes)."))
+    if causes:
+        top = next(iter(data["delay_cause_mix_pct"].items()))
+        why.append(f"The largest delay cause on arrivals is {CAUSE_LABELS[top[0]]} ({_share(top[1])} of delay minutes).")
+    why.append(f"Passengers changed {_signed(growth_pct)} vs {previous}.")
+    data["why"] = why
+
+    assumptions = [UNMET_DEMAND_PROXY, NEEDED_TO_MEASURE,
+                   f"spill proxy = passengers above {t_text} of seats, summed per route and month (only loads "
+                   f"above the target count); sensitivity at {', '.join(_target(t) for t in targets)}",
+                   PASSENGER_SERVICE, LOAD_FACTOR_PROXY, CAUSE_DEFINITIONS, ONTIME_COVERAGE,
+                   f"confidence capped at {PROXY_CONFIDENCE_CAP}: a proxy, not a measurement"]
+    confidence = max(row["confidence"], PROXY_CONFIDENCE_CAP, key=CONFIDENCE_ORDER.index)
+    headline = (f"PROXY, not a measurement (unmet demand is not observable in this data): {code} load factor was "
+                f"above the {t_text} target in {len(above)} of {len(months)} months in {window.label}"
+                + (f" (peak {peaks.iloc[0]['label']} {_lf(peaks.iloc[0]['load_factor'])})" if len(above) else "")
+                + f"; {spill[target]:,} passengers flew on loads above {t_text} (range {range_text}).")
+    return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
+
+
 # --- LangChain wrappers ------------------------------------------------------------------
 
 def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) -> list[BaseTool]:
@@ -839,4 +973,13 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
         "X vs Y", "is X more congested than Y"."""
         return run(compare_airports, a, b)
 
-    return [data_status_tool, resolve_airport_tool, airport_metrics_tool, rank_airports_tool, compare_airports_tool]
+    @tool("explain_demand_gap")
+    def explain_demand_gap_tool(airport: str) -> dict:
+        """Unmet or excess demand at one airport (IATA code or name) and why: a labeled PROXY (unmet
+        demand is not observable): months above the target load factor, peak months, densest routes,
+        passengers carried above the target load (spill proxy) with a sensitivity range, delay-cause
+        mix and growth. Use for "unmet demand", "demand gap", "is X short of capacity and why"."""
+        return run(explain_demand_gap, airport)
+
+    return [data_status_tool, resolve_airport_tool, airport_metrics_tool, rank_airports_tool, compare_airports_tool,
+            explain_demand_gap_tool]

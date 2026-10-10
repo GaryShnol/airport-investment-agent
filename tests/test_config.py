@@ -53,7 +53,7 @@ long_haul_miles: 2500
 long_haul_min_share: 0.02
 long_haul_sensitivity_miles: [2500]
 min_passengers_per_year: 100000
-unmet_demand: {target_load_factor: 0.8}
+unmet_demand: {target_load_factor: 0.8, target_sensitivity: [0.8], peak_months: 3, top_routes: 5}
 sensitivity: {runs: 5, weight_jitter: 0.2, seed: 1}
 comparison: {confidence_level: 0.95}
 regions: {x: [MA]}

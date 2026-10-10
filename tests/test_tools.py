@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from src import tools
-from tests.conftest import seed_analysis_db, seed_ontime
+from tests.conftest import seed_analysis_db, seed_ontime, seed_sfo
 
 ENVELOPE_KEYS = {"facts", "data", "data_period", "freshness", "assumptions", "confidence"}
 
@@ -218,7 +218,8 @@ def test_make_tools_errors_become_envelopes(scoring_cfg):
         raise sqlite3.OperationalError("unable to open database file")
 
     by_name = {t.name: t for t in tools.make_tools(broken, scoring_cfg)}
-    assert set(by_name) == {"data_status", "resolve_airport", "airport_metrics", "rank_airports", "compare_airports"}
+    assert set(by_name) == {"data_status", "resolve_airport", "airport_metrics", "rank_airports", "compare_airports",
+                            "explain_demand_gap"}
     r = by_name["airport_metrics"].invoke({"airport": "ANC"})
     assert r["data"] is None and "unable to open" in r["error"]
 
@@ -530,3 +531,67 @@ def test_compare_ambiguous_name_returns_the_ambiguity(db_ontime, scoring_cfg):
 def test_compare_unknown_and_same_airport(db_ontime, scoring_cfg):
     assert "No airport" in tools.compare_airports(db_ontime, scoring_cfg, "Atlantis", "BOS")["error"]
     assert "two different airports" in tools.compare_airports(db_ontime, scoring_cfg, "LAX", "LAX")["error"]
+
+
+# --- explain_demand_gap (P3.4) -----------------------------------------------------------------
+
+@pytest.fixture
+def db_sfo(db_ontime):
+    seed_sfo(db_ontime)
+    return db_ontime
+
+
+def test_demand_gap_is_a_labeled_proxy_with_capped_confidence(db_sfo, scoring_cfg):
+    r = check_envelope(tools.explain_demand_gap(db_sfo, scoring_cfg, "SFO"))
+    assert r["headline"].startswith("PROXY, not a measurement")
+    assert r["data"]["proxy"] is True
+    assert required(r)["Unmet demand"] == "not observable in this data; the figures below are a proxy"
+    assert any("not observable" in a for a in r["assumptions"])
+    assert any("booking" in a and "spill" in a for a in r["assumptions"])
+    assert r["confidence"] in ("medium", "low")
+
+
+def test_demand_gap_facts_from_the_data(db_sfo, scoring_cfg):
+    r = tools.explain_demand_gap(db_sfo, scoring_cfg, "SFO")
+    req = required(r)
+    # June-August: (950 + 1,500) / 3,000 = 81.7% > 80%; other months 73.3%
+    assert req["Months with load factor above 80%"] == "3 of 12"
+    assert facts(r)["Peak months (load factor)"]["value"] == "2025-06 81.7%, 2025-07 81.7%, 2025-08 81.7%"
+    # spill proxy: HNL (950 - 800) x 3 months = 450 of 27,150 passengers; LAX never above 80%
+    assert req["Spill proxy: passengers carried above 80% load (per route and month)"] == "450 (1.7% of passengers)"
+    assert req["Spill proxy sensitivity (target load factor)"] == "600 at 75% to 300 at 85%"
+    assert facts(r)["Routes with the most passengers above 80% load"]["value"] == "SFO-HNL 450 (100.0% of the spill proxy)"
+    assert facts(r)["Routes with the most passengers (load factor)"]["value"].startswith("SFO-LAX 18,000 (75.0%)")
+    # causes per month: NAS 300, late aircraft 180, carrier 100, weather 20, security 0 (of 600)
+    assert req["Delay-cause mix (share of delay minutes, arrivals)"] == (
+        "NAS 50.0%, late aircraft 30.0%, carrier 16.7%, weather 3.3%, security 0.0%")
+    assert req["Passenger growth vs 2024-01..2024-12"] == "+10.4%"
+
+
+def test_demand_gap_why_is_built_from_the_facts(db_sfo, scoring_cfg):
+    why = tools.explain_demand_gap(db_sfo, scoring_cfg, "SFO")["data"]["why"]
+    assert why == [
+        "Airport-wide load factor was above the 80% target in 3 of 12 months, highest in "
+        "2025-06 81.7%, 2025-07 81.7%, 2025-08 81.7%.",
+        "Above-target loads are concentrated on routes to HNL (100.0% of the spill proxy on that route).",
+        "The largest delay cause on arrivals is NAS (50.0% of delay minutes).",
+        "Passengers changed +10.4% vs 2024-01..2024-12.",
+    ]
+
+
+def test_demand_gap_without_ontime_still_answers(db, scoring_cfg):
+    seed_sfo(db)
+    r = tools.explain_demand_gap(db, scoring_cfg, "SFO")
+    assert required(r)["Delay-cause mix (share of delay minutes, arrivals)"] == "not available (no On-Time delay minutes)"
+
+
+def test_demand_gap_target_comes_from_config(db_sfo, scoring_cfg):
+    from dataclasses import replace
+    r = tools.explain_demand_gap(db_sfo, replace(scoring_cfg, target_load_factor=0.75), "SFO")
+    assert required(r)["Months with load factor above 75%"] == "3 of 12"
+    assert "above 75%" in r["headline"]
+
+
+def test_demand_gap_ambiguous_or_unknown(db_sfo, scoring_cfg):
+    assert tools.explain_demand_gap(db_sfo, scoring_cfg, "Chicago")["candidates"] == ["ORD", "MDW"]
+    assert "No airport" in tools.explain_demand_gap(db_sfo, scoring_cfg, "Atlantis")["error"]

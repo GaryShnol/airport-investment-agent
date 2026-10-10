@@ -253,6 +253,28 @@ def rank(result: ScoreResult, region: str, cfg: ScoringConfig) -> RegionRanking:
     return RegionRanking(region, states, ranked.reset_index(drop=True), excluded.reset_index(drop=True), result)
 
 
+# --- demand-gap proxy (explain_demand_gap) -----------------------------------------------------
+
+def above_target(passengers: pd.Series, seats: pd.Series, target: float) -> pd.Series:
+    """Passengers carried above `target` x seats, per row (route-month); 0 where the load factor is at
+    or below the target. Summed, this is the spill proxy: how many passengers flew on loads above the
+    target, a hint of demand the capacity barely met. It is not observed unmet demand (no booking or
+    spill data): passengers turned away never appear in T-100."""
+    return (passengers - target * seats).clip(lower=0)
+
+
+DELAY_CAUSES = ("nas", "carrier", "late_aircraft", "weather", "security")
+
+
+def delay_cause_mix(minutes: Mapping[str, float]) -> dict[str, float] | None:
+    """Share of delay minutes per cause (keys DELAY_CAUSES), largest first; None without minutes."""
+    total = sum(float(minutes.get(c) or 0) for c in DELAY_CAUSES)
+    if total <= 0:
+        return None
+    shares = {c: float(minutes.get(c) or 0) / total for c in DELAY_CAUSES}
+    return dict(sorted(shares.items(), key=lambda kv: (-kv[1], DELAY_CAUSES.index(kv[0]))))
+
+
 # --- comparison margins (compare_airports) -----------------------------------------------------
 
 def z_value(confidence_level: float) -> float:

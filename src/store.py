@@ -357,6 +357,22 @@ def served_airports(conn: sqlite3.Connection, window: Window) -> list[dict]:
     return [dict(zip(cols, r)) for r in conn.execute(sql, params)]
 
 
+def route_months(conn: sqlite3.Connection, origin: str, window: Window) -> pd.DataFrame:
+    """Passenger-service departures, seats and passengers per destination and month out of `origin`
+    in the window (columns dest, year, month, departures, seats, passengers). Used by
+    explain_demand_gap for monthly load factors, dense routes and the spill proxy."""
+    configs = ",".join("?" * len(PASSENGER_CONFIGS))
+    sql = f"""
+        SELECT dest, year, month, SUM(departures) AS departures, SUM(seats) AS seats,
+               SUM(passengers) AS passengers
+        FROM t100_route_month
+        WHERE origin = ? AND config IN ({configs}) AND (year * 100 + month) BETWEEN ? AND ?
+        GROUP BY dest, year, month ORDER BY dest, year, month
+    """
+    params = [origin.upper(), *PASSENGER_CONFIGS, _key(window.start), _key(window.end)]
+    return pd.read_sql_query(sql, conn, params=params)
+
+
 def long_haul_counts(
     conn: sqlite3.Connection,
     origin: str,

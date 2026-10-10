@@ -87,6 +87,7 @@ def cfg():
         congestion_weights={"dep_delay_rate": 0.4, "taxi_out": 0.3, "nas_delay_per_arrival": 0.3},
         long_haul_miles=2500, long_haul_sensitivity_miles=(1500, 2500, 3000),
         long_haul_min_share=0.02, min_passengers_per_year=5_000, min_ontime_flights=100, target_load_factor=0.8,
+        target_sensitivity=(0.75, 0.8, 0.85), peak_months=3, top_routes=5,
         sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1, comparison_confidence_level=0.95,
         regions={"north": ("AA", "BB"), "south": ("CC",)}, max_ranked=25,
     )
