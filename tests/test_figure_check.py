@@ -76,15 +76,26 @@ def test_no_figures_no_change():
 
 def test_real_failure_lax_credited_with_snas_figures():
     # Earlier UI test: LAX was credited with SNA's 13.2% and 12.5%.
-    out = check_commentary("LAX is more congested: 13.2% of its departures are delayed and 12.5% are cancelled. "
-                           "Taxi-out explains part of it.", [LAX_SNA])
+    out = check_commentary("LAX is more congested: 13.2% of its departures are delayed. LAX also cancels 12.5% "
+                           "of its flights. Taxi-out explains part of it.", [LAX_SNA])
     assert out.text == "Taxi-out explains part of it."
-    assert out.removed[0]["reasons"] == ["13.2% is SNA's figure, credited to LAX", "12.5% is SNA's figure, credited to LAX"]
+    assert [r["reasons"] for r in out.removed] == [["13.2% is SNA's figure, credited to LAX"],
+                                                   ["12.5% is SNA's figure, credited to LAX"]]
 
 
 def test_correctly_attributed_figures_in_one_sentence_pass():
     assert sentence_problems("LAX delays 18.1% of departures, while SNA delays 13.2%.", [LAX_SNA]) == []
     assert sentence_problems("At 13.2%, SNA is lower than LAX.", [LAX_SNA]) == []
+
+
+@pytest.mark.parametrize("sentence", [
+    # lfm2.5:8b in the first eval run (P3.7b): both are correct and must not be removed
+    "Its average departures delayed ≥ 15 minutes are 13.2 % versus 18.1 % at LAX.",
+    "Although LAX has a higher rate (18.1 % vs 13.2 %), SNA cancels more.",
+    "13.2% is SNA's rate, not LAX's.",
+])
+def test_unclear_attribution_is_not_judged(sentence):
+    assert sentence_problems(sentence, [LAX_SNA]) == []
 
 
 def test_swap_detected_when_both_airports_are_named():

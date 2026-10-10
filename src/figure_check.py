@@ -5,8 +5,8 @@ Pure functions (commentary and envelopes in, cleaned commentary out), applied by
 - a number that appears nowhere in the envelopes of the conversation (formatting tolerated: 81.6 %,
   81.6%, 2,714,358, 2.7 million; a value matches when it rounds to the precision written, so 81.58
   supports 81.6 and 82; values below 1 also count as percentages, 0.385 = 38.5);
-- in a compare_airports answer, a value credited to one airport that belongs to the other (the
-  number is in the other airport's column and not in this one's);
+- in a compare_airports answer, a value plainly credited to one airport ("LAX has 13.2%", "13.2% at
+  LAX") that belongs to the other (in the other airport's column and not in this one's);
 - an airport name in parentheses next to a code (or the reverse) that is another airport's name in
   the envelopes, such as "Bradley (BTV)" when Bradley is BDL;
 - a known misreading of a definition (MISREADINGS).
@@ -66,6 +66,7 @@ class Written:
     scale: Decimal
     percent: bool
     start: int
+    end: int
 
 
 def _written_numbers(text: str) -> list[Written]:
@@ -82,7 +83,7 @@ def _written_numbers(text: str) -> list[Written]:
         percent = unit in ("%", "percent", "pts", "points")
         if not frac and not percent and not unit and (value <= IGNORE_SMALL_INTEGERS or int(value) in YEARS):
             continue
-        found.append(Written(value, decimals, SCALES.get(unit, Decimal(1)), percent, m.start()))
+        found.append(Written(value, decimals, SCALES.get(unit, Decimal(1)), percent, m.start(), m.end()))
     return found
 
 
@@ -187,22 +188,38 @@ def _compare_columns(envelopes: list[Any]) -> list[tuple[dict[str, set[Decimal]]
     return out
 
 
-def _owner(position: int, mentions: list[tuple[int, str]]) -> str | None:
-    """Airport a number belongs to in the sentence: the nearest mention before it, else the first after."""
-    before = [code for start, code in mentions if start < position]
+# Text between an airport and a number that ends the attribution: a new clause or a comparison
+# ("LAX has 81.6% vs 79.7%": the second value is the other airport's).
+_ATTRIBUTION_BREAK = re.compile(r"[,;]|\b(?:and|while|whereas|but|vs|versus|than|compared|against|unlike|or)\b",
+                                re.IGNORECASE)
+# "18.1% at LAX", "17.7 min for LAX": a number followed by its airport.
+_FOLLOWED_BY = r"^\s*(?:%|percent|pts|points|min(?:utes)?)?\s*(?:at|for|in|from)\s+"
+
+
+def _owner(sentence: str, n: Written, mentions: list[tuple[int, int, str]]) -> str | None:
+    """Airport a number is credited to, only when the sentence says so plainly: the number is
+    followed by "at/for <airport>", or it comes after an airport with no clause break or comparison
+    word in between ("LAX has 18.1%", "LAX: 18.1%"). Anything else ("its 19.2% versus 18.1% at
+    LAX") is not judged: removing a correct sentence is worse than missing a swap."""
+    after = sentence[n.end:]
+    for start, _end, code in mentions:
+        if start >= n.end and re.match(_FOLLOWED_BY + r"$", after[:start - n.end]):
+            return code
+    before = [(end, code) for _start, end, code in mentions if end <= n.start]
     if before:
-        return before[-1]
-    after = [code for start, code in mentions if start > position]
-    return after[0] if after else None
+        end, code = before[-1]
+        if not _ATTRIBUTION_BREAK.search(sentence[end:n.start]):
+            return code
+    return None
 
 
 def _swapped(sentence: str, numbers: list[Written], columns) -> list[str]:
     reasons = []
     for per_airport, aliases in columns:
-        mentions = sorted((m.start(), code) for code, words in aliases.items() for word in words
+        mentions = sorted((m.start(), m.end(), code) for code, words in aliases.items() for word in words
                           for m in re.finditer(rf"\b{re.escape(word)}\b", sentence))
         for n in numbers:
-            owner = _owner(n.start, mentions)
+            owner = _owner(sentence, n, mentions)
             if owner is None:
                 continue
             other = next(c for c in per_airport if c != owner)
