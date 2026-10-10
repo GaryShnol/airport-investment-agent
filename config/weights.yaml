@@ -33,6 +33,10 @@ sensitivity:                    # rank stability under weight perturbation
   weight_jitter: 0.25           # +/- relative change per weight, then renormalized
   seed: 42
 
+comparison:                     # compare_airports
+  confidence_level: 0.95        # margin of error on On-Time figures; a difference inside the combined
+                                # margin is reported as "no meaningful difference"
+
 # Longest ranking rank_airports returns, whatever top_n asks for (scenario or not). Keeps tool
 # results within a local model's context window.
 max_ranked: 25

@@ -87,7 +87,7 @@ def cfg():
         congestion_weights={"dep_delay_rate": 0.4, "taxi_out": 0.3, "nas_delay_per_arrival": 0.3},
         long_haul_miles=2500, long_haul_sensitivity_miles=(1500, 2500, 3000),
         long_haul_min_share=0.02, min_passengers_per_year=5_000, min_ontime_flights=100, target_load_factor=0.8,
-        sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1,
+        sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1, comparison_confidence_level=0.95,
         regions={"north": ("AA", "BB"), "south": ("CC",)}, max_ranked=25,
     )
 
@@ -349,3 +349,34 @@ def test_congestion_changes_the_ranking_only_when_loaded(metrics, cfg):
     with_data = scoring.score(with_ontime(metrics, ONTIME), cfg, FULL)
     assert "pct_congestion" not in without.table.columns
     assert with_data.table.set_index("iata").at["BIG", "score"] != without.table.set_index("iata").at["BIG", "score"]
+
+
+# --- comparison margins (P3.3) ---------------------------------------------------------------
+
+def test_z_value_for_95_percent():
+    assert scoring.z_value(0.95) == pytest.approx(1.95996, abs=1e-4)
+
+
+def test_proportion_margin_from_the_flight_count():
+    # 20% on 1,000 flights: 1.96 * sqrt(0.2 * 0.8 / 1000) = 2.48 points
+    assert scoring.proportion_margin(0.2, 1000, 1.96) == pytest.approx(0.0248, abs=1e-4)
+    assert scoring.proportion_margin(0.2, 0, 1.96) is None
+    assert scoring.proportion_margin(None, 1000, 1.96) is None
+
+
+def test_mean_margin_from_monthly_spread():
+    assert scoring.mean_margin([10.0, 12.0, 14.0, 16.0], 2.0) == pytest.approx(2 * 2.581989 / 2, abs=1e-6)
+    assert scoring.mean_margin([10.0], 1.96) is None          # one month: no spread
+    assert scoring.mean_margin([10.0, float("nan")], 1.96) is None
+
+
+@pytest.mark.parametrize("a, b, ma, mb, expected", [
+    (0.20, 0.18, 0.01, 0.01, "a"),       # difference 2.0 > combined margin 1.41
+    (0.18, 0.20, 0.01, 0.01, "b"),
+    (0.20, 0.19, 0.01, 0.01, "same"),    # 1.0 inside 1.41: never a winner inside the margin
+    (0.20, 0.186, 0.01, 0.01, "same"),   # 1.4 still inside
+    (0.20, None, 0.01, 0.01, None),
+    (0.20, 0.10, None, 0.01, None),
+])
+def test_compare_values_uses_the_combined_margin(a, b, ma, mb, expected):
+    assert scoring.compare_values(a, b, ma, mb) == expected

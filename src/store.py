@@ -274,6 +274,20 @@ def ontime_metrics(conn: sqlite3.Connection, window: Window) -> pd.DataFrame:
     return pd.read_sql_query(sql, conn, params={"start": _key(window.start), "end": _key(window.end)})
 
 
+def ontime_monthly(conn: sqlite3.Connection, airport: str, window: Window) -> pd.DataFrame:
+    """One airport's On-Time counts per month in the window (columns of `ontime_airport_month`),
+    oldest first. Used for month-to-month spread (compare_airports) and the delay-cause mix."""
+    sql = """
+        SELECT year, month, dep_flights, dep_del15, dep_del15_n, dep_cancelled, taxi_out_sum, taxi_out_n,
+               arr_flights, arr_del15, carrier_min, weather_min, nas_min, security_min, late_aircraft_min
+        FROM ontime_airport_month
+        WHERE airport = :airport AND (year * 100 + month) BETWEEN :start AND :end
+        ORDER BY year, month
+    """
+    return pd.read_sql_query(sql, conn, params={"airport": airport.upper(), "start": _key(window.start),
+                                                "end": _key(window.end)})
+
+
 def unmatched_ontime_airports(conn: sqlite3.Connection) -> list[str]:
     """On-Time airports with no row in `airports` (shown by ingest)."""
     rows = conn.execute("SELECT DISTINCT airport FROM ontime_airport_month "

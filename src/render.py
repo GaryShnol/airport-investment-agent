@@ -14,6 +14,12 @@ from typing import Any
 _RANKING_FACT = re.compile(r"^#\d+ ")
 
 
+def _in_a_table(f: dict) -> bool:
+    """Facts shown by a table instead of the card: ranking rows, and compare_airports values
+    (an `airport` key) and verdicts (a `metric` key)."""
+    return bool(_RANKING_FACT.match(f["label"])) or "airport" in f or "metric" in f
+
+
 def _cell(value: Any) -> str:
     """Table cell text: pipes escaped, newlines flattened."""
     return str(value).replace("|", "\\|").replace("\n", " ")
@@ -43,9 +49,9 @@ def render_headline(envelope: dict) -> str:
 def render_facts(envelope: dict) -> str:
     """Facts card: one row per fact, then freshness unless a fact already states it.
 
-    Required facts are marked with *; ranking rows are left to `render_ranking`."""
+    Required facts are marked with *; ranking rows and comparison values are left to their tables."""
     rows = [[f["label"] + (" *" if f.get("required") else ""), f["value"]]
-            for f in envelope.get("facts") or [] if not _RANKING_FACT.match(f["label"])]
+            for f in envelope.get("facts") or [] if not _in_a_table(f)]
     if envelope.get("freshness") and not any(f["label"] == "Freshness" for f in envelope.get("facts") or []):
         rows.append(["Freshness", envelope["freshness"]])
     return _table(["Fact", "Value"], rows) if rows else ""
@@ -81,6 +87,18 @@ def render_ranking(envelope: dict) -> str:
     for group in data.get("ties") or []:
         table += f"\n\nTie (equal score): {', '.join(group)}."
     return table
+
+
+def render_comparison(envelope: dict) -> str:
+    """compare_airports as a two-column table (one column per airport) plus the verdict per metric."""
+    data = envelope.get("data") or {}
+    metrics = data.get("metrics") if isinstance(data, dict) else None
+    if not metrics:
+        return ""
+    codes = data["airports"]
+    rows = [[m["label"], *(m["cells"][c]["display"] for c in codes), m["verdict"]] for m in metrics]
+    names = "; ".join(f"{c} = {data['names'][c]}" for c in codes)
+    return f"{names}\n\n" + _table(["Metric", *codes, "Verdict"], rows)
 
 
 def render_excluded(envelope: dict) -> str:
@@ -129,7 +147,7 @@ def render_envelope(envelope: Any, title: str | None = None) -> str:
     if envelope.get("error"):
         parts.append(render_error(envelope))
         return "\n\n".join(parts)
-    parts += [render_facts(envelope), render_ranking(envelope)]
+    parts += [render_comparison(envelope), render_facts(envelope), render_ranking(envelope)]
     if excluded := render_excluded(envelope):
         parts.append(f"{excluded_title(envelope)}:\n\n{excluded}")
     if assumptions := render_assumptions(envelope):

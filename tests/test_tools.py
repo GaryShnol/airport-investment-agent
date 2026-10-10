@@ -218,7 +218,7 @@ def test_make_tools_errors_become_envelopes(scoring_cfg):
         raise sqlite3.OperationalError("unable to open database file")
 
     by_name = {t.name: t for t in tools.make_tools(broken, scoring_cfg)}
-    assert set(by_name) == {"data_status", "resolve_airport", "airport_metrics", "rank_airports"}
+    assert set(by_name) == {"data_status", "resolve_airport", "airport_metrics", "rank_airports", "compare_airports"}
     r = by_name["airport_metrics"].invoke({"airport": "ANC"})
     assert r["data"] is None and "unable to open" in r["error"]
 
@@ -471,3 +471,62 @@ def test_data_status_lists_congestion_only_until_ontime_is_loaded(db, scoring_cf
     assert "congestion" in tools.data_status(db, scoring_cfg)["data"]["score_components_not_built"]
     seed_ontime(db)
     assert "congestion" not in tools.data_status(db, scoring_cfg)["data"]["score_components_not_built"]
+
+
+# --- compare_airports (P3.3) -------------------------------------------------------------------
+
+def comparison(result):
+    """metric key -> (verdict, {airport: display})"""
+    return {m["key"]: (m["verdict"], {c: v["display"] for c, v in m["cells"].items()})
+            for m in result["data"]["metrics"]}
+
+
+def test_compare_la_uses_the_configured_default_and_states_it(db_ontime, scoring_cfg):
+    r = check_envelope(tools.compare_airports(db_ontime, scoring_cfg, "LA", "Santa Ana"))
+    assert r["data"]["airports"] == ["LAX", "SNA"]
+    assert r["assumptions"][0] == "'LA' = LAX (configured default; other candidates: BUR, LGB, ONT, SNA)"
+    assert r["confidence"] == "medium"
+
+
+def test_compare_verdicts_follow_the_margin(db_ontime, scoring_cfg):
+    m = comparison(tools.compare_airports(db_ontime, scoring_cfg, "LAX", "SNA"))
+    # LAX 25.3% of 11,880 vs SNA 20.2% of 2,376: 5.1 points, combined margin about 1.8 -> LAX higher
+    assert m["dep_delay_rate"] == ("LAX higher", {"LAX": "25.3% ± 0.78 pts (11,880 departures)",
+                                                  "SNA": "20.2% ± 1.61 pts (2,376 departures)"})
+    assert m["nas_min_per_arrival"][0] == "LAX higher"
+    assert m["congestion_percentile"][0] == "not tested (a rank, no margin)"
+    assert m["passengers"][0] == "LAX higher (full count)"
+
+
+def test_compare_inside_the_margin_is_no_meaningful_difference(db_ontime, scoring_cfg):
+    # PWM 18.4% of 1,764 vs SNA 20.2% of 2,376: 1.8 points inside the combined margin of about 2.4
+    r = tools.compare_airports(db_ontime, scoring_cfg, "PWM", "SNA")
+    assert comparison(r)["dep_delay_rate"][0] == "no meaningful difference"
+    assert "no meaningful difference in delayed departures (PWM 18.4%, SNA 20.2%)" in r["headline"]
+    assert "PWM higher" not in r["headline"].split(";")[0] and "SNA higher" not in r["headline"].split(";")[0]
+
+
+def test_compare_facts_are_per_airport_and_cancellations_not_scored(db_ontime, scoring_cfg):
+    r = tools.compare_airports(db_ontime, scoring_cfg, "LAX", "SNA")
+    by = facts(r)
+    assert by["LAX: Departures delayed >= 15 min"]["required"] and by["SNA: Departures delayed >= 15 min"]["required"]
+    assert by["Verdict: Departures delayed >= 15 min"]["value"] == "LAX higher"
+    assert "SNA: Cancelled departures (shown, not scored)" in by
+    assert {f["airport"] for f in r["facts"] if "airport" in f} == {"LAX", "SNA"}
+    assert any("cancellations are shown, not scored" in a for a in r["assumptions"])
+
+
+def test_compare_without_congestion_figures_is_not_comparable(db_ontime, scoring_cfg):
+    r = tools.compare_airports(db_ontime, scoring_cfg, "BOS", "BTV")   # BTV under min_ontime_flights
+    assert comparison(r)["dep_delay_rate"][0] == "not comparable"
+    assert "BTV has no congestion figures (too few flights)." in r["headline"]
+
+
+def test_compare_ambiguous_name_returns_the_ambiguity(db_ontime, scoring_cfg):
+    r = tools.compare_airports(db_ontime, scoring_cfg, "Chicago", "BOS")
+    assert r["data"] is None and r["candidates"] == ["ORD", "MDW"] and r["best"] == "ORD"
+
+
+def test_compare_unknown_and_same_airport(db_ontime, scoring_cfg):
+    assert "No airport" in tools.compare_airports(db_ontime, scoring_cfg, "Atlantis", "BOS")["error"]
+    assert "two different airports" in tools.compare_airports(db_ontime, scoring_cfg, "LAX", "LAX")["error"]

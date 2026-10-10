@@ -6,7 +6,9 @@ Helpers take pandas Series (one value per airport) and return Series aligned to 
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from statistics import NormalDist, stdev
 from typing import Iterable, Mapping
 
 import pandas as pd
@@ -249,3 +251,44 @@ def rank(result: ScoreResult, region: str, cfg: ScoringConfig) -> RegionRanking:
     excluded["reason"] = [f"{p:,} passenger-service passengers, below the {cfg.min_passengers_per_year:,} floor"
                           for p in excluded["passengers"]]
     return RegionRanking(region, states, ranked.reset_index(drop=True), excluded.reset_index(drop=True), result)
+
+
+# --- comparison margins (compare_airports) -----------------------------------------------------
+
+def z_value(confidence_level: float) -> float:
+    """Two-sided normal quantile for a confidence level (0.95 -> 1.96)."""
+    return NormalDist().inv_cdf(0.5 + confidence_level / 2)
+
+
+def proportion_margin(share: float | None, n: float | None, z: float) -> float | None:
+    """Margin of error of a share of flights (normal approximation of the binomial): z * sqrt(p(1-p)/n).
+
+    Used for On-Time rates: On-Time covers only the large reporting carriers, so its flights are a
+    sample of the airport's traffic. Missing when the share or the flight count is missing."""
+    if share is None or n is None or share != share or n != n or n <= 0:
+        return None
+    return z * math.sqrt(share * (1 - share) / n)
+
+
+def mean_margin(monthly_values: Iterable[float], z: float) -> float | None:
+    """Margin of error of a mean in minutes from its month-to-month spread: z * sd / sqrt(months).
+
+    Only monthly sums are stored, not per-flight values, so the spread of the monthly means is the
+    available measure of noise (it also absorbs seasonality, so it is conservative). Missing with
+    fewer than two months."""
+    values = [float(v) for v in monthly_values if v is not None and v == v]
+    if len(values) < 2:
+        return None
+    return z * stdev(values) / math.sqrt(len(values))
+
+
+def compare_values(a: float | None, b: float | None, margin_a: float | None,
+                   margin_b: float | None) -> str | None:
+    """'a' or 'b' (the higher value) when the difference exceeds the combined margin
+    sqrt(margin_a^2 + margin_b^2), 'same' when it does not, None when a value or margin is missing.
+    The rule never names a higher airport inside the margin."""
+    if None in (a, b, margin_a, margin_b):
+        return None
+    if abs(a - b) <= math.hypot(margin_a, margin_b):
+        return "same"
+    return "a" if a > b else "b"

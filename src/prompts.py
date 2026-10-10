@@ -29,6 +29,7 @@ no default, ask the user which airport they mean (name the best match and the al
 If it returns a configured default (for example LA = LAX), state the definition you used and the other candidates.
 - One airport: airport_metrics with topic long_haul, demand (passengers, load factor), growth or \
 congestion (delays, taxi-out); all only when the question asks for several.
+- Two airports ("compare X and Y", "X vs Y"): compare_airports with both names as the user wrote them; it resolves them (LA = LAX by configuration: state it) and returns a verdict per figure. Do not restate the verdicts; explain what drives the differences (for example taxi-out vs delays) and what they do not show.
 - Rankings or expansion candidates: rank_airports. For "which has the highest load factor / growth / \
 passengers" use sort_by. Use weights only for what-if questions about the weights.
 - If a region is not configured, relay the tool's message and offer the national ranking or a specific airport.

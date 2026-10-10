@@ -128,3 +128,31 @@ def test_ranking_shows_delayed_departures_when_congestion_is_scored():
                         "| Confidence |")
     assert lines[2].endswith("| +2.5% | 22.8% | medium |")
     assert lines[3].endswith("| -1.0% | n/a | low |")  # PWM without On-Time data
+
+
+COMPARISON = {
+    "headline": "LAX vs SNA: ...",
+    "facts": [
+        {"label": "LAX: Departures delayed >= 15 min", "value": "18.1% ± 0.17 pts", "required": True, "airport": "LAX"},
+        {"label": "SNA: Departures delayed >= 15 min", "value": "19.2% ± 0.37 pts", "required": True, "airport": "SNA"},
+        {"label": "Verdict: Departures delayed >= 15 min", "value": "SNA higher", "required": False,
+         "metric": "dep_delay_rate"},
+        {"label": "Data period", "value": "2025-01..2025-12", "required": True},
+    ],
+    "data": {"airports": ["LAX", "SNA"], "names": {"LAX": "Los Angeles Intl", "SNA": "John Wayne"},
+             "metrics": [{"key": "dep_delay_rate", "label": "Departures delayed >= 15 min", "verdict": "SNA higher",
+                          "cells": {"LAX": {"display": "18.1% ± 0.17 pts"}, "SNA": {"display": "19.2% ± 0.37 pts"}}},
+                         {"key": "passengers", "label": "Passengers", "verdict": "LAX higher (full count)",
+                          "cells": {"LAX": {"display": "36,778,508"}, "SNA": {"display": "5,532,646"}}}]},
+    "data_period": "2025-01..2025-12", "freshness": "unknown", "assumptions": [], "confidence": "medium",
+}
+
+
+def test_comparison_is_a_two_column_table_and_its_facts_leave_the_card():
+    out = render_envelope(COMPARISON)
+    assert ("LAX = Los Angeles Intl; SNA = John Wayne\n\n"
+            "| Metric | LAX | SNA | Verdict |\n|---|---|---|---|\n"
+            "| Departures delayed >= 15 min | 18.1% ± 0.17 pts | 19.2% ± 0.37 pts | SNA higher |\n"
+            "| Passengers | 36,778,508 | 5,532,646 | LAX higher (full count) |") in out
+    assert render_facts(COMPARISON) == ("| Fact | Value |\n|---|---|\n| Data period * | 2025-01..2025-12 |\n"
+                                        "| Freshness | unknown |")

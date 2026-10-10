@@ -639,6 +639,152 @@ def _ranked_summary(item: dict) -> str:
     return "; ".join(parts)
 
 
+# --- compare_airports --------------------------------------------------------------------
+
+T100_FULL_COUNT = ("T-100 figures (load factor, passengers, growth, long-haul share) count every flight, "
+                   "so they are compared as is, without a margin of error")
+# On-Time rows of the comparison: (key in the score table, label, short name for the headline, kind).
+# kind "share": a rate of flights, margin from the flight count; "minutes": a mean, margin from the
+# spread of the monthly means (only monthly sums are stored).
+ONTIME_COMPARED = (
+    ("dep_delay_rate", "Departures delayed >= 15 min", "delayed departures", "share"),
+    ("taxi_out_min", "Mean taxi-out (departures)", "taxi-out", "minutes"),
+    ("nas_min_per_arrival", "NAS-delay minutes per arriving flight", "NAS delay per arrival", "minutes"),
+    ("cancellation_rate", "Cancelled departures (shown, not scored)", "cancellations (not scored)", "share"),
+)
+# Denominator of each share (column of the score table) and the monthly sums behind each mean.
+SHARE_DENOMINATOR = {"dep_delay_rate": "dep_del15_n", "cancellation_rate": "dep_flights"}
+MONTHLY_MEAN = {"taxi_out_min": ("taxi_out_sum", "taxi_out_n"), "nas_min_per_arrival": ("nas_min", "arr_flights")}
+MINUTE_DIGITS = {"taxi_out_min": 1, "nas_min_per_arrival": 2}
+# T-100 rows of the comparison: (key in the score table, label, display kind).
+T100_COMPARED = (
+    ("load_factor", "Load factor (passenger service)", "share"),
+    ("passengers", "Passengers (passenger service)", "count"),
+    ("growth", "Passenger growth vs previous 12 months", "signed"),
+    ("long_haul_share", "Long-haul share (passenger service)", "share"),
+)
+
+
+def _resolve_for_compare(conn: sqlite3.Connection, cfg: ScoringConfig,
+                         text: str) -> tuple[str | None, str | None, dict | None]:
+    """(IATA, assumption, error). A configured metro alias resolves to its default and the
+    definition is stated (LA = LAX); any other ambiguity is returned as an error, never guessed."""
+    data = resolve_airport(conn, cfg, text)["data"]
+    if data and data["ambiguous"] and data["default"]:
+        others = ", ".join(a["iata"] for a in data["alternatives"])
+        return data["default"], f"'{text}' = {data['default']} (configured default; other candidates: {others})", None
+    code, err = _resolve_code(conn, cfg, text)
+    return code, None, err
+
+
+def _ontime_cell(key: str, kind: str, row, monthly, z: float) -> dict:
+    """Value, margin and display text of one On-Time metric for one airport. The raw (unrounded)
+    value and margin decide the verdict; `short` is the value as the headline writes it."""
+    value = None if row is None else row[key]
+    if value is None or value != value:
+        return {"value": None, "margin": None, "display": "n/a", "short": "n/a"}
+    value = float(value)
+    if kind == "share":
+        n = row[SHARE_DENOMINATOR[key]]
+        margin = scoring.proportion_margin(value, n, z)
+        return {"value": value, "margin": margin, "short": _share(_pct(value)),
+                "display": f"{_share(_pct(value))} ± {_num(margin * 100, 2)} pts ({int(n):,} departures)"}
+    total, count = MONTHLY_MEAN[key]
+    margin = scoring.mean_margin((monthly[total] / monthly[count].where(monthly[count] > 0)).tolist(), z)
+    digits = MINUTE_DIGITS[key]
+    spread = "n/a" if margin is None else _num(margin, digits)
+    return {"value": value, "margin": margin, "short": f"{_num(value, digits)} min",
+            "display": f"{_num(value, digits)} min ± {spread} ({len(monthly)} monthly means)"}
+
+
+def _t100_display(kind: str, value) -> str:
+    if value is None or value != value:
+        return "n/a"
+    if kind == "count":
+        return f"{int(value):,}"
+    return _signed(_pct(value)) if kind == "signed" else _share(_pct(value))
+
+
+def compare_airports(conn: sqlite3.Connection, cfg: ScoringConfig, a: str, b: str) -> dict:
+    """Two airports side by side: congestion (On-Time, a margin of error per figure and a
+    deterministic verdict), load factor, passengers, growth and long-haul share (T-100, full counts).
+
+    Verdict rule: a difference inside the combined margin is "no meaningful difference"; only a
+    difference beyond it names the higher airport. Facts carry an `airport` key (one value per
+    airport) or a `metric` key (the verdict), used by the table renderer and the figure check."""
+    codes, notes = [], []
+    for text in (a, b):
+        code, note, err = _resolve_for_compare(conn, cfg, text)
+        if err:
+            return err
+        codes.append(code)
+        notes += [note] if note else []
+    if codes[0] == codes[1]:
+        return _error(conn, f"Both names resolve to {codes[0]}; name two different airports")
+    window = _window(conn)
+    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    table = result.table.set_index("iata")
+    missing = [c for c in codes if c not in table.index]
+    if missing:
+        return _error(conn, f"{missing[0]} has no passenger service in {window.label}")
+    rows = {c: table.loc[c] for c in codes}
+    z = scoring.z_value(cfg.comparison_confidence_level)
+    level = f"{cfg.comparison_confidence_level:.0%}"
+    status = {c: (rows[c]["ontime_status"] if "congestion" not in result.unavailable else "not_loaded")
+              for c in codes}
+
+    metrics, facts, parts = [], [], []
+    for key, label, short, kind in ONTIME_COMPARED:
+        cells = {c: _ontime_cell(key, kind, rows[c] if status[c] == "ok" else None,
+                                 store.ontime_monthly(conn, c, window) if status[c] == "ok" else None, z)
+                 for c in codes}
+        winner = scoring.compare_values(*(cells[c]["value"] for c in codes), *(cells[c]["margin"] for c in codes))
+        verdict = {"a": f"{codes[0]} higher", "b": f"{codes[1]} higher", "same": "no meaningful difference",
+                   None: "not comparable"}[winner]
+        values = ", ".join(f"{c} {cells[c]['short']}" for c in codes)
+        parts.append(f"no meaningful difference in {short} ({values})" if winner == "same"
+                     else f"{short}: {verdict} ({values})")
+        metrics.append({"key": key, "label": label, "source": "On-Time", "verdict": verdict,
+                        "cells": {c: {"display": cells[c]["display"], "value": _num(cells[c]["value"], 4),
+                                      "margin": _num(cells[c]["margin"], 4)} for c in codes}})
+        facts += [fact(f"{c}: {label}", cells[c]["display"], key == "dep_delay_rate") | {"airport": c}
+                  for c in codes]
+        facts.append(fact(f"Verdict: {label}", verdict) | {"metric": key})
+
+    pct = {c: _pct(rows[c]["pct_congestion"], 0) if status[c] == "ok" and rows[c]["in_peer_set"] else None
+           for c in codes}
+    shown = {c: "n/a" if pct[c] is None else f"{pct[c]:.0f}" for c in codes}
+    metrics.append({"key": "congestion_percentile", "label": "Congestion percentile in the peer set",
+                    "source": "On-Time", "verdict": "not tested (a rank, no margin)",
+                    "cells": {c: {"display": shown[c], "value": pct[c]} for c in codes}})
+    facts += [fact(f"{c}: Congestion percentile in the peer set", shown[c]) | {"airport": c} for c in codes]
+
+    for key, label, kind in T100_COMPARED:
+        values = {c: rows[c][key] for c in codes}
+        known = all(v is not None and v == v for v in values.values())
+        verdict = ("not comparable" if not known else "equal" if values[codes[0]] == values[codes[1]]
+                   else f"{max(codes, key=lambda c: values[c])} higher (full count)")
+        metrics.append({"key": key, "label": label, "source": "T-100", "verdict": verdict,
+                        "cells": {c: {"display": _t100_display(kind, values[c])} for c in codes}})
+        facts += [fact(f"{c}: {label}", _t100_display(kind, values[c])) | {"airport": c} for c in codes]
+
+    data = {"airports": codes, "names": {c: rows[c]["name"] for c in codes}, "confidence_level": level,
+            "ontime_status": status, "metrics": metrics}
+    assumptions = [*notes,
+                   f"On-Time figures carry a {level} margin of error: rates from the flight counts, minute "
+                   "averages from the spread of the 12 monthly means; a difference inside the combined margin "
+                   "(square root of the sum of the squared margins) is reported as no meaningful difference",
+                   ONTIME_COVERAGE, CONGESTION_SIDES, CANCELLATIONS_NOT_SCORED, T100_FULL_COUNT,
+                   PASSENGER_SERVICE, LOAD_FACTOR_PROXY]
+    levels = [rows[c]["confidence"] for c in codes] + (["medium"] if notes else [])
+    confidence = max(levels, key=CONFIDENCE_ORDER.index)
+    no_figures = [f"{c} has no congestion figures ({status[c].replace('_', ' ')})" for c in codes if status[c] != "ok"]
+    assumptions += no_figures
+    headline = (f"{codes[0]} vs {codes[1]}, {window.label} ({level} margins on On-Time figures): "
+                + "; ".join(parts) + "." + "".join(f" {n}." for n in no_figures))
+    return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
+
+
 # --- LangChain wrappers ------------------------------------------------------------------
 
 def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) -> list[BaseTool]:
@@ -685,4 +831,12 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
                            weights: dict[str, float] | None = None) -> dict:
         return run(rank_airports, region, top_n, sort_by, weights)
 
-    return [data_status_tool, resolve_airport_tool, airport_metrics_tool, rank_airports_tool]
+    @tool("compare_airports")
+    def compare_airports_tool(a: str, b: str) -> dict:
+        """Compare two airports (IATA codes or names) side by side: congestion (delayed departures,
+        taxi-out, NAS delay per arrival, cancellations) with a margin of error and a verdict per
+        figure, plus load factor, passengers, growth and long-haul share. Use for "compare X and Y",
+        "X vs Y", "is X more congested than Y"."""
+        return run(compare_airports, a, b)
+
+    return [data_status_tool, resolve_airport_tool, airport_metrics_tool, rank_airports_tool, compare_airports_tool]

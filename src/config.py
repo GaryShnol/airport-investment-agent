@@ -102,6 +102,7 @@ class ScoringConfig:
     sensitivity_runs: int
     sensitivity_jitter: float
     sensitivity_seed: int
+    comparison_confidence_level: float  # compare_airports: margin of error for On-Time figures (0.95)
     regions: dict[str, tuple[str, ...]]
     max_ranked: int            # longest ranking a tool returns (keeps tool results small)
     # name -> {"default": IATA, "candidates": (IATA, ...)}; e.g. LA -> LAX by default
@@ -129,6 +130,13 @@ def _positive_int(name: str, value) -> int:
     return value
 
 
+def _share(name: str, value) -> float:
+    """A number strictly between 0 and 1 (a probability or a load factor)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 1:
+        raise ConfigError(f"{name} must be a number between 0 and 1 (got {value!r})")
+    return float(value)
+
+
 def load_scoring(path: Path) -> ScoringConfig:
     try:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
@@ -148,6 +156,7 @@ def load_scoring(path: Path) -> ScoringConfig:
             sensitivity_runs=int(raw["sensitivity"]["runs"]),
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),
             sensitivity_seed=int(raw["sensitivity"]["seed"]),
+            comparison_confidence_level=_share("comparison.confidence_level", raw["comparison"]["confidence_level"]),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
             max_ranked=_positive_int("max_ranked", raw["max_ranked"]),
             metro_aliases={k.upper(): {"default": v["default"], "candidates": tuple(v["candidates"])}
