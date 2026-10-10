@@ -6,7 +6,7 @@ from src.llm import PROVIDERS, get_chat_model
 
 def test_defaults_and_overrides():
     s = Settings.from_env({})
-    assert s.llm_provider == "openai"
+    assert s.llm_provider == "ollama"
     assert s.db_path.name == "airport.db"
 
     s = Settings.from_env({"LLM_PROVIDER": "OLLAMA", "LLM_MODEL": "llama3.1", "LLM_TEMPERATURE": "0.2"})

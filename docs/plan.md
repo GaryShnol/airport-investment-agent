@@ -57,7 +57,7 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 - Rank stability: re-rank with N random weight perturbations (seeded); report each airport's rank range and whether the top-3 holds.
 
 ## Agent and UI
-- LangGraph ReAct agent (`create_react_agent` from `langgraph.prebuilt`, or `create_agent` from `langchain.agents` if that is the current API in the installed version; same engine) with a checkpointer and `thread_id` for follow-ups. System prompt: scope rules, assumptions policy, clarify when ambiguous, reply in the user's language.
+- LangGraph ReAct agent built with `create_agent` from `langchain.agents` (`langgraph.prebuilt.create_react_agent` is deprecated since LangGraph 1.0; same engine) with a checkpointer and `thread_id` for follow-ups. System prompt: scope rules, assumptions policy, clarify when ambiguous, reply in the user's language.
 - Output check: numbers in the answer should appear in tool results (tolerant to rounding); a soft warning, not a retry loop.
 - Streamlit chat, sidebar with data period and freshness, Census attribution, and a collapsible panel listing the tools called and their envelopes (shows the reasoning and that numbers come from tools). Streamlit reruns the script on every message, so the agent and its memory live in `st.cache_resource` and the `thread_id` in `st.session_state`. SQLite is opened read-only (`mode=ro`) per call. Voice is a stretch goal (`st.audio_input`).
 
