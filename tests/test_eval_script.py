@@ -126,3 +126,14 @@ def test_report_shows_the_reason_and_the_guardrail_note(tmp_path):
     table = eval_script.report(path)
     assert "| no | tools: expected rank_airports, called airport_metrics |" in table
     assert "- b: the raw reply contained '99%'; the figure check removed it" in table
+
+
+def test_real_follow_up_no_tool_can_do_fails_q4():
+    # gpt-5-mini, q4 (run 20261010-215548): the prompt rule (P7.3) forbids it, the eval catches it
+    real = ("If you want, I can (1) show the routes ranked by spill per seat, (2) rerun the proxy with a "
+            "different target load factor (75% or 85%), or (3) compare this proxy at SFO with another Bay Area airport.")
+    r = eval_script.score(question("q4_sfo_unmet_demand"),
+                          reply(real, calls=("explain_demand_gap",),
+                                labels=("Unmet demand", "Spill proxy sensitivity (target load factor)",
+                                        "Delay-cause mix (share of delay minutes, arrivals)")), 1.0)
+    assert r["forbidden"] == ["different target load factor", "spill per seat"] and r["pass"] is False

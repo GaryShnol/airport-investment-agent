@@ -28,7 +28,7 @@ from src import store
 from src.config import ConfigError, ScoringConfig, Settings, get_settings, load_scoring
 from src.figure_check import check_commentary, restrict_commentary
 from src.llm import get_chat_model, llm_error_message
-from src.prompts import SYSTEM_PROMPT
+from src.prompts import build_system_prompt
 from src.render import render_reply
 from src.tools import make_tools, unsupported_region
 
@@ -349,7 +349,7 @@ def build_agent(
 
     num_ctx = settings.ollama_num_ctx if settings.llm_provider == "ollama" else None
     tools = make_tools(connect, cfg)
-    graph = create_agent(model, tools, system_prompt=SYSTEM_PROMPT,
+    graph = create_agent(model, tools, system_prompt=build_system_prompt(tools),
                          middleware=[turn_guard(num_ctx)], checkpointer=InMemorySaver())
     rank_tool = next(t for t in tools if t.name == "rank_airports")
     return AirportAgent(graph, settings.max_input_chars, cfg.commentary_restricted_tools, cfg, rank_tool)

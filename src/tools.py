@@ -1189,12 +1189,17 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
         "X vs Y", "is X more congested than Y"."""
         return run(compare_airports, a, b)
 
-    @tool("explain_demand_gap")
+    targets = sorted({cfg.target_load_factor, *cfg.target_sensitivity})
+
+    @tool("explain_demand_gap", description=(
+        "Unmet or excess demand at one airport (IATA code or name) and why: a labeled PROXY (unmet "
+        "demand is not observable): months above the target load factor, peak months, densest routes, "
+        "passengers above the target load level (spill proxy) with a sensitivity range, delay-cause "
+        "mix and growth. Use for \"unmet demand\", \"demand gap\", \"is X short of capacity and why\". "
+        f"Limits: the target load factor is fixed by configuration ({_target(cfg.target_load_factor)}; the "
+        f"sensitivity at {', '.join(_target(t) for t in targets)} is already in the result) and cannot be "
+        "changed per question; routes are listed by passengers and by spill proxy only."))
     def explain_demand_gap_tool(airport: str) -> dict:
-        """Unmet or excess demand at one airport (IATA code or name) and why: a labeled PROXY (unmet
-        demand is not observable): months above the target load factor, peak months, densest routes,
-        passengers above the target load level (spill proxy) with a sensitivity range, delay-cause
-        mix and growth. Use for "unmet demand", "demand gap", "is X short of capacity and why"."""
         return run(explain_demand_gap, airport)
 
     return [data_status_tool, resolve_airport_tool, airport_metrics_tool, rank_airports_tool, compare_airports_tool,

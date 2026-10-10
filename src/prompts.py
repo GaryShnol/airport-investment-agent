@@ -2,7 +2,13 @@
 
 The prompt shapes the commentary only. Figures shown to the user come from the tool envelopes
 (src/render.py), and required facts are guaranteed by code (ensure_facts), not by these rules.
+`build_system_prompt` adds the follow-ups the model may suggest, listed from the tool registry
+(name, parameters, first sentence of the description), so the list cannot drift from the tools.
 """
+from __future__ import annotations
+
+import re
+from typing import Any
 
 SYSTEM_PROMPT = """\
 You are an airport investment analyst. You answer questions about US airports: passenger traffic, \
@@ -21,6 +27,9 @@ invent numbers. If the card does not answer the question, say so.
 is unmet" unless a figure in the card supports it. Cancellations are shown but not scored.
 - Load factor and the expansion score are proxies for demand pressure, not measured terminal capacity.
 - If confidence is low or freshness is "unknown" or "stale", say so in one short sentence.
+- Suggest only follow-ups that a tool listed under "Follow-ups you may suggest" can answer with its \
+parameters. Do not offer anything no parameter supports (for example another target load factor, a \
+ranking of routes, a data refresh or an analysis of your own).
 
 Tool rules:
 - Call a tool before answering any data question.
@@ -48,3 +57,30 @@ them, or call the tool again.
 - Reply in the language of the user's question. If the question is not about airports or aviation \
 data, politely say it is out of scope and do not call any tool.
 """
+
+FOLLOW_UPS_HEADER = "Follow-ups you may suggest (the tools and their parameters; nothing else):"
+LIMITS = "Limits:"
+_SENTENCE = re.compile(r"(?<=[\w)\"'])\.\s+(?=[A-Z])")   # "e.g. 'Boston'" is not a sentence end
+
+
+def _parameter(name: str, schema: dict) -> str:
+    """A parameter as the model may use it: its name, and its allowed values when they are fixed."""
+    return f"{name}={'|'.join(schema['enum'])}" if schema.get("enum") else name
+
+
+def tool_capabilities(tools: list[Any]) -> str:
+    """One line per tool: `name(parameters): first sentence of its description`, plus any sentence
+    starting with "Limits:" (what the tool cannot do, so the model does not offer it)."""
+    lines = []
+    for t in tools:
+        description = " ".join((t.description or "").split())
+        sentences = _SENTENCE.split(description)
+        shown = [sentences[0], *(s for s in sentences[1:] if s.startswith(LIMITS))]
+        params = ", ".join(_parameter(n, s) for n, s in (t.args or {}).items())
+        lines.append(f"- {t.name}({params}): {'. '.join(s.rstrip('.') for s in shown)}.")
+    return "\n".join(lines)
+
+
+def build_system_prompt(tools: list[Any]) -> str:
+    """SYSTEM_PROMPT plus the follow-ups the tools can do (from the registry, not hardcoded)."""
+    return f"{SYSTEM_PROMPT}\n{FOLLOW_UPS_HEADER}\n{tool_capabilities(tools)}\n"

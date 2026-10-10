@@ -51,6 +51,8 @@
   question: What is the unmet flight demand at SFO and why?
   tools: [explain_demand_gap]
   must_have: ["Unmet demand", "Spill proxy sensitivity (target load factor)", "Delay-cause mix"]
+  # follow-ups no tool can do (gpt-5-mini, run 20261010-215548)
+  must_not: ["different target load factor", "spill per seat"]
 
 - id: boston_demand
   question: How many passengers did Boston handle, and what is its load factor?
