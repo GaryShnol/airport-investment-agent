@@ -281,6 +281,16 @@ def unmatched_ontime_airports(conn: sqlite3.Connection) -> list[str]:
     return [r[0] for r in rows]
 
 
+def scoring_metrics(conn: sqlite3.Connection, window: Window, long_haul_miles: int) -> pd.DataFrame:
+    """`airport_metrics` plus the On-Time columns of `ontime_metrics` (left join on IATA) once
+    On-Time is loaded; airports without On-Time rows get missing values. Without On-Time the
+    columns are absent and scoring treats congestion as unavailable."""
+    metrics = airport_metrics(conn, window, long_haul_miles)
+    if not ontime_loaded(conn):
+        return metrics
+    return metrics.merge(ontime_metrics(conn, window), on="iata", how="left")
+
+
 def meta_rows(conn: sqlite3.Connection) -> list[dict]:
     """Freshness summary, one dict per loaded source."""
     rows = conn.execute("SELECT source, last_period, upstream_latest, checked_at FROM meta ORDER BY source")

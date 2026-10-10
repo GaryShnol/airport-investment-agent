@@ -60,17 +60,20 @@ def render_ranking(envelope: dict) -> str:
     # Extra rank columns: a scenario shows the base rank, a non-score sort shows the score rank.
     extra = [(key, label) for key, label in (("score_rank", "Score rank"), ("base_rank", "Base rank"))
              if any(key in r for r in ranked)]
+    # Congestion column only when the ranking used it (On-Time loaded): share of departures delayed >= 15 min.
+    congestion = any("congestion" in r.get("components", {}) for r in ranked)
     rows = []
     for r in ranked:
         comp = r.get("components", {})
         passengers = comp.get("scale", {}).get("passengers")
+        delayed = [_pct(comp.get("congestion", {}).get("dep_delay_rate_pct"))] if congestion else []
         rows.append([r["rank"], *[r.get(key, "n/a") for key, _ in extra], r["iata"], r["name"], f"{r['score']:.3f}",
                      "n/a" if passengers is None else f"{passengers:,}",
                      _pct(comp.get("utilization", {}).get("load_factor_pct")),
                      _pct(comp.get("growth", {}).get("growth_pct"), signed=True),
-                     r["confidence"]])
+                     *delayed, r["confidence"]])
     header = ["Rank", *[label for _, label in extra], "Airport", "Name", "Score", "Passengers", "Load factor",
-              "Growth", "Confidence"]
+              "Growth", *(["Delayed departures"] if congestion else []), "Confidence"]
     table = _table(header, rows)
     total = data.get("ranked_total", len(ranked))
     if total > len(ranked):

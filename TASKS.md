@@ -64,7 +64,8 @@ Last updated: 2026-10-10. Current milestone: **M3**.
 ## M3 - Congestion and depth (Q2 complete, Q4 complete) (current)
 - [x] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
   - Verified: 7,001,619 flights for 2025 and 539,747 for January (exact); 352 airports, all matched in `airports`; 1.47% cancelled. Idempotent by file sha256 (rerun reads nothing); a changed file reloads its month only
-- [ ] P3.2 Congestion component (delay rate, taxi-out, NAS delay per arriving flight) in scoring, with tests
+- [x] P3.2 Congestion component (delay rate, taxi-out, NAS delay per arriving flight) in scoring, with tests
+  - Weight 0.25 restored when On-Time is loaded (renormalized only without demand_context); `airport_metrics(topic="congestion")` with required facts and a headline; congestion in `rank_airports` weights, ranked summaries, the rendered table (delayed departures) and assumptions; `min_ontime_flights: 1000`. New England top 5: BOS, BTV, BGR, PWM, HVN (was BOS, PWM, BTV, BGR)
 - [ ] P3.3 `compare_airports` (LAX vs SNA, normalized)
 - [ ] P3.4 `explain_demand_gap` for SFO: peak months, dense routes, spill proxy, delay-cause mix; confidence capped at medium
 - [ ] P3.5 Rank stability under weight perturbation (seeded)
@@ -109,11 +110,14 @@ Last updated: 2026-10-10. Current milestone: **M3**.
 | UI shows the data rendered from tool envelopes first, the model text second as commentary | Numbers on screen never depend on the model copying them; the model's text is clearly labeled | Some repetition when the model restates figures |
 | Agent in `st.cache_resource`, SQLite opened read-only per call | Streamlit reruns the script per message; keeps memory and avoids thread errors | None |
 | Scenario weights in `rank_airports(weights=...)`: keys given replace the configured weight, the others keep it, then all are renormalized over the built components; validated against `config/weights.yaml` keys, non-negative; result labeled "scenario" with base rank next to scenario rank | "What if growth weighs more?" is answered by the scoring code, not by the model re-weighting numbers; "growth 0.30" reads as "growth 0.30 instead of 0.15, all else as configured", the simplest rule to explain; the base rank keeps the configured methodology visible | Values need not sum to 1, so 0.30 is not the final weight (here 0.375 after renormalizing); the envelope shows the weights actually used. Defaults stay only in the YAML |
+| `min_ontime_flights: 1000` scheduled On-Time departures in the window to score congestion | On-Time covers only large reporting carriers. Peer-set delay rates have an interquartile range of 17.5% to 22.3% (4.8 points); at 1,000 flights the 95% margin on a 20% rate is about 2.5 points, at 365 flights (one a day) about 4.1 points, as wide as the whole range. 1,000 is about three reported departures a day | 13 of 233 peer airports lose congestion (scored on the rest, medium confidence), including GUM (969k passengers, 732 reported departures) and ORH (962) |
+| Congestion index = weighted mean of the three sub-metric percentiles, then ranked again in the peer set | Same scale as every other component; a mean of percentiles is squeezed toward the middle, which would quietly give congestion less than its 0.25 | The final value is a percentile of an index, one step more to explain; the sub-percentiles are shown in the card |
+| On-Time ingest keyed by file sha256; previous-window coverage checked only for T-100 | A republished month reloads alone, a rerun reads nothing; On-Time has no 2024, which must not switch growth off | Hash column in `ingest_log`; T-100 keeps month-based idempotency |
 | Agent constructor: `create_agent` from `langchain.agents` (add the `langchain` package in P2.7) | Installed LangGraph 1.2.14 still ships `create_react_agent`, but it warns it is deprecated since V1.0 and removed in V2.0, moved to `langchain.agents` | One more dependency (`langchain`) |
 
 ## Demo script
 1. Which airports in New England are strong candidates for terminal expansion? (ranking, weights, stability, confidence)
-   - Follow-up: why is PWM second (highest load factor in the region, 82.4%, plus 5.3% growth), and what changes if growth weighs more? (scenario `weights={"growth": 0.30}`: PWM first, BGR second from fourth, BOS third from first)
+   - Follow-up: why did PWM drop from second to fourth once congestion was scored (highest load factor in the region, 82.4%, but low congestion: 18.3% delayed departures, percentile 36), and what changes if growth weighs more? (scenario `weights={"growth": 0.30}`: top 3 unchanged, BOS, BTV, BGR)
 2. Compare LA and Santa Ana congestion. (agent states LA = LAX, offers BUR/LGB/ONT)
 3. What percentage of long-haul flights leave Anchorage? (both numbers, thresholds, cargo explanation)
 4. What is the unmet demand at SFO and why? (proxy, peak months, dense routes, delay causes, confidence capped at medium)

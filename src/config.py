@@ -97,6 +97,7 @@ class ScoringConfig:
     long_haul_min_share: float
     long_haul_sensitivity_miles: tuple[int, ...]
     min_passengers_per_year: int
+    min_ontime_flights: int    # On-Time departures in the window needed to score congestion
     target_load_factor: float
     sensitivity_runs: int
     sensitivity_jitter: float
@@ -142,6 +143,7 @@ def load_scoring(path: Path) -> ScoringConfig:
             long_haul_min_share=float(raw["long_haul_min_share"]),
             long_haul_sensitivity_miles=tuple(int(x) for x in raw["long_haul_sensitivity_miles"]),
             min_passengers_per_year=int(raw["min_passengers_per_year"]),
+            min_ontime_flights=_positive_int("min_ontime_flights", raw["min_ontime_flights"]),
             target_load_factor=float(raw["unmet_demand"]["target_load_factor"]),
             sensitivity_runs=int(raw["sensitivity"]["runs"]),
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),

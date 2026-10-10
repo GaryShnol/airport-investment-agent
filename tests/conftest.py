@@ -98,6 +98,35 @@ def seed_analysis_db(conn):
     conn.commit()
 
 
+# On-Time per airport and month: scheduled departures, delayed >= 15, mean taxi-out, NAS minutes
+# per arrival, cancelled. BTV is under min_ontime_flights (1,000/yr); HYA, ANC, MDW have none.
+ONTIME = {
+    "LAX": (1000, 250, 18.0, 2.0, 10),
+    "SNA": (200, 40, 16.0, 1.5, 2),
+    "ORD": (900, 270, 20.0, 4.0, 30),
+    "BOS": (800, 200, 21.0, 7.0, 20),
+    "PWM": (150, 27, 14.0, 1.0, 3),
+    "BTV": (50, 10, 12.0, 1.0, 1),
+}
+
+
+def seed_ontime(conn):
+    """12 months of 2025 On-Time rows built from ONTIME (counts consistent with the rates)."""
+    rows = []
+    for airport, (dep, del15, taxi, nas, cancelled) in ONTIME.items():
+        flown = dep - cancelled
+        for month in range(1, 13):
+            rows.append((airport, 2025, month, dep, del15, flown, cancelled, taxi * flown, flown, flown,
+                         del15, 0.0, 0.0, nas * flown, 0.0, 0.0))
+    conn.executemany("INSERT INTO ontime_airport_month (airport, year, month, dep_flights, dep_del15, dep_del15_n, "
+                     "dep_cancelled, taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, "
+                     "nas_min, security_min, late_aircraft_min) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    conn.executemany("INSERT INTO ingest_log (source, period, rows, loaded_at) VALUES ('ontime', ?, 1, 'now')",
+                     [(f"2025-{m:02d}",) for m in range(1, 13)])
+    conn.execute("INSERT INTO meta (source, last_period) VALUES ('ontime', '2025-12')")
+    conn.commit()
+
+
 @pytest.fixture
 def scoring_cfg():
     """Real config/weights.yaml with a passenger floor that fits the tiny dataset."""
