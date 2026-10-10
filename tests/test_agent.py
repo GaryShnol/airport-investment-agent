@@ -333,3 +333,37 @@ def test_prompt_rules():
                  "No conclusion without supporting data", "always call resolve_airport first",
                  "ask the user which airport they mean"]:
         assert rule in SYSTEM_PROMPT
+
+
+# --- commentary figure check (P3.6b) ----------------------------------------------------------
+
+def test_sentence_with_a_misread_figure_is_removed_from_the_commentary(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("airport_metrics", airport="ANC", topic="long_haul"),
+                    AIMessage("Cargo drives the gap. 99.9% of passenger flights are long haul."))
+    reply = agent.ask("What share of flights out of Anchorage are long haul?", "t-fig")
+    assert reply.commentary == "Cargo drives the gap."
+    assert reply.figure_check["removed"][0]["reasons"] == ["99.9% is not in the data"]
+
+
+def test_commentary_with_only_unsupported_figures_is_withheld(settings, connect, scoring_cfg):
+    from src.figure_check import WITHHELD
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("airport_metrics", airport="ANC", topic="demand"),
+                    AIMessage("ANC carried 9,999,999 passengers."))
+    reply = agent.ask("How many passengers at Anchorage?", "t-withheld")
+    assert reply.commentary == WITHHELD and reply.figure_check["withheld"] is True
+
+
+def test_follow_up_may_quote_figures_from_an_earlier_card(settings, connect, scoring_cfg):
+    from src import tools
+    with connect() as conn:
+        top = tools.rank_airports(conn, scoring_cfg, "new_england")["data"]["ranked"][0]
+    lf = top["components"]["utilization"]["load_factor_pct"]
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("rank_airports", region="new_england"), AIMessage("Ranked."),
+                    AIMessage(f"{top['iata']} has a load factor of {lf}%."))
+    agent.ask("Which New England airports should expand?", "t-follow")
+    reply = agent.ask("What is the load factor of the first one?", "t-follow")
+    assert reply.tool_calls == [] and reply.commentary == f"{top['iata']} has a load factor of {lf}%."
+    assert reply.figure_check["removed"] == []

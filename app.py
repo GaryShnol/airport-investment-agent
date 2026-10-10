@@ -88,6 +88,9 @@ def show_assistant(msg: dict) -> None:
     st.markdown("##### Commentary (model)")
     st.caption("Written by the language model about the data above; the figures come from the data card.")
     st.markdown(msg["commentary"] or "_(the model returned no text)_")
+    if removed := msg.get("figure_check", {}).get("removed"):
+        st.caption(f"Figure check: {len(removed)} sentence(s) removed because their figures are not in the data "
+                   "(" + "; ".join(r for item in removed for r in item["reasons"]) + ").")
     with st.expander(f"Tools called ({len(msg['tool_calls'])})"):
         st.json([{**c, "result": r} for c, r in zip(msg["tool_calls"], msg["tool_results"])], expanded=False)
 
@@ -101,7 +104,8 @@ def answer(agent: agent_mod.AirportAgent, settings: Settings, question: str) -> 
         return {"error": f"Error calling the model ({settings.llm_provider}/{settings.llm_model}): "
                          f"{type(exc).__name__}: {exc}. Check that the model server is running and "
                          "the settings in .env."}
-    return {"tool_calls": reply.tool_calls, "tool_results": reply.tool_results, "commentary": reply.commentary}
+    return {"tool_calls": reply.tool_calls, "tool_results": reply.tool_results, "commentary": reply.commentary,
+            "figure_check": reply.figure_check}
 
 
 def main() -> None:

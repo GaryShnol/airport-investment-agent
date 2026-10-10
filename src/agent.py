@@ -26,6 +26,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from src import store
 from src.config import ConfigError, ScoringConfig, Settings, get_settings, load_scoring
+from src.figure_check import check_commentary
 from src.llm import get_chat_model
 from src.prompts import SYSTEM_PROMPT
 from src.render import render_reply
@@ -248,6 +249,7 @@ class Reply:
     missing_facts: list[dict] = field(default_factory=list)  # required facts appended by ensure_facts
     commentary: str = ""                                     # the model's text, reasoning stripped
     fallback: bool = False                                   # commentary is a fixed message (empty reply)
+    figure_check: dict = field(default_factory=dict)         # sentences removed by the figure check
 
 
 def _fallback(raw: str, results: list[Any]) -> str:
@@ -275,11 +277,17 @@ class AirportAgent:
         results = [_parse(m.content) for m in turn if isinstance(m, ToolMessage)]
         final = next((m for m in reversed(turn) if isinstance(m, AIMessage)), None)
         raw = strip_reasoning(final.text if final else "")
-        answer = drop_restated_headlines(raw, results)
+        # Every tool result of the thread: a follow-up may quote an earlier card.
+        check = check_commentary(drop_restated_headlines(raw, results),
+                                 [_parse(m.content) for m in messages if isinstance(m, ToolMessage)])
+        if check.removed:
+            log.info("Figure check removed %d sentence(s) from the commentary.", len(check.removed))
+        answer = check.text
         fallback = not answer
         if fallback:
             answer = _fallback(raw, results)
-        return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results), answer, fallback)
+        return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results), answer, fallback,
+                     check.as_dict())
 
 
 def build_agent(
@@ -334,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Required facts the commentary omits: {len(reply.missing_facts)} (all are in the data below)")
     print("\nData (from tools):\n" + (render_reply(reply.tool_calls, reply.tool_results) or "none"))
     print("\nCommentary (model):\n" + reply.commentary)
+    for item in reply.figure_check.get("removed", []):
+        print(f"  [removed by the figure check: {'; '.join(item['reasons'])}]")
     return 0
 
 
