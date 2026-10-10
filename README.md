@@ -120,7 +120,7 @@ graph TD
     J --> C
 
     D -- "Enough data" --> K["LLM writes answer using only envelope numbers"]
-    K --> L["Soft output check: numbers appear in tool results (rounding tolerant)"]
+    K --> L["Figure check in code: sentences with figures not in the tool results are removed; ensure_facts adds missing required facts"]
     L --> N["Final response: answer, period, assumptions, confidence, weights, freshness warning if behind"]
 
     subgraph OFFLINE ["Offline refresh (CLI, never during chat)"]
@@ -170,13 +170,21 @@ Each answer shows the figures from the data tools first, then the model's commen
 
 Coming (see TASKS.md): `docker compose up` (ships with a prebuilt `seed/airport.db`).
 
+## Testing
+- `uv run pytest`: unit and golden tests, no model and no network (CI runs them on every push). The golden tests (`tests/test_golden.py`) put the four exam questions and the edge cases (unknown airport, unsupported region, scenario weights, ambiguity) through the agent's tools on a small fixture database; agent tests use a scripted fake model.
+- `uv run python scripts/eval.py`: the eval harness, and the model-comparison tool. It asks the questions in [eval/questions.yaml](eval/questions.yaml) (the four exam questions, follow-ups in one conversation, single airports, an unknown airport, an unsupported region, an out-of-scope question and a prompt-injection attempt) to the real agent with the model set in `.env`, and checks per question: the tools called against the expected ones, the must-have facts, the commentary figure check, an empty or cut-off reply, and the time taken. To compare models, change `LLM_PROVIDER` / `LLM_MODEL` in `.env` and run it again. Each answer is appended to `eval/results/<timestamp>-<model>.jsonl` as soon as it is done (a stopped run keeps its results; the folder is not committed), and a markdown table is printed at the end.
+  - `--only q3_anchorage_long_haul,q4_sfo_unmet_demand` runs some questions; `--out-dir` changes the folder; `--report eval/results/<file>.jsonl` re-prints the table of a saved run.
+  - Not run in CI: it needs a model and the real database, and a local model takes minutes per question.
+
 ## Project layout
 ```
 app.py      Streamlit chat (data from tools first, model commentary second)
 src/        config, LLM provider registry, ingest, store, scoring, tools, render, agent
 config/     scoring methodology (weights.yaml)
 docs/       design plan (and later design.md)
-tests/      unit tests
+tests/      unit and golden tests (CI)
+eval/       eval questions; results/ (not committed) from scripts/eval.py
+scripts/    eval.py (eval harness, model comparison)
 seed/       prebuilt aggregated database (committed)
 data/       raw downloads (not committed)
 ```
