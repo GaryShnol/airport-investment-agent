@@ -145,7 +145,7 @@ def render_excluded(envelope: dict) -> str:
     excluded = data.get("excluded") if isinstance(data, dict) else None
     if not excluded:
         return ""
-    lines = [f"- {item}" for item in excluded]
+    lines = [f"- {item['iata']}: {item['reason']}" if isinstance(item, dict) else f"- {item}" for item in excluded]
     more = data.get("excluded_total", len(excluded)) - len(excluded)
     if more > 0:
         lines.append(f"- and {more} more, smaller still")

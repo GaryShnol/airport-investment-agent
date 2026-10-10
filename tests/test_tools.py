@@ -211,7 +211,8 @@ def test_rank_airports_region(db, scoring_cfg):
     assert d["region"] == "new_england"
     assert [x["rank"] for x in d["ranked"]] == [1, 2] and d["ranked_total"] == 3
     assert {x["iata"] for x in d["ranked"]} <= {"BOS", "PWM", "BTV"}
-    assert d["excluded"] == [e for e in d["excluded"] if e.startswith("HYA")] and d["excluded_total"] == 1
+    assert [e["iata"] for e in d["excluded"]] == ["HYA"] and d["excluded_total"] == 1
+    assert d["excluded"][0]["name"] == "Cape Cod Gateway Airport"
     assert "weights_configured" not in d  # only the weights applied reach the model
     assert set(d["weights_used"]) == {"utilization", "scale", "growth", "long_haul"}
     weights = facts(r)["Weights used (renormalized without congestion, demand_context)"]
@@ -427,7 +428,7 @@ def test_national_ranking_covers_the_whole_peer_set(db, scoring_cfg):
     d = r["data"]
     assert d["region"] == "national" and d["states"] == "all US states and territories"
     assert d["ranked_total"] == d["peer_set_size"] == 8  # the 9 seeded origins except HYA
-    assert d["excluded"] == [e for e in d["excluded"] if e.startswith("HYA")]
+    assert [e["iata"] for e in d["excluded"]] == ["HYA"]
 
 
 # --- congestion (On-Time loaded) -----------------------------------------------------------

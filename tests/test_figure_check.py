@@ -189,6 +189,25 @@ def test_restricted_mode_catches_names_without_codes_but_not_unnamed_claims(sent
     assert bool(out.removed) is expected_removed
 
 
+# lfm2.5:8b in the fresh-clone run (P5.7): excluded airports named, with a wrong reason (they are
+# below the passenger floor, not missing demand context). Excluded entries carry code and name.
+NE_WITH_EXCLUDED = {**NE_RANKING, "data": {**NE_RANKING["data"], "excluded": [
+    {"iata": "MVY", "name": "Martha's Vineyard Airport", "reason": "87,587 passenger-service passengers, below the 100,000 floor"},
+    {"iata": "PSM", "name": "Portsmouth International Airport at Pease",
+     "reason": "85,102 passenger-service passengers, below the 100,000 floor"}]}}
+
+
+@pytest.mark.parametrize("sentence", [
+    "Some components (e.g., demand context for MVY, PSM) are missing due to lack of data; these gaps are noted.",
+    "Portsmouth and Martha's Vineyard lack demand context data.",
+])
+def test_restricted_mode_drops_sentences_naming_excluded_airports(sentence):
+    caveat = "Scores are relative to the national peer set."
+    out = restrict_commentary(f"{sentence} {caveat}", [NE_WITH_EXCLUDED])
+    assert out.text == caveat
+    assert out.removed[0]["reasons"][-1].startswith("names an airport (")
+
+
 def test_restricted_mode_with_nothing_left_hides_the_commentary():
     out = restrict_commentary("BOS ranks first with 0.799.", [NE_RANKING])
     assert out.hidden and out.text == "" and not out.withheld

@@ -634,8 +634,10 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         "mode": "scenario" if scenario else "base", "sort_by": sort_by,
         "ranked": ranked,
         "ranked_total": len(ranking.ranked),
-        # Largest first; the rest are smaller still and below the same floor.
-        "excluded": [f"{r['iata']}: {r['reason']}" for _, r in ranking.excluded.head(MAX_LISTED).iterrows()],
+        # Largest first; the rest are smaller still and below the same floor. Structured (code and
+        # name), so the commentary check knows these airports too (src/figure_check.py).
+        "excluded": [{"iata": r["iata"], "name": r["name"] if isinstance(r["name"], str) else None,
+                      "reason": r["reason"]} for _, r in ranking.excluded.head(MAX_LISTED).iterrows()],
         "excluded_total": len(ranking.excluded),
         # Only the weights actually applied: listing the configured ones too (with unavailable
         # components) made small models mix the two sets. Configured weights are in data_status.
