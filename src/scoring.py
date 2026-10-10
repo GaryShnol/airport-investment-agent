@@ -71,6 +71,9 @@ NOT_BUILT = {
     "demand_context": "Census data not loaded yet (milestone M4)",
 }
 
+# Region name for a ranking over every US airport in the peer set (no state filter).
+NATIONAL = "national"
+
 # Percentiles are k/n and weights are ratios, so exact ties in the score are common.
 SCORE_DECIMALS = 9
 
@@ -174,15 +177,20 @@ def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreRes
 
 
 def rank(result: ScoreResult, region: str, cfg: ScoringConfig) -> RegionRanking:
-    """Rank the peer-set airports of a configured region; list its other airports as excluded.
+    """Rank the peer-set airports of a configured region (or NATIONAL: every airport with a US
+    state, i.e. the whole peer set); list the region's other airports as excluded.
 
     Percentiles stay national (peer set); the region only filters. Region membership is by
-    state, from `cfg.regions`.
+    state, from `cfg.regions`; NATIONAL has no state list (`states` is empty).
     """
-    if region not in cfg.regions:
-        raise ValueError(f"Unknown region {region!r}; configured: {sorted(cfg.regions)}")
-    states = cfg.regions[region]
-    t = result.table[result.table["state"].isin(states)]
+    if region == NATIONAL:
+        states: tuple[str, ...] = ()
+        t = result.table[result.table["state"].notna()]
+    elif region in cfg.regions:
+        states = cfg.regions[region]
+        t = result.table[result.table["state"].isin(states)]
+    else:
+        raise ValueError(f"Unknown region {region!r}; configured: {sorted(cfg.regions)} or {NATIONAL!r}")
     ranked = t[t["in_peer_set"]].copy()
     ranked.insert(0, "rank", range(1, len(ranked) + 1))
     excluded = t[~t["in_peer_set"]].sort_values("passengers", ascending=False, kind="stable").copy()

@@ -103,7 +103,11 @@ def render_assumptions(envelope: dict) -> str:
 
 
 def render_error(envelope: dict) -> str:
-    text = f"**Tool error:** {envelope['error']}"
+    """Error line (unless the headline above already gives a fuller sentence), facts, candidates."""
+    parts = [] if render_headline(envelope) else [f"**Tool error:** {envelope['error']}"]
+    if envelope.get("facts"):  # explained errors: no match, unknown region
+        parts.append(render_facts(envelope))
+    text = "\n\n".join(parts)
     if envelope.get("candidates"):
         text += f"\n\nCandidates: {', '.join(map(str, envelope['candidates']))}"
     if envelope.get("default"):

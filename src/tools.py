@@ -19,6 +19,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
+from difflib import SequenceMatcher
 from typing import Callable, Literal, get_args
 
 from langchain_core.tools import BaseTool, tool
@@ -34,6 +35,8 @@ MAX_LISTED = 5
 # them). All facts are always returned; focus only decides what the answer must mention.
 Focus = Literal["long_haul", "load_factor", "growth", "all"]
 FOCUS_VALUES = get_args(Focus)
+# resolve_airport suggestions: difflib ratio needed to suggest an airport for an unmatched name.
+SUGGEST_MIN_SIMILARITY = 0.6
 # Ranked airports named in a ranking headline; the table lists the rest.
 HEADLINE_TOP = 3
 LOAD_FACTOR_PROXY = "load factor = passengers / seats on passenger service: a demand-pressure proxy, not terminal utilization"
@@ -131,13 +134,61 @@ def _resolved(query: str, row: dict) -> str:
     return f"'{query}' = {row['iata']} ({row['name']}, {row['state'] or 'no US state'})."
 
 
+def _similarity(query: str, row: dict) -> float:
+    """Best difflib ratio of the query against the airport's city, name and (for 3 letters) code."""
+    q = query.lower()
+    fields = [row["municipality"], row["name"]] + ([row["iata"]] if len(q) == 3 else [])
+    return max((SequenceMatcher(None, q, f.lower()).ratio() for f in fields if f), default=0.0)
+
+
+def _suggestions(conn: sqlite3.Connection, query: str, window: store.Window) -> list[dict]:
+    """Closest airports with passenger service (typos such as 'Anchorge'), most similar first."""
+    scored = [(_similarity(query, r), r) for r in store.served_airports(conn, window)] if query else []
+    close = sorted(((s, r) for s, r in scored if s >= SUGGEST_MIN_SIMILARITY),
+                   key=lambda sr: (-sr[0], -sr[1]["passengers"], sr[1]["iata"]))
+    return [_brief(r) for _, r in close[:MAX_LISTED]]
+
+
+def _no_match(conn: sqlite3.Connection, query: str, window: store.Window | None) -> dict:
+    """Explicit "no match" envelope: a required fact, suggestions and a hint, never an empty result."""
+    suggestions = _suggestions(conn, query, window) if window else []
+    codes = [s["iata"] for s in suggestions]
+    message = f"No airport with passenger service matches '{query}'" if query else "Empty airport name"
+    named = ", ".join(f"{s['iata']} ({s['name']})" for s in suggestions)
+    hint = (f"Did you mean: {named}?" if suggestions
+            else "Try the 3-letter IATA code (e.g. SFO) or the city the airport serves.")
+    return _error(conn, message, codes, headline=f"{message}. {hint}", suggestions=suggestions,
+                  facts=[fact("Match", f"no match for '{query}'", True),
+                         fact("Suggestions", ", ".join(codes) or "none close; " + hint)])
+
+
+def _matches(conn: sqlite3.Connection, query: str, window: store.Window) -> tuple[list[dict], str]:
+    """Matching airports, best first, and how they matched ("iata" or "name or city").
+
+    An exact IATA code wins outright. Otherwise airports with passenger service whose name or
+    city contains the query, ranked by passengers in the window (so "New York" puts JFK ahead
+    of "New York Stewart International")."""
+    if len(query) == 3 and query.isalpha():
+        rows = store.find_airports(conn, "iata", query, window)
+        if rows:
+            return rows[:1], "iata"
+    found: dict[str, dict] = {}
+    for column in ("name", "municipality"):
+        for r in store.find_airports(conn, column, query, window):
+            if r["passengers"] > 0:
+                found.setdefault(r["iata"], r)
+    rows = sorted(found.values(), key=lambda r: (-r["passengers"], r["iata"]))
+    return rows, "name or city"
+
+
 def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> dict:
     """Name, city or code -> IATA. Order: configured metro alias (ambiguous, with a default),
-    exact IATA, airport name, then municipality. Only airports with passenger service in the
-    window count for name and city matches; several matches -> ambiguous with candidates."""
+    exact IATA, then name or city ranked by passengers. Several matches -> `ambiguous` with the
+    best match and the alternatives (the agent asks which one); none -> an explicit no-match
+    envelope with suggestions."""
     query = (text or "").strip()
     if not query:
-        return _error(conn, "Empty airport name")
+        return _no_match(conn, query, None)
     window = _window(conn)
 
     alias = cfg.metro_aliases.get(query.upper())
@@ -146,34 +197,35 @@ def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> 
         for code in alias["candidates"]:
             rows = store.find_airports(conn, "iata", code, window)
             candidates.append(_brief(rows[0]) if rows else {"iata": code})
-        data = {"query": query, "ambiguous": True, "default": alias["default"], "candidates": candidates}
+        others = [c["iata"] for c in candidates if c["iata"] != alias["default"]]
+        best = next(c for c in candidates if c["iata"] == alias["default"])
+        data = {"query": query, "ambiguous": True, "default": alias["default"], "best": best,
+                "candidates": candidates, "alternatives": [c for c in candidates if c is not best]}
         assumptions = [f"'{query}' is ambiguous; default definition {query} = {alias['default']} (configured)"]
         facts = [fact("Default definition", f"{query} = {alias['default']}"),
-                 fact("Other candidates", ", ".join(c["iata"] for c in candidates if c["iata"] != alias["default"]))]
-        others = [c["iata"] for c in candidates if c["iata"] != alias["default"]]
+                 fact("Other candidates", ", ".join(others))]
         headline = f"'{query}' covers several airports; default {query} = {alias['default']}, others: {', '.join(others)}."
         return _envelope(conn, window, data, assumptions, "medium", facts, headline=headline)
 
-    if len(query) == 3 and query.isalpha():
-        rows = store.find_airports(conn, "iata", query, window)
-        if rows:
-            return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])}, [], "high",
-                             [_airport_fact(rows[0])], headline=_resolved(query, rows[0]))
-
-    for column in ("name", "municipality"):
-        rows = [r for r in store.find_airports(conn, column, query, window) if r["passengers"] > 0]
-        if len(rows) == 1:
-            return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])},
-                             [f"matched on airport {column}"], "high", [_airport_fact(rows[0])],
-                             headline=_resolved(query, rows[0]))
-        if len(rows) > 1:
-            data = {"query": query, "ambiguous": True, "default": None,
-                    "candidates": [_brief(r) for r in rows[:MAX_LISTED]]}
-            codes = ", ".join(c["iata"] for c in data["candidates"])
-            return _envelope(conn, window, data, [f"several airports match on {column}; ask the user"], "low",
-                             [fact("Candidates", codes)],
-                             headline=f"'{query}' matches several airports: {codes}.")
-    return _error(conn, f"No airport with passenger service matches '{query}'")
+    rows, how = _matches(conn, query, window)
+    if not rows:
+        return _no_match(conn, query, window)
+    if len(rows) == 1:
+        return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])},
+                         [] if how == "iata" else [f"matched on airport {how}"], "high",
+                         [_airport_fact(rows[0])], headline=_resolved(query, rows[0]))
+    shown = [_brief(r) for r in rows[:MAX_LISTED]]
+    best, alternatives = shown[0], shown[1:]
+    data = {"query": query, "ambiguous": True, "default": None, "best": best, "candidates": shown,
+            "alternatives": alternatives, "matches_total": len(rows)}
+    alt = ", ".join(a["iata"] for a in alternatives)
+    facts = [fact("Best match (most passengers)", f"{best['iata']} ({best['name']})"),
+             fact("Alternatives", alt + (f" and {len(rows) - len(shown)} more" if len(rows) > len(shown) else ""))]
+    return _envelope(conn, window, data,
+                     [f"{len(rows)} airports match on {how}; ranked by passengers; ask the user which one"],
+                     "low", facts,
+                     headline=f"'{query}' matches {len(rows)} airports: best match {best['iata']} "
+                              f"({best['name']}), alternatives {alt}.")
 
 
 def _resolve_code(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> tuple[str | None, dict | None]:
@@ -184,7 +236,9 @@ def _resolve_code(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> tu
         return None, result
     if data["ambiguous"]:
         return None, _error(conn, f"'{text}' is ambiguous; ask the user or state the definition used",
-                            [c["iata"] for c in data["candidates"]], default=data["default"])
+                            [c["iata"] for c in data["candidates"]], headline=result["headline"],
+                            default=data["default"], best=data["best"]["iata"],
+                            alternatives=[a["iata"] for a in data["alternatives"]])
     return data["iata"], None
 
 
@@ -295,6 +349,23 @@ def _metrics_headline(data: dict, focus: str, window: store.Window) -> str:
 
 # --- rank_airports -----------------------------------------------------------------------
 
+def _region_names(cfg: ScoringConfig) -> list[str]:
+    return [*sorted(cfg.regions), scoring.NATIONAL]
+
+
+def _unknown_region(conn: sqlite3.Connection, cfg: ScoringConfig, region: str) -> dict:
+    """Deterministic answer for a region that is not configured (e.g. California): the configured
+    regions with their states, and the two ways forward."""
+    configured = "; ".join(f"{name} ({', '.join(states)})" for name, states in sorted(cfg.regions.items()))
+    message = (f"Region '{region}' is not configured. Configured regions: {configured}. "
+               f"Use region '{scoring.NATIONAL}' for a ranking of all US airports, "
+               "or ask about a specific airport (airport_metrics).")
+    return _error(conn, message, _region_names(cfg),
+                  facts=[fact("Region", f"'{region}' is not configured", True),
+                         fact("Configured regions", configured, True),
+                         fact("Suggestion", f"national ranking (region '{scoring.NATIONAL}') or a specific airport")])
+
+
 def _region_key(region: str) -> str:
     return (region or "").strip().lower().replace("-", "_").replace(" ", "_")
 
@@ -346,8 +417,8 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
     The list is capped at `cfg.max_ranked` airports.
     """
     key = _region_key(region)
-    if key not in cfg.regions:
-        return _error(conn, f"Unknown region '{region}'", sorted(cfg.regions))
+    if key not in cfg.regions and key != scoring.NATIONAL:
+        return _unknown_region(conn, cfg, region)
     if int(top_n) < 1:
         return _error(conn, "top_n must be at least 1")
     sort_by = (sort_by or "score").strip().lower()
@@ -397,7 +468,8 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
     scores = [x["score"] for x in ranked]
     ties = sorted({s for s in scores if scores.count(s) > 1}) if sort_by == "score" else []
     data = {
-        "region": key, "states": list(ranking.states), "peer_set_size": result.peer_set_size,
+        "region": key, "states": list(ranking.states) or "all US states and territories",
+        "peer_set_size": result.peer_set_size,
         "mode": "scenario" if scenario else "base", "sort_by": sort_by,
         "ranked": ranked,
         "ranked_total": len(ranking.ranked),
@@ -511,7 +583,7 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
     @tool("rank_airports", description=(
         "Rank airports in a region as terminal-expansion candidates: scores, component percentiles "
         "with raw values, the weights used, excluded airports, confidence. "
-        f"region must be one of: {', '.join(sorted(cfg.regions))}. "
+        f"region must be one of: {', '.join(_region_names(cfg))} ({scoring.NATIONAL} = all US airports). "
         "sort_by: score (default), or growth, load_factor, passengers to list the airports by that metric. "
         "weights: only for what-if questions (e.g. 'what if growth weighs more'): a scenario override "
         f"such as {{\"growth\": 0.3}}; keys: {', '.join(cfg.weights)}. Omit it otherwise."))

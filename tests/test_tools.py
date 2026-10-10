@@ -139,8 +139,8 @@ def test_airport_metrics_unknown_focus_is_an_error(db, scoring_cfg):
     assert r["data"] is None and "focus must be one of" in r["error"]
 
 
-def test_error_envelope_has_no_facts(db, scoring_cfg):
-    assert tools.rank_airports(db, scoring_cfg, "Texas")["facts"] == []
+def test_plain_error_envelope_has_no_facts(db, scoring_cfg):
+    assert tools.airport_metrics(db, scoring_cfg, "ANC", focus="delays")["facts"] == []
 
 
 def test_airport_metrics_custom_threshold_is_added_to_sensitivity(db, scoring_cfg):
@@ -185,7 +185,7 @@ def test_rank_airports_region(db, scoring_cfg):
 
 def test_rank_airports_unknown_region(db, scoring_cfg):
     r = check_envelope(tools.rank_airports(db, scoring_cfg, "Texas"))
-    assert r["data"] is None and r["candidates"] == ["new_england"]
+    assert r["data"] is None and r["candidates"] == ["new_england", "national"]
 
 
 # --- LangChain wrappers ------------------------------------------------------------------
@@ -319,3 +319,68 @@ def test_rank_tool_schema_exposes_sort_by_and_weights(scoring_cfg):
     props = rank.args
     assert props["sort_by"]["enum"] == ["score", "growth", "load_factor", "passengers"]
     assert "weights" in props and "growth" in rank.description
+
+
+# --- resolve_airport ranking, no match, regions (P2.12) -------------------------------------
+
+def test_no_match_is_explicit_with_suggestions(db, scoring_cfg):
+    r = check_envelope(tools.resolve_airport(db, scoring_cfg, "Anchorge"))
+    assert r["data"] is None and r["error"] == "No airport with passenger service matches 'Anchorge'"
+    assert facts(r)["Match"] == {"value": "no match for 'Anchorge'", "required": True}
+    assert r["suggestions"][0]["iata"] == "ANC" and r["candidates"][0] == "ANC"
+    assert r["headline"].startswith("No airport with passenger service matches 'Anchorge'. Did you mean: ANC (")
+
+
+def test_no_match_without_close_names_still_gives_a_hint(db, scoring_cfg):
+    r = tools.resolve_airport(db, scoring_cfg, "Atlantis")
+    assert r["suggestions"] == [] and "IATA code" in r["headline"]
+    assert facts(r)["Match"]["required"] is True
+
+
+def test_several_matches_return_best_and_alternatives(db, scoring_cfg):
+    r = tools.resolve_airport(db, scoring_cfg, "Chicago")
+    d = r["data"]
+    assert d["ambiguous"] is True and d["best"]["iata"] == "ORD"
+    assert [a["iata"] for a in d["alternatives"]] == ["MDW"] and d["matches_total"] == 2
+    assert r["headline"] == ("'Chicago' matches 2 airports: best match ORD (Chicago O'Hare International "
+                             "Airport), alternatives MDW.")
+
+
+def test_name_and_city_matches_rank_by_passengers(db, scoring_cfg):
+    # a small airport with "Boston" in its name must not beat BOS (city Boston, far more passengers)
+    db.execute("INSERT INTO airports (iata, name, state, municipality) VALUES "
+               "('BSF', 'Boston Small Field', 'MA', 'Quincy')")
+    db.executemany("INSERT INTO t100_route_month VALUES ('BSF', NULL, 'BOS', 2025, ?, 'pax', 10, 1, 9, 5)",
+                   [(m,) for m in range(1, 13)])
+    d = tools.resolve_airport(db, scoring_cfg, "boston")["data"]
+    assert d["best"]["iata"] == "BOS" and [a["iata"] for a in d["alternatives"]] == ["BSF"]
+
+
+def test_exact_iata_wins_over_name_matches(db, scoring_cfg):
+    d = tools.resolve_airport(db, scoring_cfg, "ORD")["data"]
+    assert d == {"query": "ORD", "ambiguous": False, "iata": "ORD", "name": "Chicago O'Hare International Airport",
+                 "state": "IL"}
+
+
+def test_metrics_for_an_ambiguous_name_return_best_and_alternatives(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "Chicago")
+    assert r["data"] is None and r["best"] == "ORD" and r["alternatives"] == ["MDW"]
+    assert r["headline"].startswith("'Chicago' matches 2 airports")
+
+
+def test_unsupported_region_lists_configured_regions_and_suggests_national(db, scoring_cfg):
+    r = check_envelope(tools.rank_airports(db, scoring_cfg, "California"))
+    assert r["data"] is None
+    assert r["error"] == ("Region 'California' is not configured. Configured regions: new_england "
+                          "(MA, CT, RI, NH, VT, ME). Use region 'national' for a ranking of all US airports, "
+                          "or ask about a specific airport (airport_metrics).")
+    assert r["candidates"] == ["new_england", "national"]
+    assert facts(r)["Configured regions"] == {"value": "new_england (MA, CT, RI, NH, VT, ME)", "required": True}
+
+
+def test_national_ranking_covers_the_whole_peer_set(db, scoring_cfg):
+    r = check_envelope(tools.rank_airports(db, scoring_cfg, "national", top_n=50))
+    d = r["data"]
+    assert d["region"] == "national" and d["states"] == "all US states and territories"
+    assert d["ranked_total"] == d["peer_set_size"] == 8  # the 9 seeded origins except HYA
+    assert d["excluded"] == [e for e in d["excluded"] if e.startswith("HYA")]
