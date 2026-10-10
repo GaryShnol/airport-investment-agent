@@ -38,7 +38,7 @@ Every tool returns:
 
 ## Definitions (fixed; used by ingest, scoring and tools)
 - Passenger service: T-100 rows with AIRCRAFT_CONFIG 1 (passenger) or 3 (combi) and DEPARTURES_PERFORMED > 0. Cargo (2) and undocumented (4) are excluded from passenger metrics; they count only in "all flights" figures.
-- Peer set: airports with a US state (`ORIGIN_STATE_ABR` not null) and at least `min_departures_per_year` passenger-service departures in the window. Percentiles are computed inside this set.
+- Peer set: airports with a US state or territory (`airports.state`, from OurAirports) and at least `min_departures_per_year` passenger-service departures in the window. Percentiles are computed inside this set. T-100 `ORIGIN_STATE_ABR` is not used for this: it also holds Canadian province codes (YYZ = ON) and TT for the Pacific territories. 2025: 188 airports (193 with the T-100 field).
 - Window: trailing 12 complete months ending at `min(last_period)`; growth compares with the previous 12.
 - On-Time sides: departure delay rate, taxi-out and cancellations belong to the origin airport. Arrival counts and delay-cause minutes belong to the destination airport, because BTS records delay causes for arrival delays.
 

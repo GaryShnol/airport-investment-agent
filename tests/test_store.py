@@ -1,5 +1,6 @@
 import sqlite3
 
+import pandas as pd
 import pytest
 
 from src import store
@@ -57,3 +58,65 @@ def test_route_totals_filters(db):
 def test_route_totals_empty(db):
     with store.connect_ro(db) as conn:
         assert store.route_totals(conn, "XXX", 2025)["departures"] == 0
+
+
+# --- analysis window and per-airport metrics (tiny in-memory DB) ---------------------------
+
+ALL_2024_2025 = [f"{y}-{m:02d}" for y in (2024, 2025) for m in range(1, 13)]
+
+
+def _log(conn, source, periods):
+    conn.executemany("INSERT INTO ingest_log VALUES (?, ?, 1, 'now')", [(source, p) for p in periods])
+    conn.execute("INSERT INTO meta (source, last_period) VALUES (?, ?)", (source, max(periods)))
+
+
+@pytest.fixture
+def mem():
+    conn = sqlite3.connect(":memory:")
+    store.init_db(conn)
+    conn.executemany("INSERT INTO t100_route_month VALUES (?,?,?,?,?,?,?,?,?,?)", [
+        ("BOS", "MA", "LAX", 2025, 3, "pax", 2611, 10, 1000, 900),
+        ("BOS", "MA", "LAX", 2025, 4, "combi", 2611, 2, 200, 150),
+        ("BOS", "MA", "PWM", 2025, 4, "pax", 98, 5, 500, 300),
+        ("BOS", "MA", "ANC", 2025, 4, "cargo", 3000, 7, 0, 0),      # cargo: not passenger service
+        ("BOS", "MA", "LAX", 2024, 5, "pax", 2611, 9, 900, 800),    # previous window
+        ("BOS", "MA", "LAX", 2023, 12, "pax", 2611, 9, 900, 999),   # before the previous window
+        ("PWM", "ME", "BOS", 2024, 6, "pax", 98, 3, 300, 200),      # previous window only -> no row
+        ("YVR", None, "BOS", 2025, 1, "pax", 2000, 1, 100, 90),     # foreign origin
+        ("YYZ", "ON", "BOS", 2025, 1, "pax", 500, 1, 100, 90),      # T-100 gives Canadian provinces a state
+    ])
+    conn.execute("INSERT INTO airports VALUES ('BOS', 'Logan', 'MA', 'new_england', NULL, 0, 0)")
+    _log(conn, "t100", ALL_2024_2025)
+    yield conn
+    conn.close()
+
+
+def test_window_full_coverage(mem):
+    w = store.analysis_window(mem)
+    assert (w.start, w.end, w.prev_start, w.prev_end) == ("2025-01", "2025-12", "2024-01", "2024-12")
+    assert (w.months, w.prev_months, w.label) == (12, 12, "2025-01..2025-12")
+
+
+def test_window_ends_at_the_slowest_source(mem):
+    _log(mem, "ontime", [f"2025-{m:02d}" for m in range(1, 11)])
+    w = store.analysis_window(mem)
+    assert (w.start, w.end, w.prev_start, w.prev_end) == ("2024-11", "2025-10", "2023-11", "2024-10")
+    assert w.months == 10  # on-time has only 2025-01..2025-10 inside the window
+
+
+def test_window_requires_data():
+    conn = sqlite3.connect(":memory:")
+    store.init_db(conn)
+    with pytest.raises(ValueError, match="ingest"):
+        store.analysis_window(conn)
+
+
+def test_airport_metrics(mem):
+    df = store.airport_metrics(mem, store.analysis_window(mem), long_haul_miles=2500).set_index("iata")
+    assert list(df.index) == ["BOS", "YVR", "YYZ"]
+    bos = df.loc["BOS"]
+    assert (bos["departures"], bos["seats"], bos["passengers"]) == (17, 1700, 1350)
+    assert (bos["long_haul_departures"], bos["months_active"], bos["prev_passengers"]) == (12, 2, 800)
+    assert (bos["state"], bos["region"], bos["name"]) == ("MA", "new_england", "Logan")
+    assert df.loc[["YVR", "YYZ"], "state"].isna().all()  # foreign: never in the peer set
+    assert df.loc["YVR", "prev_passengers"] == 0

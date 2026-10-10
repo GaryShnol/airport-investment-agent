@@ -50,7 +50,8 @@ def read_t100(path: Path) -> pd.DataFrame:
 
     df = pd.DataFrame({
         "origin": raw["ORIGIN"].str.strip(),
-        # Null for foreign origins; the peer set needs a US state (docs/plan.md, Definitions).
+        # Null for most foreign origins, but Canadian origins carry a province code; the peer set
+        # therefore uses airports.state, not this column (docs/plan.md, Definitions).
         "origin_state": raw["ORIGIN_STATE_ABR"].str.strip().replace("", None),
         "dest": raw["DEST"].str.strip(),
         "year": raw["YEAR"].astype(int),
