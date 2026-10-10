@@ -1,22 +1,23 @@
 # Scoring methodology. Change here, not in code. Documented in docs/design.md.
-version: 1
+version: 2
 
 weights:               # must sum to 1.0
-  utilization: 0.30    # seat load factor (demand pressure proxy)
-  congestion: 0.30
-  long_haul: 0.15
+  utilization: 0.25    # seat load factor on passenger service (demand pressure proxy)
+  congestion: 0.25     # delays and taxi-out (capacity strain)
+  scale: 0.15          # annual passengers: keeps the ranking about money, not only pressure
   growth: 0.15         # passenger growth, window vs previous 12 months
+  long_haul: 0.10      # wide-body and international facility signal; secondary, distorted by cargo
   demand_context: 0.10 # metro population growth (Census)
 
 congestion:            # must sum to 1.0. Cancellations are shown but not scored (mostly weather).
-  dep_delay_rate: 0.40
-  taxi_out: 0.30
-  nas_delay_per_flight: 0.30
+  dep_delay_rate: 0.40       # departures delayed >= 15 min, at the origin airport
+  taxi_out: 0.30             # mean taxi-out minutes, at the origin airport
+  nas_delay_per_arrival: 0.30  # NAS-caused delay minutes per arriving flight (BTS records causes for arrivals)
 
 long_haul_miles: 2500
 long_haul_sensitivity_miles: [1500, 2500, 3000]
 
-min_departures_per_year: 5000   # to be ranked
+min_departures_per_year: 5000   # passenger-service departures, to be in the peer set
 
 unmet_demand:
   target_load_factor: 0.80      # spill proxy: seats needed to bring dense routes down to this

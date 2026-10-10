@@ -29,6 +29,7 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - T-100: read AIRCRAFT_CONFIG/CLASS/AIRCRAFT_TYPE as strings; config 1=pax, 2=cargo, 3=both, 4=undocumented. Drop rows with DEPARTURES_PERFORMED = 0. ORIGIN_STATE_ABR is null for foreign origins. T-100 totals are higher than the ArcGIS NTAD layer (ratio 1.0-1.45); T-100 is the source of truth, see Data validation in `docs/plan.md`.
 - On-Time: ~7M rows for 2025. Stream and aggregate, never load all; read only needed columns. Numbers are strings like `0.00`; FL_DATE looks like `1/1/2025 12:00:00 AM`; delay-cause columns are empty unless the flight was delayed (empty is not zero). Domestic, large carriers only, so small airports can be missing: renormalize and lower confidence.
 - Load factor = passengers / seats on passenger flights; it is a demand-pressure proxy, not terminal utilization (no gate or terminal-area data). "Unmet demand" is a proxy (spill estimate), never a field.
+- Definitions (passenger service, peer set, window, On-Time origin vs destination sides) are fixed in `docs/plan.md`; do not redefine them in code. BTS records delay causes for arrival delays, so cause minutes belong to the destination airport; departure delay and taxi-out belong to the origin.
 - Delay causes: carrier delay is airline-driven, not infrastructure; weather is not fixable by a terminal. Congestion uses delay rate, taxi-out and NAS-delay minutes per flight.
 - BTS On-Time direct files exist: `https://transtats.bts.gov/PREZIP/On_Time_Reporting_Carrier_On_Time_Performance_1987_present_{YYYY}_{M}.zip` (~30 MB, full columns). A missing month returns 404 with `text/html`; validate the ZIP and Content-Type. Latest available as of 2026-10-10: 2026-07 (publication lag about 1.5-2 months).
 - BTS T-100 Segment download is an ASP.NET form (`DL_SelectFields.aspx?gnoyr_VQ=FMG&QO_fu146_anzr=Nv4%20Pn44vr45`): POST with `__VIEWSTATE`, `__VIEWSTATEGENERATOR`, `__EVENTVALIDATION`, `cboYear`, `cboPeriod`, field checkboxes, `chkDownloadZip`, `btnDownload`. Page says "Latest Available Data: July 2026". Not yet verified end to end; manual download + local file is the fallback. One request at a time; validate ZIPs with `zipfile`.
@@ -38,6 +39,6 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - FAA NAS Status was considered and dropped: it is live operational status only, no history, passengers or distances.
 
 ## Defaults (all in `config/weights.yaml`, change there)
-- `Score = 0.30 Utilization + 0.30 Congestion + 0.15 LongHaul + 0.15 Growth + 0.10 DemandContext`
-- Congestion = 0.40 departure-delay rate + 0.30 taxi-out + 0.30 NAS-delay minutes per flight (cancellations shown, not scored: mostly weather).
+- `Score = 0.25 Utilization + 0.25 Congestion + 0.15 Scale + 0.15 Growth + 0.10 LongHaul + 0.10 DemandContext`
+- Congestion = 0.40 departure-delay rate + 0.30 taxi-out + 0.30 NAS-delay minutes per arriving flight (cancellations shown, not scored: mostly weather).
 - Long-haul threshold 2,500 mi; min 5,000 departures/yr to be ranked; unmet-demand target load factor 0.80; New England = MA CT RI NH VT ME.

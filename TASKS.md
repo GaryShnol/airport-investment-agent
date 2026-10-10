@@ -43,19 +43,19 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 
 ## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial)
 - [ ] P2.1 `src/store.py`: SQLite schema and queries (schema in `docs/plan.md`)
-- [ ] P2.2 Ingest T-100 to `t100_route_month`; verify ANC 87,988 / 43.2% / 11.4% and SFO 82.3%
+- [ ] P2.2 Ingest T-100 to `t100_route_month`; verify ANC 87,988 departures and the long-haul shares, and SFO load factor; re-baseline the acceptance values in `docs/plan.md` under the passenger-service definition
 - [ ] P2.3 Ingest `airports.csv` to the `airports` table (IATA, name, state, region, lat, lon)
 - [ ] P2.4 Scoring tests first: percentile, load factor, long-haul share, growth, renormalization when a component is missing
-- [ ] P2.5 `src/scoring.py` with the available components (utilization, long haul, growth) and deterministic confidence
+- [ ] P2.5 `src/scoring.py` with the available components (utilization, scale, growth, long haul) and deterministic confidence
 - [ ] P2.6 Tool envelope and tools: `data_status`, `resolve_airport` (handles "LA" ambiguity), `airport_metrics`, `rank_airports`
 - [ ] P2.7 `src/agent.py`: LangGraph ReAct agent, memory by `thread_id`, system prompt (scope, assumptions, clarify, user language), light input guard
 - [ ] P2.8 Agent test with a fake model: tool routing, ambiguity, out-of-scope, missing LLM key message
-- [ ] P2.9 `app.py` Streamlit chat with follow-ups; sidebar with data period and provider
+- [ ] P2.9 `app.py` Streamlit chat with follow-ups; agent and memory in `st.cache_resource`, `thread_id` in `st.session_state`, SQLite read-only per call; sidebar with data period and provider; collapsible panel with the tools called and their envelopes
 - [ ] P2.10 Try a local model (Ollama) and record tool-calling quality
 
 ## M3 - Congestion and depth (Q2 complete, Q4 complete)
-- [ ] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month`; verify 7,001,619 rows and January 539,747
-- [ ] P3.2 Congestion component (delay rate, taxi-out, NAS delay per flight) in scoring, with tests
+- [ ] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
+- [ ] P3.2 Congestion component (delay rate, taxi-out, NAS delay per arriving flight) in scoring, with tests
 - [ ] P3.3 `compare_airports` (LAX vs SNA, normalized)
 - [ ] P3.4 `explain_demand_gap` for SFO: peak months, dense routes, spill proxy, delay-cause mix; confidence capped at medium
 - [ ] P3.5 Rank stability under weight perturbation (seeded)
@@ -89,10 +89,14 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 | Provider registry in `src/llm.py`, selected by `.env` | Swap OpenAI and local models without code changes | Local models call tools less reliably |
 | Methodology in `config/weights.yaml`, infra in `.env` | Reviewable and versioned vs per-deployment and secret | Two config sources, one loader |
 | Score is a capacity-pressure proxy, not a terminal-need measure | No gate or terminal-area data in public sources | Stated as a limit in every answer |
-| Congestion = delay rate, taxi-out, NAS delay per flight; cancellations not scored | Carrier delay is airline-driven, cancellations are mostly weather | Fewer signals |
+| Congestion = delay rate, taxi-out, NAS delay per arriving flight; cancellations not scored | Carrier delay is airline-driven, cancellations are mostly weather | Fewer signals |
 | Census kept (10%), built after the vertical slice; FAA NAS Status dropped | Census works with a key; FAA is live status only, no history | Needs an airport-to-CBSA mapping (Geocoder, cached) |
 | Replies in the user's language, English default | Global reviewers; Hebrew works too | None |
 | Six small tools | Reliable tool choice, also for local models | Less flexible than free-form SQL |
+| Scale component (0.15) in the score | Profit depends on volume, not only pressure and growth; stops tiny fast-growing airports from topping the ranking | One more weight to defend (it is in YAML and covered by the stability check) |
+| Passenger service = config 1 or 3, peer set = US airports above the departure floor | One explicit definition shared by ingest, scoring and tools | Acceptance values must be re-baselined once |
+| On-Time split into origin and destination sides | BTS records delay causes for arrivals; mixing sides would misattribute them | Slightly wider table |
+| Agent in `st.cache_resource`, SQLite opened read-only per call | Streamlit reruns the script per message; keeps memory and avoids thread errors | None |
 
 ## Demo script
 1. Which airports in New England are strong candidates for terminal expansion? (ranking, weights, stability, confidence)

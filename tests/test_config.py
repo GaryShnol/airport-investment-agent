@@ -47,8 +47,8 @@ def test_weights_must_sum_to_one(tmp_path):
     bad = tmp_path / "w.yaml"
     bad.write_text(
         """
-weights: {utilization: 0.5, congestion: 0.5, long_haul: 0.5, growth: 0.0, demand_context: 0.0}
-congestion: {dep_delay_rate: 0.4, taxi_out: 0.3, nas_delay_per_flight: 0.3}
+weights: {utilization: 0.5, congestion: 0.5, scale: 0.5, long_haul: 0.0, growth: 0.0, demand_context: 0.0}
+congestion: {dep_delay_rate: 0.4, taxi_out: 0.3, nas_delay_per_arrival: 0.3}
 long_haul_miles: 2500
 long_haul_sensitivity_miles: [2500]
 min_departures_per_year: 5000

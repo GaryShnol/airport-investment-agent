@@ -139,10 +139,11 @@ Each component is a percentile against all US passenger airports with enough dep
 
 | Component | Weight | Signal |
 |---|---|---|
-| Utilization | 0.30 | Seat load factor on passenger flights (demand-pressure proxy) |
-| Congestion | 0.30 | Departure-delay rate, taxi-out time, NAS-delay minutes per flight |
-| Long haul | 0.15 | Share of departures at or above the distance threshold (2,500 mi by default) |
+| Utilization | 0.25 | Seat load factor on passenger service (demand-pressure proxy) |
+| Congestion | 0.25 | Departure-delay rate, taxi-out time, NAS-delay minutes per arriving flight |
+| Scale | 0.15 | Annual passengers: keeps the ranking about money, not only pressure |
 | Growth | 0.15 | Passenger growth, window vs the previous 12 months |
+| Long haul | 0.10 | Share of departures at or above the distance threshold (2,500 mi by default) |
 | Demand context | 0.10 | Metro-area population growth (Census) |
 
 Weights and thresholds are editable in `config/weights.yaml`. The ranking also reports how stable it is when the weights are perturbed.

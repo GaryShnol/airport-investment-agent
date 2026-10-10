@@ -12,8 +12,8 @@ Task status lives in `TASKS.md`. This file holds the design.
 ## SQLite schema
 - `meta(source, last_period, upstream_latest, checked_at, fetched_at)`
 - `airports(iata, name, state, region, cbsa, lat, lon)`
-- `t100_route_month(origin, dest, year, month, config, distance, departures, seats, passengers)`  config = pax | cargo | both
-- `ontime_airport_month(airport, year, month, flights, dep_del15, cancelled, taxi_out_sum, taxi_out_n, carrier_min, weather_min, nas_min, security_min, late_aircraft_min)`
+- `t100_route_month(origin, dest, year, month, config, distance, departures, seats, passengers)`  config = pax | cargo | combi | unknown
+- `ontime_airport_month(airport, year, month, dep_flights, dep_del15, dep_cancelled, taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, nas_min, security_min, late_aircraft_min)`  departure side at the origin airport; arrival side and cause minutes at the destination airport
 - `census_metro(cbsa, year, population, fetched_at)`
 
 ## Ingest (offline, idempotent, `src/ingest.py`)
@@ -35,27 +35,37 @@ Every tool returns:
 - `explain_demand_gap(airport)`: peak months, highest load-factor routes, spill proxy (seats needed to bring dense routes to the target load factor), delay-cause mix.
 - `resolve_airport(text)`: name or city -> IATA; ambiguity returns candidates for the agent to ask about.
 
+## Definitions (fixed; used by ingest, scoring and tools)
+- Passenger service: T-100 rows with AIRCRAFT_CONFIG 1 (passenger) or 3 (combi) and DEPARTURES_PERFORMED > 0. Cargo (2) and undocumented (4) are excluded from passenger metrics; they count only in "all flights" figures.
+- Peer set: airports with a US state (`ORIGIN_STATE_ABR` not null) and at least `min_departures_per_year` passenger-service departures in the window. Percentiles are computed inside this set.
+- Window: trailing 12 complete months ending at `min(last_period)`; growth compares with the previous 12.
+- On-Time sides: departure delay rate, taxi-out and cancellations belong to the origin airport. Arrival counts and delay-cause minutes belong to the destination airport, because BTS records delay causes for arrival delays.
+
 ## Scoring (`src/scoring.py`, pure functions, unit-tested)
-Component = percentile vs all US passenger airports with >= `min_departures` in the window; rank inside the region afterwards.
-- Utilization = pax / seats (passenger config)
-- Congestion = weighted percentiles: departure-delay >=15 rate, taxi-out, NAS-delay minutes per flight
-- LongHaul = departures >= threshold / passenger departures
-- Growth = YoY passengers (window vs previous 12 months)
+Component = percentile inside the peer set; airports are ranked inside the requested region afterwards. Raw values are always shown next to the percentiles.
+- Utilization = pax / seats (passenger service)
+- Scale = annual passengers (passenger service)
+- Congestion = weighted percentiles: departure-delay >=15 rate, mean taxi-out, NAS-delay minutes per arriving flight
+- Growth = passengers in the window vs the previous 12 months
+- LongHaul = departures >= threshold / passenger-service departures
 - DemandContext = metro population growth (Census)
+- Why Scale: profit depends on volume as well as pressure. Without it a small airport with fast growth outranks a large one (HVN +25% on 0.7M passengers vs BOS on 21M).
+- Why LongHaul is only 0.10: it hints at wide-body and international facilities, but it is secondary and distorted by cargo.
 - Missing component -> renormalize weights, lower confidence, say so.
 - Question mapping: Q2 = Congestion; Q3 = LongHaul; Q4 = Utilization + Congestion + delay causes + spill proxy.
-- Confidence (deterministic): high = all components, full 12 months, above min departures; medium = a component renormalized or partial coverage; low = fewer than 12 months or proxy-only. Unmet demand is capped at medium.
+- Confidence (deterministic): high = all components, full 12 months, in the peer set; medium = a component renormalized or partial coverage; low = fewer than 12 months or proxy-only. Unmet demand is capped at medium.
 - Rank stability: re-rank with N random weight perturbations (seeded); report each airport's rank range and whether the top-3 holds.
 
 ## Agent and UI
 - LangGraph ReAct agent (`create_react_agent` from `langgraph.prebuilt`, or `create_agent` from `langchain.agents` if that is the current API in the installed version; same engine) with a checkpointer and `thread_id` for follow-ups. System prompt: scope rules, assumptions policy, clarify when ambiguous, reply in the user's language.
 - Output check: numbers in the answer should appear in tool results (tolerant to rounding); a soft warning, not a retry loop.
-- Streamlit chat, sidebar with data period and freshness, Census attribution. Voice is a stretch goal (`st.audio_input`).
+- Streamlit chat, sidebar with data period and freshness, Census attribution, and a collapsible panel listing the tools called and their envelopes (shows the reasoning and that numbers come from tools). Streamlit reruns the script on every message, so the agent and its memory live in `st.cache_resource` and the `thread_id` in `st.session_state`. SQLite is opened read-only (`mode=ro`) per call. Voice is a stretch goal (`st.audio_input`).
 
 ## Packaging
 Dockerfile + `docker-compose.yml` (app service, `env_file: .env`, volume for the DB, entrypoint seeds the DB). Local model from a container: `OLLAMA_BASE_URL=http://host.docker.internal:11434`. GitHub Actions runs `pytest`. README: two-command quickstart. `docs/design.md`: scoring methodology, tradeoffs, where AI is used, limits, production path (scheduled ingest, tracing, secrets, evals).
 
 ## Acceptance values (calendar 2025; become golden tests in P3.5)
+These came from the exploratory pass (passenger-only = config 1; SFO load factor = rows with seats). Re-baseline in P2.2 under the Definitions above; the ANC passenger-only share may move by about 0.1 point because combi flights are now included, and the new numbers replace these.
 - T-100 2025 ANC, all configs: 87,988 departures; share >= 2,500 mi = 43.2%; passenger-config only = 11.4%.
 - T-100 2025 SFO load factor = 82.3%.
 - On-Time 2025: 7,001,619 rows; January = 539,747.

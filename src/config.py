@@ -86,8 +86,8 @@ class ScoringConfig:
     regions: dict[str, tuple[str, ...]]
 
 
-_WEIGHT_KEYS = {"utilization", "congestion", "long_haul", "growth", "demand_context"}
-_CONGESTION_KEYS = {"dep_delay_rate", "taxi_out", "nas_delay_per_flight"}
+_WEIGHT_KEYS = {"utilization", "congestion", "scale", "growth", "long_haul", "demand_context"}
+_CONGESTION_KEYS = {"dep_delay_rate", "taxi_out", "nas_delay_per_arrival"}
 
 
 def _check_weights(name: str, weights: Mapping[str, float], expected: set[str]) -> dict[str, float]:
