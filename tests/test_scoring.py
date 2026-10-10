@@ -87,7 +87,9 @@ def cfg():
         congestion_weights={"dep_delay_rate": 0.4, "taxi_out": 0.3, "nas_delay_per_arrival": 0.3},
         long_haul_miles=2500, long_haul_sensitivity_miles=(1500, 2500, 3000),
         long_haul_min_share=0.02, min_passengers_per_year=5_000, min_ontime_flights=100, target_load_factor=0.8,
-        sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1,
+        target_sensitivity=(0.75, 0.8, 0.85), peak_months=3, top_routes=5,
+        sensitivity_runs=5, sensitivity_jitter=0.25, sensitivity_seed=1, comparison_confidence_level=0.95, comparison_size_ratio_note=3.0,
+        sensitivity_top_n=2, sensitivity_stable_share=0.9, commentary_restricted_tools=("rank_airports",),
         regions={"north": ("AA", "BB"), "south": ("CC",)}, max_ranked=25,
     )
 
@@ -349,3 +351,95 @@ def test_congestion_changes_the_ranking_only_when_loaded(metrics, cfg):
     with_data = scoring.score(with_ontime(metrics, ONTIME), cfg, FULL)
     assert "pct_congestion" not in without.table.columns
     assert with_data.table.set_index("iata").at["BIG", "score"] != without.table.set_index("iata").at["BIG", "score"]
+
+
+# --- comparison margins (P3.3) ---------------------------------------------------------------
+
+def test_z_value_for_95_percent():
+    assert scoring.z_value(0.95) == pytest.approx(1.95996, abs=1e-4)
+
+
+def test_proportion_margin_from_the_flight_count():
+    # 20% on 1,000 flights: 1.96 * sqrt(0.2 * 0.8 / 1000) = 2.48 points
+    assert scoring.proportion_margin(0.2, 1000, 1.96) == pytest.approx(0.0248, abs=1e-4)
+    assert scoring.proportion_margin(0.2, 0, 1.96) is None
+    assert scoring.proportion_margin(None, 1000, 1.96) is None
+
+
+def test_mean_margin_from_monthly_spread():
+    assert scoring.mean_margin([10.0, 12.0, 14.0, 16.0], 2.0) == pytest.approx(2 * 2.581989 / 2, abs=1e-6)
+    assert scoring.mean_margin([10.0], 1.96) is None          # one month: no spread
+    assert scoring.mean_margin([10.0, float("nan")], 1.96) is None
+
+
+@pytest.mark.parametrize("a, b, ma, mb, expected", [
+    (0.20, 0.18, 0.01, 0.01, "a"),       # difference 2.0 > combined margin 1.41
+    (0.18, 0.20, 0.01, 0.01, "b"),
+    (0.20, 0.19, 0.01, 0.01, "same"),    # 1.0 inside 1.41: never a winner inside the margin
+    (0.20, 0.186, 0.01, 0.01, "same"),   # 1.4 still inside
+    (0.20, None, 0.01, 0.01, None),
+    (0.20, 0.10, None, 0.01, None),
+])
+def test_compare_values_uses_the_combined_margin(a, b, ma, mb, expected):
+    assert scoring.compare_values(a, b, ma, mb) == expected
+
+
+@pytest.mark.parametrize("results, expected", [
+    (["a", "a", "a"], "a"), (["b", None, "b"], "b"), (["same", "same", "same"], "same"),
+    (["a", "same", "a"], "mixed"), (["a", "b", "same"], "mixed"), ([None, None], "none"), ([], "none"),
+])
+def test_overall_verdict(results, expected):
+    assert scoring.overall_verdict(results) == expected
+
+
+# --- rank stability (P3.5) -------------------------------------------------------------------
+
+def test_perturbed_weights_stay_within_the_jitter_and_sum_to_one():
+    import numpy as np
+    w = scoring.perturb_weights({"a": 0.5, "b": 0.3, "c": 0.2}, 0.25, np.random.default_rng(7))
+    assert sum(w.values()) == pytest.approx(1.0)
+    raw = {"a": 0.5, "b": 0.3, "c": 0.2}
+    ratios = [w[k] / raw[k] for k in raw]
+    assert max(ratios) / min(ratios) <= 1.25 / 0.75 + 1e-9
+
+
+def test_rank_stability_is_deterministic_for_a_seed(metrics, cfg):
+    result = scoring.score(metrics, cfg, FULL)
+    ranking = scoring.rank(result, scoring.NATIONAL, cfg)
+    first = scoring.rank_stability(ranking, result.weights_used, cfg)
+    assert first == scoring.rank_stability(ranking, result.weights_used, cfg)
+    assert set(first) == set(ranking.ranked["iata"])
+    for s in first.values():
+        assert s["runs"] == cfg.sensitivity_runs and s["top_n"] == cfg.sensitivity_top_n
+        assert 1 <= s["min_rank"] <= s["max_rank"] <= len(first)
+        assert 0 <= s["first"] <= s["in_top_n"] <= s["runs"]
+
+
+def test_rank_stability_without_jitter_keeps_the_base_ranking(metrics, cfg):
+    result = scoring.score(metrics, cfg, FULL)
+    ranking = scoring.rank(result, scoring.NATIONAL, cfg)
+    s = scoring.rank_stability(ranking, result.weights_used, replace(cfg, sensitivity_jitter=0.0))
+    assert {iata: (v["min_rank"], v["max_rank"]) for iata, v in s.items()} == {
+        iata: (rank, rank) for iata, rank in zip(ranking.ranked["iata"], ranking.ranked["rank"])}
+
+
+def test_rank_stability_seed_changes_the_draws(metrics, cfg):
+    import numpy as np
+    a = scoring.perturb_weights(cfg.weights, 0.25, np.random.default_rng(1))
+    b = scoring.perturb_weights(cfg.weights, 0.25, np.random.default_rng(2))
+    assert a != b
+
+
+# --- drivers (P3.8c) -------------------------------------------------------------------------
+
+def test_drivers_pick_highest_and_lowest_percentile():
+    row = {"pct_utilization": 0.8, "pct_scale": 0.3, "pct_growth": float("nan"), "pct_long_haul": 0.95}
+    assert scoring.drivers(row, ["utilization", "scale", "growth", "long_haul"]) == {
+        "strongest": ("long_haul", 0.95), "weakest": ("scale", 0.3)}
+
+
+def test_drivers_ties_go_to_the_first_component_and_none_without_data():
+    row = {"pct_utilization": 0.5, "pct_scale": 0.5}
+    assert scoring.drivers(row, ["utilization", "scale"]) == {"strongest": ("utilization", 0.5),
+                                                              "weakest": ("utilization", 0.5)}
+    assert scoring.drivers({"pct_growth": float("nan")}, ["growth"]) is None

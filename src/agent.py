@@ -26,6 +26,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from src import store
 from src.config import ConfigError, ScoringConfig, Settings, get_settings, load_scoring
+from src.figure_check import check_commentary, restrict_commentary
 from src.llm import get_chat_model
 from src.prompts import SYSTEM_PROMPT
 from src.render import render_reply
@@ -248,6 +249,7 @@ class Reply:
     missing_facts: list[dict] = field(default_factory=list)  # required facts appended by ensure_facts
     commentary: str = ""                                     # the model's text, reasoning stripped
     fallback: bool = False                                   # commentary is a fixed message (empty reply)
+    figure_check: dict = field(default_factory=dict)         # commentary check: mode, removed, hidden
 
 
 def _fallback(raw: str, results: list[Any]) -> str:
@@ -261,6 +263,7 @@ def _fallback(raw: str, results: list[Any]) -> str:
 class AirportAgent:
     graph: Any                 # compiled LangGraph from create_agent
     max_input_chars: int
+    restricted_tools: tuple[str, ...] = ()   # commentary.restricted_tools: caveats and next steps only
 
     def ask(self, question: str, thread_id: str) -> Reply:
         """Run one turn in `thread_id`; returns the cleaned answer and this turn's tool calls."""
@@ -275,11 +278,19 @@ class AirportAgent:
         results = [_parse(m.content) for m in turn if isinstance(m, ToolMessage)]
         final = next((m for m in reversed(turn) if isinstance(m, AIMessage)), None)
         raw = strip_reasoning(final.text if final else "")
-        answer = drop_restated_headlines(raw, results)
-        fallback = not answer
+        # Every tool result of the thread: a follow-up may quote an earlier card.
+        thread = [_parse(m.content) for m in messages if isinstance(m, ToolMessage)]
+        cleaned = drop_restated_headlines(raw, results)
+        restricted = any(c["name"] in self.restricted_tools for c in calls)
+        check = restrict_commentary(cleaned, thread) if restricted else check_commentary(cleaned, thread)
+        if check.removed:
+            log.info("Commentary check (%s) removed %d sentence(s).", check.mode, len(check.removed))
+        answer = check.text
+        fallback = not answer and not check.hidden   # hidden: the card is the whole answer
         if fallback:
             answer = _fallback(raw, results)
-        return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results), answer, fallback)
+        return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results), answer, fallback,
+                     check.as_dict())
 
 
 def build_agent(
@@ -307,7 +318,7 @@ def build_agent(
     num_ctx = settings.ollama_num_ctx if settings.llm_provider == "ollama" else None
     graph = create_agent(model, make_tools(connect, cfg), system_prompt=SYSTEM_PROMPT,
                          middleware=[turn_guard(num_ctx)], checkpointer=InMemorySaver())
-    return AirportAgent(graph, settings.max_input_chars)
+    return AirportAgent(graph, settings.max_input_chars, cfg.commentary_restricted_tools)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -333,7 +344,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  - {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['args'].items())})")
     print(f"Required facts the commentary omits: {len(reply.missing_facts)} (all are in the data below)")
     print("\nData (from tools):\n" + (render_reply(reply.tool_calls, reply.tool_results) or "none"))
-    print("\nCommentary (model):\n" + reply.commentary)
+    print("\nCommentary (model):\n" + (reply.commentary or "none (the card above is the answer)"))
+    for item in reply.figure_check.get("removed", []):
+        print(f"  [removed by the commentary check: {'; '.join(item['reasons'])}]")
     return 0
 
 

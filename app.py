@@ -71,7 +71,9 @@ def show_data(tool_calls: list[dict], envelopes: list) -> None:
             st.markdown(render.render_envelope(env, title))
             continue
         st.markdown("\n\n".join(p for p in (f"**{title}**" if title else "", render.render_headline(env),
-                                            render.render_facts(env), render.render_ranking(env)) if p))
+                                            render.render_comparison(env), render.render_facts(env),
+                                            render.render_why(env), render.render_ranking(env),
+                                            render.render_drivers(env)) if p))
         if excluded := render.render_excluded(env):
             with st.expander(render.excluded_title(env)):
                 st.markdown(excluded)
@@ -84,9 +86,14 @@ def show_assistant(msg: dict) -> None:
         st.error(msg["error"])
         return
     show_data(msg["tool_calls"], msg["tool_results"])
-    st.markdown("##### Commentary (model)")
-    st.caption("Written by the language model about the data above; the figures come from the data card.")
-    st.markdown(msg["commentary"] or "_(the model returned no text)_")
+    check = msg.get("figure_check", {})
+    if not check.get("hidden"):  # rankings and comparisons: no commentary block when only the card remains
+        st.markdown("##### Commentary (model)")
+        st.caption("Written by the language model about the data above; the figures come from the data card.")
+        st.markdown(msg["commentary"] or "_(the model returned no text)_")
+        if removed := check.get("removed"):
+            st.caption(f"Commentary check: {len(removed)} sentence(s) removed ("
+                       + "; ".join(r for item in removed for r in item["reasons"]) + ").")
     with st.expander(f"Tools called ({len(msg['tool_calls'])})"):
         st.json([{**c, "result": r} for c, r in zip(msg["tool_calls"], msg["tool_results"])], expanded=False)
 
@@ -100,7 +107,8 @@ def answer(agent: agent_mod.AirportAgent, settings: Settings, question: str) -> 
         return {"error": f"Error calling the model ({settings.llm_provider}/{settings.llm_model}): "
                          f"{type(exc).__name__}: {exc}. Check that the model server is running and "
                          "the settings in .env."}
-    return {"tool_calls": reply.tool_calls, "tool_results": reply.tool_results, "commentary": reply.commentary}
+    return {"tool_calls": reply.tool_calls, "tool_results": reply.tool_results, "commentary": reply.commentary,
+            "figure_check": reply.figure_check}
 
 
 def main() -> None:

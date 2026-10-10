@@ -13,3 +13,6 @@ __pycache__/
 venv/
 *.pyc
 .pytest_cache/
+
+# eval results (scripts/eval.py)
+eval/results/

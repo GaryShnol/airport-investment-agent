@@ -37,7 +37,7 @@ def fake_build(monkeypatch, scoring_cfg, *script):
 
 def test_sample_question_shows_data_then_commentary(app_env, monkeypatch, scoring_cfg):
     fake_build(monkeypatch, scoring_cfg, call("rank_airports", region="new_england", top_n=3),
-               AIMessage("BOS leads on scale."))
+               AIMessage("Scores are relative to the peer set."))
     at = AppTest.from_file(APP, default_timeout=30).run()
     assert not at.exception
     assert "2025-01..2025-12" in at.sidebar.markdown[0].value
@@ -45,9 +45,19 @@ def test_sample_question_shows_data_then_commentary(app_env, monkeypatch, scorin
     assert not at.exception
     texts = [m.value for m in at.main.markdown]
     data, commentary = texts.index("##### Data (from tools)"), texts.index("##### Commentary (model)")
-    assert data < commentary and texts[commentary + 1] == "BOS leads on scale."
+    assert data < commentary and texts[commentary + 1] == "Scores are relative to the peer set."
     assert any("| Rank | Airport |" in t for t in texts[data:commentary])
     assert [e.label for e in at.expander] == ["Excluded airports (1)", "Tools called (1)"]
+
+
+def test_ranking_commentary_with_only_figures_and_names_shows_no_commentary_block(app_env, monkeypatch, scoring_cfg):
+    fake_build(monkeypatch, scoring_cfg, call("rank_airports", region="new_england", top_n=3),
+               AIMessage("BOS leads with a score of 0.9."))
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    next(b for b in at.sidebar.button if "New England" in b.label).click().run()
+    assert not at.exception
+    texts = [m.value for m in at.main.markdown]
+    assert "##### Data (from tools)" in texts and "##### Commentary (model)" not in texts
 
 
 def test_missing_model_config_shows_a_friendly_error(app_env, monkeypatch):

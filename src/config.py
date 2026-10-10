@@ -99,9 +99,17 @@ class ScoringConfig:
     min_passengers_per_year: int
     min_ontime_flights: int    # On-Time departures in the window needed to score congestion
     target_load_factor: float
+    target_sensitivity: tuple[float, ...]   # spill proxy also at these target load factors (range)
+    peak_months: int                        # explain_demand_gap: months listed as peaks
+    top_routes: int                         # explain_demand_gap: routes listed
     sensitivity_runs: int
     sensitivity_jitter: float
     sensitivity_seed: int
+    sensitivity_top_n: int              # rank stability: share of runs each airport spends in this top N
+    sensitivity_stable_share: float     # the #1 airport is "stable" if first in at least this share of runs
+    comparison_confidence_level: float  # compare_airports: margin of error for On-Time figures (0.95)
+    comparison_size_ratio_note: float   # compare_airports: note when departures differ by more than this ratio
+    commentary_restricted_tools: tuple[str, ...]  # commentary limited to caveats and next steps
     regions: dict[str, tuple[str, ...]]
     max_ranked: int            # longest ranking a tool returns (keeps tool results small)
     # name -> {"default": IATA, "candidates": (IATA, ...)}; e.g. LA -> LAX by default
@@ -129,6 +137,20 @@ def _positive_int(name: str, value) -> int:
     return value
 
 
+def _share(name: str, value) -> float:
+    """A number strictly between 0 and 1 (a probability or a load factor)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 1:
+        raise ConfigError(f"{name} must be a number between 0 and 1 (got {value!r})")
+    return float(value)
+
+
+def _ratio(name: str, value) -> float:
+    """A ratio greater than 1."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 1:
+        raise ConfigError(f"{name} must be a number greater than 1 (got {value!r})")
+    return float(value)
+
+
 def load_scoring(path: Path) -> ScoringConfig:
     try:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
@@ -144,10 +166,19 @@ def load_scoring(path: Path) -> ScoringConfig:
             long_haul_sensitivity_miles=tuple(int(x) for x in raw["long_haul_sensitivity_miles"]),
             min_passengers_per_year=int(raw["min_passengers_per_year"]),
             min_ontime_flights=_positive_int("min_ontime_flights", raw["min_ontime_flights"]),
-            target_load_factor=float(raw["unmet_demand"]["target_load_factor"]),
+            target_load_factor=_share("unmet_demand.target_load_factor", raw["unmet_demand"]["target_load_factor"]),
+            target_sensitivity=tuple(_share("unmet_demand.target_sensitivity", x)
+                                     for x in raw["unmet_demand"]["target_sensitivity"]),
+            peak_months=_positive_int("unmet_demand.peak_months", raw["unmet_demand"]["peak_months"]),
+            top_routes=_positive_int("unmet_demand.top_routes", raw["unmet_demand"]["top_routes"]),
             sensitivity_runs=int(raw["sensitivity"]["runs"]),
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),
             sensitivity_seed=int(raw["sensitivity"]["seed"]),
+            sensitivity_top_n=_positive_int("sensitivity.top_n", raw["sensitivity"]["top_n"]),
+            sensitivity_stable_share=_share("sensitivity.stable_share", raw["sensitivity"]["stable_share"]),
+            comparison_confidence_level=_share("comparison.confidence_level", raw["comparison"]["confidence_level"]),
+            comparison_size_ratio_note=_ratio("comparison.size_ratio_note", raw["comparison"]["size_ratio_note"]),
+            commentary_restricted_tools=tuple(str(t) for t in raw["commentary"]["restricted_tools"] or ()),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
             max_ranked=_positive_int("max_ranked", raw["max_ranked"]),
             metro_aliases={k.upper(): {"default": v["default"], "candidates": tuple(v["candidates"])}

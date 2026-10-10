@@ -517,6 +517,7 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
     scenario = merged is not None
     components = list(result.weights_used)
     base_rank = dict(zip(base_ranking.ranked["iata"], base_ranking.ranked["rank"]))
+    stability = scoring.rank_stability(ranking, result.weights_used, cfg)
 
     order = ranking.ranked
     if sort_by != "score":  # highest first, missing last, ties by score then IATA
@@ -542,6 +543,12 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
                                   "passengers": int(r["passengers"])}[sort_by]
         if scenario:
             item["base_rank"] = int(base_rank[r["iata"]])
+        if found := scoring.drivers(r, components):
+            item["drivers"] = {k: {"component": c, "percentile": _pct(p, 0)} for k, (c, p) in found.items()}
+        s = stability[r["iata"]]
+        item["stability"] = {"top_n": s["top_n"], "in_top_n_pct": _pct(s["in_top_n"] / s["runs"], 0),
+                             "first": s["first"], "runs": s["runs"], "min_rank": s["min_rank"],
+                             "max_rank": s["max_rank"]}
         if r["missing"]:
             item["missing"] = r["missing"]
             item["weights_used"] = {c: round(w, 3) for c, w in r["weights_used"].items()}
@@ -563,6 +570,9 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         "weights_used": {c: round(w, 3) for c, w in result.weights_used.items()},
         "components_unavailable": result.unavailable,
         "ties": [[x["iata"] for x in ranked if x["score"] == s] for s in ties],
+        "drivers_basis": "national percentile in the peer set (higher = stronger)",
+        "stability": {"runs": cfg.sensitivity_runs, "weight_jitter": cfg.sensitivity_jitter,
+                      "seed": cfg.sensitivity_seed, "top_n": cfg.sensitivity_top_n},
     }
     if scenario:
         data["weights_base"] = {c: round(w, 3) for c, w in base_result.weights_used.items()}
@@ -586,6 +596,9 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
                               + (f"; ignored (component not built): {', '.join(ignored)}" if ignored else ""))
     if sort_by != "score":
         assumptions.insert(0, f"sorted by {SORT_LABELS[sort_by]} (highest first), not by the expansion score")
+    assumptions.append("drivers = each airport's highest and lowest component percentile; tied values share one "
+                       "percentile, so airports with no material long-haul service all get the same middling "
+                       "long-haul percentile, which can show up as a 'strongest' component")
     if int(top_n) > shown and len(ranking.ranked) > shown:
         assumptions.append(f"list capped at {cfg.max_ranked} airports")
     levels = [x["confidence"] for x in ranked] or ["low"]
@@ -601,8 +614,25 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
     if sort_by != "score":
         facts.append(fact("Sorted by", f"{SORT_LABELS[sort_by]}, highest first (not the score)", True))
     facts += [fact(f"#{x['rank']} {x['iata']} ({x['name']})", _ranked_summary(x)) for x in ranked]
-    return _envelope(conn, window, data, assumptions, confidence, facts,
-                     headline=_ranking_headline(data, key, sort_by, scenario))
+    # Drivers block: why each airport ranks where it does, without model commentary (rendered as a table).
+    facts += [fact(f"Drivers: {x['iata']}", _drivers_text(x["drivers"])) | {"ranked": x["iata"]}
+              for x in ranked if x.get("drivers")]
+    headline = _ranking_headline(data, key, sort_by, scenario)
+    if ranked:
+        facts.append(fact("Rank stability (method)", _stability_method(cfg)))
+        assumptions.append(f"rank stability: {_stability_method(cfg)}; it tests the weights, not the data")
+        top = next((x for x in ranked if x.get("score_rank", x["rank"]) == 1), ranked[0])  # the score's #1
+        s = top["stability"]
+        facts.append(fact("Stability of the top airport", f"{top['iata']} first in {s['first']} of {s['runs']} runs"))
+        if sort_by == "score" and s["first"] < cfg.sensitivity_stable_share * s["runs"]:
+            headline += (f" Not stable: {top['iata']} is first in only {s['first']} of {s['runs']} runs "
+                         "with perturbed weights.")
+    return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
+
+
+def _stability_method(cfg: ScoringConfig) -> str:
+    return (f"{cfg.sensitivity_runs} runs, each weight changed at random by up to ±{cfg.sensitivity_jitter:.0%} "
+            f"and renormalized (seed {cfg.sensitivity_seed})")
 
 
 def _ranking_headline(data: dict, key: str, sort_by: str, scenario: bool) -> str:
@@ -622,6 +652,14 @@ COMPONENT_LABELS = {"utilization": "utilization (load factor)", "scale": "scale 
                     "congestion": "congestion"}
 
 
+def _driver(d: dict) -> str:
+    return f"{COMPONENT_LABELS.get(d['component'], d['component'])}, percentile {d['percentile']:.0f}"
+
+
+def _drivers_text(drivers: dict) -> str:
+    return f"strongest: {_driver(drivers['strongest'])}; weakest: {_driver(drivers['weakest'])}"
+
+
 def _ranked_summary(item: dict) -> str:
     """One line per ranked airport: score, then each component's raw value and percentile."""
     parts = [f"score {item['score']}"]
@@ -636,7 +674,312 @@ def _ranked_summary(item: dict) -> str:
         raw = next(val for key, val in v.items() if key != "percentile")
         shown = f"{raw:,}" if isinstance(raw, int) else _share(raw)
         parts.append(f"{COMPONENT_LABELS.get(c, c)} {shown}, percentile {pct}")
+    if s := item.get("stability"):
+        parts.append(f"top {s['top_n']} in {s['in_top_n_pct']:.0f}% of stability runs, ranks {s['min_rank']}-{s['max_rank']}")
     return "; ".join(parts)
+
+
+# --- compare_airports --------------------------------------------------------------------
+
+T100_FULL_COUNT = ("T-100 figures (load factor, passengers, growth, long-haul share) count every flight, "
+                   "so they are compared as is, without a margin of error")
+# On-Time rows of the comparison: (key in the score table, label, short name for the headline, kind).
+# kind "share": a rate of flights, margin from the flight count; "minutes": a mean, margin from the
+# spread of the monthly means (only monthly sums are stored).
+ONTIME_COMPARED = (
+    ("dep_delay_rate", "Departures delayed >= 15 min", "delayed departures", "share"),
+    ("taxi_out_min", "Mean taxi-out (departures)", "taxi-out", "minutes"),
+    ("nas_min_per_arrival", "NAS-delay minutes per arriving flight", "NAS delay per arrival", "minutes"),
+    ("cancellation_rate", "Cancelled departures (shown, not scored)", "cancellations (not scored)", "share"),
+)
+# Denominator of each share (column of the score table) and the monthly sums behind each mean.
+SHARE_DENOMINATOR = {"dep_delay_rate": "dep_del15_n", "cancellation_rate": "dep_flights"}
+MONTHLY_MEAN = {"taxi_out_min": ("taxi_out_sum", "taxi_out_n"), "nas_min_per_arrival": ("nas_min", "arr_flights")}
+MINUTE_DIGITS = {"taxi_out_min": 1, "nas_min_per_arrival": 2}
+# T-100 rows of the comparison: (key in the score table, label, display kind).
+T100_COMPARED = (
+    ("load_factor", "Load factor (passenger service)", "share"),
+    ("passengers", "Passengers (passenger service)", "count"),
+    ("growth", "Passenger growth vs previous 12 months", "signed"),
+    ("long_haul_share", "Long-haul share (passenger service)", "share"),
+)
+
+
+def _resolve_for_compare(conn: sqlite3.Connection, cfg: ScoringConfig,
+                         text: str) -> tuple[str | None, str | None, dict | None]:
+    """(IATA, assumption, error). A configured metro alias resolves to its default and the
+    definition is stated (LA = LAX); any other ambiguity is returned as an error, never guessed."""
+    data = resolve_airport(conn, cfg, text)["data"]
+    if data and data["ambiguous"] and data["default"]:
+        others = ", ".join(a["iata"] for a in data["alternatives"])
+        return data["default"], f"'{text}' = {data['default']} (configured default; other candidates: {others})", None
+    code, err = _resolve_code(conn, cfg, text)
+    return code, None, err
+
+
+def _ontime_cell(key: str, kind: str, row, monthly, z: float) -> dict:
+    """Value, margin and display text of one On-Time metric for one airport. The raw (unrounded)
+    value and margin decide the verdict; `short` is the value as the headline writes it."""
+    value = None if row is None else row[key]
+    if value is None or value != value:
+        return {"value": None, "margin": None, "display": "n/a", "short": "n/a"}
+    value = float(value)
+    if kind == "share":
+        n = row[SHARE_DENOMINATOR[key]]
+        margin = scoring.proportion_margin(value, n, z)
+        return {"value": value, "margin": margin, "short": _share(_pct(value)),
+                "display": f"{_share(_pct(value))} ± {_num(margin * 100, 2)} pts ({int(n):,} departures)"}
+    total, count = MONTHLY_MEAN[key]
+    margin = scoring.mean_margin((monthly[total] / monthly[count].where(monthly[count] > 0)).tolist(), z)
+    digits = MINUTE_DIGITS[key]
+    spread = "n/a" if margin is None else _num(margin, digits)
+    return {"value": value, "margin": margin, "short": f"{_num(value, digits)} min",
+            "display": f"{_num(value, digits)} min ± {spread} ({len(monthly)} monthly means)"}
+
+
+def _t100_display(kind: str, value) -> str:
+    if value is None or value != value:
+        return "n/a"
+    if kind == "count":
+        return f"{int(value):,}"
+    return _signed(_pct(value)) if kind == "signed" else _share(_pct(value))
+
+
+def compare_airports(conn: sqlite3.Connection, cfg: ScoringConfig, a: str, b: str) -> dict:
+    """Two airports side by side: congestion (On-Time, a margin of error per figure and a
+    deterministic verdict), load factor, passengers, growth and long-haul share (T-100, full counts).
+
+    Verdict rule: a difference inside the combined margin is "no meaningful difference"; only a
+    difference beyond it names the higher airport. Facts carry an `airport` key (one value per
+    airport) or a `metric` key (the verdict), used by the table renderer and the figure check."""
+    codes, notes = [], []
+    for text in (a, b):
+        code, note, err = _resolve_for_compare(conn, cfg, text)
+        if err:
+            return err
+        codes.append(code)
+        notes += [note] if note else []
+    if codes[0] == codes[1]:
+        return _error(conn, f"Both names resolve to {codes[0]}; name two different airports")
+    window = _window(conn)
+    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    table = result.table.set_index("iata")
+    missing = [c for c in codes if c not in table.index]
+    if missing:
+        return _error(conn, f"{missing[0]} has no passenger service in {window.label}")
+    rows = {c: table.loc[c] for c in codes}
+    z = scoring.z_value(cfg.comparison_confidence_level)
+    level = f"{cfg.comparison_confidence_level:.0%}"
+    status = {c: (rows[c]["ontime_status"] if "congestion" not in result.unavailable else "not_loaded")
+              for c in codes}
+
+    metrics, facts, parts, scored = [], [], [], []
+    for key, label, short, kind in ONTIME_COMPARED:
+        cells = {c: _ontime_cell(key, kind, rows[c] if status[c] == "ok" else None,
+                                 store.ontime_monthly(conn, c, window) if status[c] == "ok" else None, z)
+                 for c in codes}
+        winner = scoring.compare_values(*(cells[c]["value"] for c in codes), *(cells[c]["margin"] for c in codes))
+        verdict = {"a": f"{codes[0]} higher", "b": f"{codes[1]} higher", "same": "no meaningful difference",
+                   None: "not comparable"}[winner]
+        if key in scoring.CONGESTION_COLUMN.values():  # scored congestion metrics (not cancellations)
+            scored.append(winner)
+        values = ", ".join(f"{c} {cells[c]['short']}" for c in codes)
+        parts.append(f"no meaningful difference in {short} ({values})" if winner == "same"
+                     else f"{short}: {verdict} ({values})")
+        metrics.append({"key": key, "label": label, "source": "On-Time", "verdict": verdict,
+                        "cells": {c: {"display": cells[c]["display"], "value": _num(cells[c]["value"], 4),
+                                      "margin": _num(cells[c]["margin"], 4)} for c in codes}})
+        facts += [fact(f"{c}: {label}", cells[c]["display"], key == "dep_delay_rate") | {"airport": c}
+                  for c in codes]
+        facts.append(fact(f"Verdict: {label}", verdict) | {"metric": key})
+
+    pct = {c: _pct(rows[c]["pct_congestion"], 0) if status[c] == "ok" and rows[c]["in_peer_set"] else None
+           for c in codes}
+    shown = {c: "n/a" if pct[c] is None else f"{pct[c]:.0f}" for c in codes}
+    metrics.append({"key": "congestion_percentile", "label": "Congestion percentile in the peer set",
+                    "source": "On-Time", "verdict": "not tested (a rank, no margin)",
+                    "cells": {c: {"display": shown[c], "value": pct[c]} for c in codes}})
+    facts += [fact(f"{c}: Congestion percentile in the peer set", shown[c]) | {"airport": c} for c in codes]
+
+    for key, label, kind in T100_COMPARED:
+        values = {c: rows[c][key] for c in codes}
+        known = all(v is not None and v == v for v in values.values())
+        verdict = ("not comparable" if not known else "equal" if values[codes[0]] == values[codes[1]]
+                   else f"{max(codes, key=lambda c: values[c])} higher (full count)")
+        metrics.append({"key": key, "label": label, "source": "T-100", "verdict": verdict,
+                        "cells": {c: {"display": _t100_display(kind, values[c])} for c in codes}})
+        facts += [fact(f"{c}: {label}", _t100_display(kind, values[c])) | {"airport": c} for c in codes]
+
+    data = {"airports": codes, "names": {c: rows[c]["name"] for c in codes}, "confidence_level": level,
+            "ontime_status": status, "metrics": metrics}
+    assumptions = [*notes,
+                   f"On-Time figures carry a {level} margin of error: rates from the flight counts, minute "
+                   "averages from the spread of the 12 monthly means; a difference inside the combined margin "
+                   "(square root of the sum of the squared margins) is reported as no meaningful difference",
+                   ONTIME_COVERAGE, CONGESTION_SIDES, CANCELLATIONS_NOT_SCORED, T100_FULL_COUNT,
+                   PASSENGER_SERVICE, LOAD_FACTOR_PROXY]
+    levels = [rows[c]["confidence"] for c in codes] + (["medium"] if notes else [])
+    confidence = max(levels, key=CONFIDENCE_ORDER.index)
+    no_figures = [f"{c} has no congestion figures ({status[c].replace('_', ' ')})" for c in codes if status[c] != "ok"]
+    assumptions += no_figures
+    overall = scoring.overall_verdict(scored)
+    overall_text = {"none": "Overall: not comparable, no scored congestion figure for both airports.",
+                    "same": "Overall: no meaningful difference.",
+                    "a": f"Overall: {codes[0]} is higher on every measure with a meaningful difference.",
+                    "b": f"Overall: {codes[1]} is higher on every measure with a meaningful difference.",
+                    "mixed": "Overall: mixed, no airport is higher on every measure."}[overall]
+    data["overall"] = overall_text
+    assumptions.append("overall verdict over the scored congestion measures (delayed departures, taxi-out, NAS "
+                       "delay per arrival; cancellations are not scored); higher = more congested")
+    deps = {c: int(rows[c]["departures"]) for c in codes}
+    big, small = sorted(codes, key=lambda c: -deps[c])
+    size_note = ""
+    if deps[small] and deps[big] / deps[small] > cfg.comparison_size_ratio_note:
+        size_note = (f" Note: {big} has {deps[big] / deps[small]:.1f} times {small}'s departures (passenger "
+                     "service): rates compare per flight, but the airports differ in scale.")
+        assumptions.append(f"departures differ by more than {cfg.comparison_size_ratio_note:g} times "
+                           "(comparison.size_ratio_note): per-flight rates compare, totals do not")
+    headline = (f"{codes[0]} vs {codes[1]}, {window.label} ({level} margins on On-Time figures): "
+                + "; ".join(parts) + "." + "".join(f" {n}." for n in no_figures) + f" {overall_text}" + size_note)
+    return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
+
+
+# --- explain_demand_gap ------------------------------------------------------------------
+
+UNMET_DEMAND_PROXY = ("unmet demand is not observable in this data: T-100 counts passengers carried, never "
+                      "passengers turned away; every figure here is a PROXY, not a measurement")
+NEEDED_TO_MEASURE = ("measuring unmet demand would need booking and denied-booking data, fares by date and "
+                     "airline spill models")
+# BTS delay-cause categories (fixed definitions, not an interpretation of this airport).
+CAUSE_LABELS = {"nas": "NAS", "carrier": "carrier", "late_aircraft": "late aircraft", "weather": "weather",
+                "security": "security"}
+CAUSE_DEFINITIONS = ("delay causes as BTS defines them: NAS = national aviation system (traffic volume, airport "
+                     "operations, non-extreme weather); carrier = within the airline's control; late aircraft = "
+                     "a previous flight with the same aircraft arrived late; weather = extreme weather; shares of "
+                     "delay minutes on arrivals at the airport")
+# Proxy results are capped at this confidence: a proxy is never "high" (docs/plan.md, Scoring).
+PROXY_CONFIDENCE_CAP = "medium"
+
+
+def _month_label(year, month) -> str:
+    return f"{int(year)}-{int(month):02d}"
+
+
+def _lf(value) -> str:
+    return _share(_pct(value))
+
+
+def _target(value: float) -> str:
+    """A target load factor from config as a whole percentage (0.8 -> 80%)."""
+    return f"{value:.0%}"
+
+
+def explain_demand_gap(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str) -> dict:
+    """A labeled PROXY for unmet demand at one airport, with a "why" built only from its facts.
+
+    Unmet demand cannot be observed here (no booking or spill data). The proxy, all in code: months
+    with load factor above the configured target and the peak months; the routes with the most
+    passengers and with the most passengers above the target; passengers above the target load
+    level per route and month (spill proxy: the excess over target x seats), also at each sensitivity target; the delay-cause mix
+    (arrivals, On-Time); growth. Confidence is capped at medium."""
+    code, err = _resolve_code(conn, cfg, airport)
+    if err:
+        return err
+    window = _window(conn)
+    result = scoring.score(store.scoring_metrics(conn, window, cfg.long_haul_miles), cfg, window)
+    rows = result.table[result.table["iata"] == code]
+    routes = store.route_months(conn, code, window)
+    if rows.empty or routes.empty:
+        return _error(conn, f"{code} has no passenger service in {window.label}")
+    row = rows.iloc[0]
+    target, targets = cfg.target_load_factor, sorted({cfg.target_load_factor, *cfg.target_sensitivity})
+    t_text = _target(target)
+
+    months = routes.groupby(["year", "month"], as_index=False)[["passengers", "seats"]].sum()
+    months["load_factor"] = scoring.load_factor(months["passengers"], months["seats"])
+    months["label"] = [_month_label(y, m) for y, m in zip(months["year"], months["month"])]
+    above = months[months["load_factor"] > target]
+    peaks = months.sort_values(["load_factor", "label"], ascending=[False, True], kind="stable").head(cfg.peak_months)
+    peak_text = ", ".join(f"{p['label']} {_lf(p['load_factor'])}" for _, p in peaks.iterrows())
+
+    spill = {t: int(round(scoring.above_target(routes["passengers"], routes["seats"], t).sum())) for t in targets}
+    routes["spill"] = scoring.above_target(routes["passengers"], routes["seats"], target)
+    by_route = routes.groupby("dest").agg(passengers=("passengers", "sum"), seats=("seats", "sum"),
+                                          spill=("spill", "sum"))
+    by_route["load_factor"] = scoring.load_factor(by_route["passengers"], by_route["seats"])
+    busiest = by_route.sort_values("passengers", ascending=False, kind="stable").head(cfg.top_routes)
+    spilling = by_route[by_route["spill"] > 0].sort_values("spill", ascending=False, kind="stable").head(cfg.top_routes)
+    total_pax = int(row["passengers"])
+    spill_share = _pct(spill[target] / total_pax) if total_pax else None
+    top_spill_share = _pct(spilling["spill"].sum() / spill[target]) if spill[target] else None
+
+    causes = (scoring.delay_cause_mix({c: row[f"{c}_min"] for c in scoring.DELAY_CAUSES})
+              if f"{scoring.DELAY_CAUSES[0]}_min" in row.index else None)
+    growth_pct = _pct(row["growth"])
+    previous = f"{window.prev_start}..{window.prev_end}"
+
+    data = {
+        "airport": code, "name": row["name"], "proxy": True, "target_load_factor": target,
+        "load_factor_pct": _pct(row["load_factor"]), "passengers": total_pax, "growth_pct": growth_pct,
+        "months": [{"month": m["label"], "load_factor_pct": _pct(m["load_factor"])} for _, m in months.iterrows()],
+        "months_above_target": [m["label"] for _, m in above.iterrows()],
+        "spill_proxy": {f"{t:.2f}": spill[t] for t in targets},
+        "routes_by_passengers": [{"dest": d, "passengers": int(r["passengers"]), "load_factor_pct": _pct(r["load_factor"])}
+                                 for d, r in busiest.iterrows()],
+        "routes_by_spill": [{"dest": d, "spill_proxy": int(round(r["spill"])), "load_factor_pct": _pct(r["load_factor"])}
+                            for d, r in spilling.iterrows()],
+        "delay_cause_mix_pct": {c: _pct(s) for c, s in causes.items()} if causes else None,
+    }
+    range_text = (f"{spill[targets[0]]:,} at {_target(targets[0])} to {spill[targets[-1]]:,} at {_target(targets[-1])}"
+                  if len(targets) > 1 else f"{spill[target]:,}")
+    facts = [
+        fact("Unmet demand", "not observable in this data; the figures below are a proxy", True),
+        fact(f"Months with load factor above {t_text}", f"{len(above)} of {len(months)}", True),
+        fact("Peak months (load factor)", peak_text),
+        fact(f"Spill proxy: passengers above the {t_text} load level (excess over {t_text} of seats, per route "
+             "and month)",
+             f"{spill[target]:,} ({_share(spill_share)} of passengers)", True),
+        fact("Spill proxy sensitivity (target load factor)", range_text, True),
+        fact("Routes with the most passengers (load factor)",
+             "; ".join(f"{code}-{d} {r['passengers']:,} ({_share(r['load_factor_pct'])})"
+                       for d, r in zip(busiest.index, data["routes_by_passengers"]))),
+        fact(f"Routes with the most passengers above {t_text} load",
+             ("; ".join(f"{code}-{r['dest']} {r['spill_proxy']:,}" for r in data["routes_by_spill"])
+              + f" ({_share(top_spill_share)} of the spill proxy)") if spilling.size else "none"),
+        fact("Load factor (passenger service, a demand-pressure proxy)", _share(data["load_factor_pct"])),
+        fact(f"Passenger growth vs {previous}", _signed(growth_pct), True),
+        fact("Delay-cause mix (share of delay minutes, arrivals)",
+             ", ".join(f"{CAUSE_LABELS[c]} {_share(p)}" for c, p in data["delay_cause_mix_pct"].items())
+             if causes else "not available (no On-Time delay minutes)", True),
+    ]
+
+    why = [f"Airport-wide load factor was above the {t_text} target in {len(above)} of {len(months)} months, "
+           f"highest in {peak_text}." if len(above) else
+           f"Airport-wide load factor stayed at or below the {t_text} target in every month (highest {peak_text})."]
+    if spilling.size:
+        why.append(f"Passengers above the target load are concentrated on routes to {', '.join(spilling.index[:3])} "
+                   f"({_share(top_spill_share)} of the spill proxy on "
+                   + ("that route)." if len(spilling) == 1 else f"the top {len(spilling)} routes)."))
+    if causes:
+        top = next(iter(data["delay_cause_mix_pct"].items()))
+        why.append(f"The largest delay cause on arrivals is {CAUSE_LABELS[top[0]]} ({_share(top[1])} of delay minutes).")
+    why.append(f"Passengers changed {_signed(growth_pct)} vs {previous}.")
+    data["why"] = why
+
+    assumptions = [UNMET_DEMAND_PROXY, NEEDED_TO_MEASURE,
+                   f"spill proxy = passengers in excess of {t_text} x seats, summed over the route-months whose load "
+                   f"factor is above {t_text}: only the excess counts (a route-month at 85% adds 5% of its seats), "
+                   "not every passenger on a full flight; sensitivity at "
+                   f"{', '.join(_target(t) for t in targets)}",
+                   PASSENGER_SERVICE, LOAD_FACTOR_PROXY, CAUSE_DEFINITIONS, ONTIME_COVERAGE,
+                   f"confidence capped at {PROXY_CONFIDENCE_CAP}: a proxy, not a measurement"]
+    confidence = max(row["confidence"], PROXY_CONFIDENCE_CAP, key=CONFIDENCE_ORDER.index)
+    headline = (f"PROXY, not a measurement (unmet demand is not observable in this data): {code} load factor was "
+                f"above the {t_text} target in {len(above)} of {len(months)} months in {window.label}"
+                + (f" (peak {peaks.iloc[0]['label']} {_lf(peaks.iloc[0]['load_factor'])})" if len(above) else "")
+                + f"; spill proxy {spill[target]:,} passengers above the {t_text} load level (excess over "
+                  f"{t_text} of seats per route and month; range {range_text}).")
+    return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
 
 
 # --- LangChain wrappers ------------------------------------------------------------------
@@ -685,4 +1028,21 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
                            weights: dict[str, float] | None = None) -> dict:
         return run(rank_airports, region, top_n, sort_by, weights)
 
-    return [data_status_tool, resolve_airport_tool, airport_metrics_tool, rank_airports_tool]
+    @tool("compare_airports")
+    def compare_airports_tool(a: str, b: str) -> dict:
+        """Compare two airports (IATA codes or names) side by side: congestion (delayed departures,
+        taxi-out, NAS delay per arrival, cancellations) with a margin of error and a verdict per
+        figure, plus load factor, passengers, growth and long-haul share. Use for "compare X and Y",
+        "X vs Y", "is X more congested than Y"."""
+        return run(compare_airports, a, b)
+
+    @tool("explain_demand_gap")
+    def explain_demand_gap_tool(airport: str) -> dict:
+        """Unmet or excess demand at one airport (IATA code or name) and why: a labeled PROXY (unmet
+        demand is not observable): months above the target load factor, peak months, densest routes,
+        passengers above the target load level (spill proxy) with a sensitivity range, delay-cause
+        mix and growth. Use for "unmet demand", "demand gap", "is X short of capacity and why"."""
+        return run(explain_demand_gap, airport)
+
+    return [data_status_tool, resolve_airport_tool, airport_metrics_tool, rank_airports_tool, compare_airports_tool,
+            explain_demand_gap_tool]

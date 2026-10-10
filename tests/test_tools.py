@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from src import tools
-from tests.conftest import seed_analysis_db, seed_ontime
+from tests.conftest import seed_analysis_db, seed_ontime, seed_sfo
 
 ENVELOPE_KEYS = {"facts", "data", "data_period", "freshness", "assumptions", "confidence"}
 
@@ -218,7 +218,8 @@ def test_make_tools_errors_become_envelopes(scoring_cfg):
         raise sqlite3.OperationalError("unable to open database file")
 
     by_name = {t.name: t for t in tools.make_tools(broken, scoring_cfg)}
-    assert set(by_name) == {"data_status", "resolve_airport", "airport_metrics", "rank_airports"}
+    assert set(by_name) == {"data_status", "resolve_airport", "airport_metrics", "rank_airports", "compare_airports",
+                            "explain_demand_gap"}
     r = by_name["airport_metrics"].invoke({"airport": "ANC"})
     assert r["data"] is None and "unable to open" in r["error"]
 
@@ -471,3 +472,201 @@ def test_data_status_lists_congestion_only_until_ontime_is_loaded(db, scoring_cf
     assert "congestion" in tools.data_status(db, scoring_cfg)["data"]["score_components_not_built"]
     seed_ontime(db)
     assert "congestion" not in tools.data_status(db, scoring_cfg)["data"]["score_components_not_built"]
+
+
+# --- compare_airports (P3.3) -------------------------------------------------------------------
+
+def comparison(result):
+    """metric key -> (verdict, {airport: display})"""
+    return {m["key"]: (m["verdict"], {c: v["display"] for c, v in m["cells"].items()})
+            for m in result["data"]["metrics"]}
+
+
+def test_compare_la_uses_the_configured_default_and_states_it(db_ontime, scoring_cfg):
+    r = check_envelope(tools.compare_airports(db_ontime, scoring_cfg, "LA", "Santa Ana"))
+    assert r["data"]["airports"] == ["LAX", "SNA"]
+    assert r["assumptions"][0] == "'LA' = LAX (configured default; other candidates: BUR, LGB, ONT, SNA)"
+    assert r["confidence"] == "medium"
+
+
+def test_compare_verdicts_follow_the_margin(db_ontime, scoring_cfg):
+    m = comparison(tools.compare_airports(db_ontime, scoring_cfg, "LAX", "SNA"))
+    # LAX 25.3% of 11,880 vs SNA 20.2% of 2,376: 5.1 points, combined margin about 1.8 -> LAX higher
+    assert m["dep_delay_rate"] == ("LAX higher", {"LAX": "25.3% ± 0.78 pts (11,880 departures)",
+                                                  "SNA": "20.2% ± 1.61 pts (2,376 departures)"})
+    assert m["nas_min_per_arrival"][0] == "LAX higher"
+    assert m["congestion_percentile"][0] == "not tested (a rank, no margin)"
+    assert m["passengers"][0] == "LAX higher (full count)"
+
+
+def test_compare_inside_the_margin_is_no_meaningful_difference(db_ontime, scoring_cfg):
+    # PWM 18.4% of 1,764 vs SNA 20.2% of 2,376: 1.8 points inside the combined margin of about 2.4
+    r = tools.compare_airports(db_ontime, scoring_cfg, "PWM", "SNA")
+    assert comparison(r)["dep_delay_rate"][0] == "no meaningful difference"
+    assert "no meaningful difference in delayed departures (PWM 18.4%, SNA 20.2%)" in r["headline"]
+    assert "PWM higher" not in r["headline"].split(";")[0] and "SNA higher" not in r["headline"].split(";")[0]
+
+
+def test_compare_facts_are_per_airport_and_cancellations_not_scored(db_ontime, scoring_cfg):
+    r = tools.compare_airports(db_ontime, scoring_cfg, "LAX", "SNA")
+    by = facts(r)
+    assert by["LAX: Departures delayed >= 15 min"]["required"] and by["SNA: Departures delayed >= 15 min"]["required"]
+    assert by["Verdict: Departures delayed >= 15 min"]["value"] == "LAX higher"
+    assert "SNA: Cancelled departures (shown, not scored)" in by
+    assert {f["airport"] for f in r["facts"] if "airport" in f} == {"LAX", "SNA"}
+    assert any("cancellations are shown, not scored" in a for a in r["assumptions"])
+
+
+def test_compare_overall_sentence_from_the_scored_verdicts(db_ontime, scoring_cfg):
+    # LAX higher on all three scored measures (cancellations are not scored and do not count)
+    r = tools.compare_airports(db_ontime, scoring_cfg, "LAX", "SNA")
+    assert r["data"]["overall"] == "Overall: LAX is higher on every measure with a meaningful difference."
+    # PWM vs SNA: delays inside the margin, taxi-out and NAS differ in opposite directions -> mixed
+    assert tools.compare_airports(db_ontime, scoring_cfg, "PWM", "SNA")["data"]["overall"] == (
+        "Overall: mixed, no airport is higher on every measure.")
+    assert tools.compare_airports(db_ontime, scoring_cfg, "BOS", "BTV")["data"]["overall"] == (
+        "Overall: not comparable, no scored congestion figure for both airports.")
+
+
+def test_compare_size_note_follows_the_configured_ratio(db_ontime, scoring_cfg):
+    from dataclasses import replace
+    # passenger-service departures a month: LAX 100, SNA 10
+    note = " Note: LAX has 10.0 times SNA's departures (passenger service): rates compare per flight, but the airports differ in scale."
+    assert tools.compare_airports(db_ontime, scoring_cfg, "LAX", "SNA")["headline"].endswith(note)
+    wide = replace(scoring_cfg, comparison_size_ratio_note=20.0)
+    assert "Note:" not in tools.compare_airports(db_ontime, wide, "LAX", "SNA")["headline"]
+
+
+def test_compare_without_congestion_figures_is_not_comparable(db_ontime, scoring_cfg):
+    r = tools.compare_airports(db_ontime, scoring_cfg, "BOS", "BTV")   # BTV under min_ontime_flights
+    assert comparison(r)["dep_delay_rate"][0] == "not comparable"
+    assert "BTV has no congestion figures (too few flights)." in r["headline"]
+
+
+def test_compare_ambiguous_name_returns_the_ambiguity(db_ontime, scoring_cfg):
+    r = tools.compare_airports(db_ontime, scoring_cfg, "Chicago", "BOS")
+    assert r["data"] is None and r["candidates"] == ["ORD", "MDW"] and r["best"] == "ORD"
+
+
+def test_compare_unknown_and_same_airport(db_ontime, scoring_cfg):
+    assert "No airport" in tools.compare_airports(db_ontime, scoring_cfg, "Atlantis", "BOS")["error"]
+    assert "two different airports" in tools.compare_airports(db_ontime, scoring_cfg, "LAX", "LAX")["error"]
+
+
+# --- explain_demand_gap (P3.4) -----------------------------------------------------------------
+
+@pytest.fixture
+def db_sfo(db_ontime):
+    seed_sfo(db_ontime)
+    return db_ontime
+
+
+def test_demand_gap_is_a_labeled_proxy_with_capped_confidence(db_sfo, scoring_cfg):
+    r = check_envelope(tools.explain_demand_gap(db_sfo, scoring_cfg, "SFO"))
+    assert r["headline"].startswith("PROXY, not a measurement")
+    assert r["data"]["proxy"] is True
+    assert required(r)["Unmet demand"] == "not observable in this data; the figures below are a proxy"
+    assert any("not observable" in a for a in r["assumptions"])
+    assert any("booking" in a and "spill" in a for a in r["assumptions"])
+    assert r["confidence"] in ("medium", "low")
+
+
+def test_demand_gap_facts_from_the_data(db_sfo, scoring_cfg):
+    r = tools.explain_demand_gap(db_sfo, scoring_cfg, "SFO")
+    req = required(r)
+    # June-August: (950 + 1,500) / 3,000 = 81.7% > 80%; other months 73.3%
+    assert req["Months with load factor above 80%"] == "3 of 12"
+    assert facts(r)["Peak months (load factor)"]["value"] == "2025-06 81.7%, 2025-07 81.7%, 2025-08 81.7%"
+    # spill proxy: HNL (950 - 800) x 3 months = 450 of 27,150 passengers; LAX never above 80%
+    # the excess over 80% of seats, not all passengers on full flights (2,850 flew on HNL in summer)
+    assert req["Spill proxy: passengers above the 80% load level (excess over 80% of seats, per route and month)"] == (
+        "450 (1.7% of passengers)")
+    assert any("only the excess counts" in a for a in r["assumptions"])
+    assert req["Spill proxy sensitivity (target load factor)"] == "600 at 75% to 300 at 85%"
+    assert facts(r)["Routes with the most passengers above 80% load"]["value"] == "SFO-HNL 450 (100.0% of the spill proxy)"
+    assert facts(r)["Routes with the most passengers (load factor)"]["value"].startswith("SFO-LAX 18,000 (75.0%)")
+    # causes per month: NAS 300, late aircraft 180, carrier 100, weather 20, security 0 (of 600)
+    assert req["Delay-cause mix (share of delay minutes, arrivals)"] == (
+        "NAS 50.0%, late aircraft 30.0%, carrier 16.7%, weather 3.3%, security 0.0%")
+    assert req["Passenger growth vs 2024-01..2024-12"] == "+10.4%"
+
+
+def test_demand_gap_why_is_built_from_the_facts(db_sfo, scoring_cfg):
+    why = tools.explain_demand_gap(db_sfo, scoring_cfg, "SFO")["data"]["why"]
+    assert why == [
+        "Airport-wide load factor was above the 80% target in 3 of 12 months, highest in "
+        "2025-06 81.7%, 2025-07 81.7%, 2025-08 81.7%.",
+        "Passengers above the target load are concentrated on routes to HNL (100.0% of the spill proxy on that route).",
+        "The largest delay cause on arrivals is NAS (50.0% of delay minutes).",
+        "Passengers changed +10.4% vs 2024-01..2024-12.",
+    ]
+
+
+def test_demand_gap_without_ontime_still_answers(db, scoring_cfg):
+    seed_sfo(db)
+    r = tools.explain_demand_gap(db, scoring_cfg, "SFO")
+    assert required(r)["Delay-cause mix (share of delay minutes, arrivals)"] == "not available (no On-Time delay minutes)"
+
+
+def test_demand_gap_target_comes_from_config(db_sfo, scoring_cfg):
+    from dataclasses import replace
+    r = tools.explain_demand_gap(db_sfo, replace(scoring_cfg, target_load_factor=0.75), "SFO")
+    assert required(r)["Months with load factor above 75%"] == "3 of 12"
+    assert "above the 75% load level" in r["headline"]
+
+
+def test_demand_gap_ambiguous_or_unknown(db_sfo, scoring_cfg):
+    assert tools.explain_demand_gap(db_sfo, scoring_cfg, "Chicago")["candidates"] == ["ORD", "MDW"]
+    assert "No airport" in tools.explain_demand_gap(db_sfo, scoring_cfg, "Atlantis")["error"]
+
+
+# --- rank stability (P3.5) -----------------------------------------------------------------------
+
+def test_rank_airports_reports_stability_per_airport(db_ontime, scoring_cfg):
+    r = tools.rank_airports(db_ontime, scoring_cfg, "new_england")
+    for x in r["data"]["ranked"]:
+        s = x["stability"]
+        assert s["runs"] == scoring_cfg.sensitivity_runs and s["top_n"] == scoring_cfg.sensitivity_top_n
+        assert s["min_rank"] <= x["rank"] <= s["max_rank"]
+    by = facts(r)
+    assert by["Rank stability (method)"]["value"] == "20 runs, each weight changed at random by up to ±25% and renormalized (seed 42)"
+    top = r["data"]["ranked"][0]
+    assert by["Stability of the top airport"]["value"] == f"{top['iata']} first in {top['stability']['first']} of 20 runs"
+    assert "of stability runs, ranks" in by[f"#1 {top['iata']} ({top['name']})"]["value"]
+
+
+def test_rank_stability_is_deterministic_in_the_tool(db_ontime, scoring_cfg):
+    a = tools.rank_airports(db_ontime, scoring_cfg, "national")
+    b = tools.rank_airports(db_ontime, scoring_cfg, "national")
+    assert [x["stability"] for x in a["data"]["ranked"]] == [x["stability"] for x in b["data"]["ranked"]]
+
+
+def test_unstable_top_airport_gets_a_headline_note(db_ontime, scoring_cfg, monkeypatch):
+    real = tools.scoring.rank_stability
+
+    def shaky(ranking, weights, cfg):
+        out = real(ranking, weights, cfg)
+        out[ranking.ranked["iata"].iloc[0]].update(first=12)
+        return out
+
+    monkeypatch.setattr(tools.scoring, "rank_stability", shaky)
+    r = tools.rank_airports(db_ontime, scoring_cfg, "new_england")
+    top = r["data"]["ranked"][0]["iata"]
+    assert r["headline"].endswith(f"Not stable: {top} is first in only 12 of 20 runs with perturbed weights.")
+
+
+def test_stable_top_airport_has_no_note(db_ontime, scoring_cfg):
+    assert "Not stable" not in tools.rank_airports(db_ontime, scoring_cfg, "new_england")["headline"]
+
+
+# --- drivers (P3.8c) ---------------------------------------------------------------------------
+
+def test_rank_airports_drivers_block(db_ontime, scoring_cfg):
+    r = tools.rank_airports(db_ontime, scoring_cfg, "new_england")
+    for x in r["data"]["ranked"]:
+        pcts = {c: v["percentile"] for c, v in x["components"].items() if v["percentile"] is not None}
+        assert x["drivers"]["strongest"]["percentile"] == max(pcts.values())
+        assert x["drivers"]["weakest"]["percentile"] == min(pcts.values())
+        f = next(f for f in r["facts"] if f["label"] == f"Drivers: {x['iata']}")
+        assert f["ranked"] == x["iata"] and f["value"].startswith("strongest: ")
+    assert any(a.startswith("drivers = ") for a in r["assumptions"])

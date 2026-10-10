@@ -14,6 +14,12 @@ from typing import Any
 _RANKING_FACT = re.compile(r"^#\d+ ")
 
 
+def _in_a_table(f: dict) -> bool:
+    """Facts shown by a table instead of the card: ranking rows and drivers (a `ranked` key), and
+    compare_airports values (an `airport` key) and verdicts (a `metric` key)."""
+    return bool(_RANKING_FACT.match(f["label"])) or "airport" in f or "metric" in f or "ranked" in f
+
+
 def _cell(value: Any) -> str:
     """Table cell text: pipes escaped, newlines flattened."""
     return str(value).replace("|", "\\|").replace("\n", " ")
@@ -43,12 +49,22 @@ def render_headline(envelope: dict) -> str:
 def render_facts(envelope: dict) -> str:
     """Facts card: one row per fact, then freshness unless a fact already states it.
 
-    Required facts are marked with *; ranking rows are left to `render_ranking`."""
+    Required facts are marked with *; ranking rows and comparison values are left to their tables."""
     rows = [[f["label"] + (" *" if f.get("required") else ""), f["value"]]
-            for f in envelope.get("facts") or [] if not _RANKING_FACT.match(f["label"])]
+            for f in envelope.get("facts") or [] if not _in_a_table(f)]
     if envelope.get("freshness") and not any(f["label"] == "Freshness" for f in envelope.get("facts") or []):
         rows.append(["Freshness", envelope["freshness"]])
     return _table(["Fact", "Value"], rows) if rows else ""
+
+
+def _stability_cells(row: dict, top_n: int | None) -> list[str]:
+    s = row.get("stability")
+    if not top_n:
+        return []
+    if not s:
+        return ["n/a", "n/a"]
+    span = str(s["min_rank"]) if s["min_rank"] == s["max_rank"] else f"{s['min_rank']}-{s['max_rank']}"
+    return [f"{s['in_top_n_pct']:.0f}%", span]
 
 
 def render_ranking(envelope: dict) -> str:
@@ -62,6 +78,8 @@ def render_ranking(envelope: dict) -> str:
              if any(key in r for r in ranked)]
     # Congestion column only when the ranking used it (On-Time loaded): share of departures delayed >= 15 min.
     congestion = any("congestion" in r.get("components", {}) for r in ranked)
+    # Rank stability columns when the tool computed them (P3.5): share of runs in the top N, rank range.
+    stable = next((r["stability"]["top_n"] for r in ranked if r.get("stability")), None)
     rows = []
     for r in ranked:
         comp = r.get("components", {})
@@ -71,9 +89,10 @@ def render_ranking(envelope: dict) -> str:
                      "n/a" if passengers is None else f"{passengers:,}",
                      _pct(comp.get("utilization", {}).get("load_factor_pct")),
                      _pct(comp.get("growth", {}).get("growth_pct"), signed=True),
-                     *delayed, r["confidence"]])
+                     *delayed, *_stability_cells(r, stable), r["confidence"]])
     header = ["Rank", *[label for _, label in extra], "Airport", "Name", "Score", "Passengers", "Load factor",
-              "Growth", *(["Delayed departures"] if congestion else []), "Confidence"]
+              "Growth", *(["Delayed departures"] if congestion else []),
+              *([f"In top {stable} (runs)", "Rank range"] if stable else []), "Confidence"]
     table = _table(header, rows)
     total = data.get("ranked_total", len(ranked))
     if total > len(ranked):
@@ -81,6 +100,41 @@ def render_ranking(envelope: dict) -> str:
     for group in data.get("ties") or []:
         table += f"\n\nTie (equal score): {', '.join(group)}."
     return table
+
+
+def render_comparison(envelope: dict) -> str:
+    """compare_airports as a two-column table (one column per airport) plus the verdict per metric."""
+    data = envelope.get("data") or {}
+    metrics = data.get("metrics") if isinstance(data, dict) else None
+    if not metrics:
+        return ""
+    codes = data["airports"]
+    rows = [[m["label"], *(m["cells"][c]["display"] for c in codes), m["verdict"]] for m in metrics]
+    names = "; ".join(f"{c} = {data['names'][c]}" for c in codes)
+    return f"{names}\n\n" + _table(["Metric", *codes, "Verdict"], rows)
+
+
+def _driver_cell(d: dict) -> str:
+    return f"{d['component'].replace('_', ' ')} ({d['percentile']:.0f})"
+
+
+def render_drivers(envelope: dict) -> str:
+    """rank_airports drivers: each ranked airport's strongest and weakest component (national percentile)."""
+    data = envelope.get("data") or {}
+    ranked = [r for r in (data.get("ranked") or []) if r.get("drivers")] if isinstance(data, dict) else []
+    if not ranked:
+        return ""
+    rows = [[r["rank"], r["iata"], _driver_cell(r["drivers"]["strongest"]), _driver_cell(r["drivers"]["weakest"])]
+            for r in ranked]
+    return ("Drivers (component and national percentile in the peer set):\n\n"
+            + _table(["Rank", "Airport", "Strongest", "Weakest"], rows))
+
+
+def render_why(envelope: dict) -> str:
+    """explain_demand_gap's "why": sentences built by the tool from its own facts, as a list."""
+    data = envelope.get("data") or {}
+    why = data.get("why") if isinstance(data, dict) else None
+    return "Why (built only from the facts above):\n\n" + "\n".join(f"- {w}" for w in why) if why else ""
 
 
 def render_excluded(envelope: dict) -> str:
@@ -129,7 +183,8 @@ def render_envelope(envelope: Any, title: str | None = None) -> str:
     if envelope.get("error"):
         parts.append(render_error(envelope))
         return "\n\n".join(parts)
-    parts += [render_facts(envelope), render_ranking(envelope)]
+    parts += [render_comparison(envelope), render_facts(envelope), render_why(envelope), render_ranking(envelope),
+              render_drivers(envelope)]
     if excluded := render_excluded(envelope):
         parts.append(f"{excluded_title(envelope)}:\n\n{excluded}")
     if assumptions := render_assumptions(envelope):

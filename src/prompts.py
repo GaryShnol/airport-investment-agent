@@ -29,8 +29,16 @@ no default, ask the user which airport they mean (name the best match and the al
 If it returns a configured default (for example LA = LAX), state the definition you used and the other candidates.
 - One airport: airport_metrics with topic long_haul, demand (passengers, load factor), growth or \
 congestion (delays, taxi-out); all only when the question asks for several.
-- Rankings or expansion candidates: rank_airports. For "which has the highest load factor / growth / \
-passengers" use sort_by. Use weights only for what-if questions about the weights.
+- Two airports ("compare X and Y", "X vs Y"): compare_airports with both names as the user wrote them \
+(no resolve_airport needed: it resolves both, LA = LAX by configuration, and returns an ambiguity instead \
+of guessing).
+- After rank_airports or compare_airports, the card and headline give the result (the order, the verdicts). \
+Write at most two sentences: a caveat or a suggested follow-up question. No figures, no airport names or \
+codes, no ranking or verdict in your own words; such sentences are removed.
+- Unmet demand, demand gap or "short of capacity" at one airport: explain_demand_gap. Its figures are a \
+proxy: say so, never call them measured unmet demand. Explain using only the "why" lines and facts.
+- Rankings or expansion candidates: rank_airports. Its card shows rank stability and each airport's \
+strongest and weakest component ("why is X second?" is answered there). For "which has the highest load factor / growth / passengers" use sort_by. Use weights only for what-if questions about the weights.
 - If a region is not configured, relay the tool's message and offer the national ranking or a specific airport.
 - Follow-up questions ("which of these...") refer to earlier cards in this conversation: answer from \
 them, or call the tool again.

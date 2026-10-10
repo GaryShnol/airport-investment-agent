@@ -6,9 +6,12 @@ Helpers take pandas Series (one value per airport) and return Series aligned to 
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from statistics import NormalDist, stdev
 from typing import Iterable, Mapping
 
+import numpy as np
 import pandas as pd
 
 from src.config import ScoringConfig
@@ -164,6 +167,16 @@ def _confidence(window: Window, missing: list[str], unavailable: dict[str, str],
     return ("medium", reasons) if reasons else ("high", [])
 
 
+def weighted_score(pct: pd.DataFrame, weights: Mapping[str, float], peer: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """(score, weight present) per row: the weighted mean of the component percentiles each airport
+    has. Dividing by the sum of the weights present renormalizes per airport; no weighted component
+    present, or outside the peer set -> no score. Rounded to SCORE_DECIMALS so float noise (1e-16)
+    never decides an exact tie; ties then break by IATA. Shared by `score` and `rank_stability`."""
+    w = pd.Series(weights, dtype=float)
+    present = pct.notna().mul(w).sum(axis=1)
+    return ((pct * w).sum(axis=1) / present.where(peer & (present > 0))).round(SCORE_DECIMALS), present
+
+
 def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreResult:
     """Score every peer-set airport; `metrics` has the columns of `store.airport_metrics`.
 
@@ -208,13 +221,8 @@ def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreRes
     for component in available:
         t[f"pct_{component}"] = percentile_rank(t.loc[peer, RAW_COLUMN[component]].astype(float))
 
-    # Weighted mean over the components each airport has: dividing by the sum of the weights
-    # present renormalizes per airport. No weighted component present -> no score.
     pct = t[[f"pct_{c}" for c in available]].set_axis(available, axis=1)
-    w = pd.Series(weights_used)
-    present_weight = pct.notna().mul(w).sum(axis=1)
-    # Rounded so float noise (1e-16) never decides an exact tie; ties then break by IATA.
-    t["score"] = ((pct * w).sum(axis=1) / present_weight.where(peer & (present_weight > 0))).round(SCORE_DECIMALS)
+    t["score"], present_weight = weighted_score(pct, weights_used, peer)
     t["missing"] = [[c for c in available if pd.isna(pct.at[i, c])] if peer[i] else [] for i in t.index]
     t["weights_used"] = [{c: wt / present_weight[i] for c, wt in weights_used.items() if c not in miss}
                          if pd.notna(t.at[i, "score"]) else {} for i, miss in t["missing"].items()]
@@ -249,3 +257,128 @@ def rank(result: ScoreResult, region: str, cfg: ScoringConfig) -> RegionRanking:
     excluded["reason"] = [f"{p:,} passenger-service passengers, below the {cfg.min_passengers_per_year:,} floor"
                           for p in excluded["passengers"]]
     return RegionRanking(region, states, ranked.reset_index(drop=True), excluded.reset_index(drop=True), result)
+
+
+# --- drivers (rank_airports) -------------------------------------------------------------------
+
+def drivers(row: Mapping, components: Iterable[str]) -> dict[str, tuple[str, float]] | None:
+    """An airport's strongest and weakest component by national percentile (`pct_<component>`),
+    over the components it has. Ties go to the component listed first (the order of the weights in
+    config/weights.yaml). None when it has no component percentile."""
+    present = [(c, float(row[f"pct_{c}"])) for c in components
+               if f"pct_{c}" in row and row[f"pct_{c}"] is not None and row[f"pct_{c}"] == row[f"pct_{c}"]]
+    if not present:
+        return None
+    strongest = max(present, key=lambda cp: cp[1])   # max/min keep the first of equal values
+    weakest = min(present, key=lambda cp: cp[1])
+    return {"strongest": strongest, "weakest": weakest}
+
+
+# --- rank stability (rank_airports) -----------------------------------------------------------
+
+def perturb_weights(weights: Mapping[str, float], jitter: float, rng: np.random.Generator) -> dict[str, float]:
+    """Each weight times (1 + u), u uniform in [-jitter, +jitter], drawn in key order; renormalized."""
+    draws = rng.uniform(-jitter, jitter, size=len(weights))
+    return renormalize({k: w * (1 + d) for (k, w), d in zip(weights.items(), draws)}, weights)
+
+
+def rank_stability(ranking: RegionRanking, weights: Mapping[str, float], cfg: ScoringConfig) -> dict[str, dict]:
+    """How much each ranked airport's rank depends on the weights. Seeded and deterministic.
+
+    `sensitivity_runs` times: perturb `weights` (the weights the ranking used) with
+    `perturb_weights`, recompute every score from the same percentiles with `weighted_score`, and
+    re-rank the region (ties by IATA). Per airport: runs in the top `sensitivity_top_n`, runs ranked
+    first, and the min and max rank. Same seed and inputs -> same output."""
+    t = ranking.ranked
+    if t.empty:
+        return {}
+    pct = t[[f"pct_{c}" for c in weights]].set_axis(list(weights), axis=1)
+    peer = pd.Series(True, index=t.index)
+    rng = np.random.default_rng(cfg.sensitivity_seed)
+    ranks = {iata: [] for iata in t["iata"]}
+    for _ in range(cfg.sensitivity_runs):
+        scores, _present = weighted_score(pct, perturb_weights(weights, cfg.sensitivity_jitter, rng), peer)
+        order = pd.DataFrame({"iata": t["iata"], "score": scores}).sort_values(
+            ["score", "iata"], ascending=[False, True], na_position="last", kind="stable")
+        for position, iata in enumerate(order["iata"], start=1):
+            ranks[iata].append(position)
+    return {iata: {"runs": cfg.sensitivity_runs, "top_n": cfg.sensitivity_top_n,
+                   "in_top_n": sum(r <= cfg.sensitivity_top_n for r in rs), "first": rs.count(1),
+                   "min_rank": min(rs), "max_rank": max(rs)} for iata, rs in ranks.items()}
+
+
+# --- demand-gap proxy (explain_demand_gap) -----------------------------------------------------
+
+def above_target(passengers: pd.Series, seats: pd.Series, target: float) -> pd.Series:
+    """Passengers in excess of `target` x seats, per row (route-month); 0 where the load factor is at
+    or below the target. Summed, this is the spill proxy: the number of passengers above the target
+    load level (not every passenger on a full flight), a hint of demand the capacity barely met. It is not observed unmet demand (no booking or
+    spill data): passengers turned away never appear in T-100."""
+    return (passengers - target * seats).clip(lower=0)
+
+
+DELAY_CAUSES = ("nas", "carrier", "late_aircraft", "weather", "security")
+
+
+def delay_cause_mix(minutes: Mapping[str, float]) -> dict[str, float] | None:
+    """Share of delay minutes per cause (keys DELAY_CAUSES), largest first; None without minutes."""
+    total = sum(float(minutes.get(c) or 0) for c in DELAY_CAUSES)
+    if total <= 0:
+        return None
+    shares = {c: float(minutes.get(c) or 0) / total for c in DELAY_CAUSES}
+    return dict(sorted(shares.items(), key=lambda kv: (-kv[1], DELAY_CAUSES.index(kv[0]))))
+
+
+# --- comparison margins (compare_airports) -----------------------------------------------------
+
+def z_value(confidence_level: float) -> float:
+    """Two-sided normal quantile for a confidence level (0.95 -> 1.96)."""
+    return NormalDist().inv_cdf(0.5 + confidence_level / 2)
+
+
+def proportion_margin(share: float | None, n: float | None, z: float) -> float | None:
+    """Margin of error of a share of flights (normal approximation of the binomial): z * sqrt(p(1-p)/n).
+
+    Used for On-Time rates: On-Time covers only the large reporting carriers, so its flights are a
+    sample of the airport's traffic. Missing when the share or the flight count is missing."""
+    if share is None or n is None or share != share or n != n or n <= 0:
+        return None
+    return z * math.sqrt(share * (1 - share) / n)
+
+
+def mean_margin(monthly_values: Iterable[float], z: float) -> float | None:
+    """Margin of error of a mean in minutes from its month-to-month spread: z * sd / sqrt(months).
+
+    Only monthly sums are stored, not per-flight values, so the spread of the monthly means is the
+    available measure of noise (it also absorbs seasonality, so it is conservative). Missing with
+    fewer than two months."""
+    values = [float(v) for v in monthly_values if v is not None and v == v]
+    if len(values) < 2:
+        return None
+    return z * stdev(values) / math.sqrt(len(values))
+
+
+def compare_values(a: float | None, b: float | None, margin_a: float | None,
+                   margin_b: float | None) -> str | None:
+    """'a' or 'b' (the higher value) when the difference exceeds the combined margin
+    sqrt(margin_a^2 + margin_b^2), 'same' when it does not, None when a value or margin is missing.
+    The rule never names a higher airport inside the margin."""
+    if None in (a, b, margin_a, margin_b):
+        return None
+    if abs(a - b) <= math.hypot(margin_a, margin_b):
+        return "same"
+    return "a" if a > b else "b"
+
+
+def overall_verdict(results: Iterable[str | None]) -> str:
+    """One verdict over several `compare_values` results (the scored metrics only):
+    'none' (nothing comparable), 'same' (no meaningful difference anywhere), 'a' or 'b' (higher on
+    every comparable measure, each beyond the margin), else 'mixed'. Missing results are skipped."""
+    known = [r for r in results if r is not None]
+    if not known:
+        return "none"
+    if set(known) == {"same"}:
+        return "same"
+    if len(set(known)) == 1:
+        return known[0]
+    return "mixed"

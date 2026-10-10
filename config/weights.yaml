@@ -25,13 +25,30 @@ long_haul_sensitivity_miles: [1500, 2500, 3000]
 min_passengers_per_year: 100000   # passenger-service passengers in the window, to be in the peer set
                                   # (a departure floor let 9-seat commuter airports in and kept ORH and PSM out)
 
-unmet_demand:
-  target_load_factor: 0.80      # spill proxy: seats needed to bring dense routes down to this
+unmet_demand:                   # explain_demand_gap: a PROXY, unmet demand is not observable here
+  target_load_factor: 0.80      # passengers carried above this load (per route and month) = spill proxy
+  target_sensitivity: [0.75, 0.80, 0.85]  # the spill proxy is also given at these targets (range)
+  peak_months: 3                # highest load-factor months listed
+  top_routes: 5                 # routes listed (by passengers, and by share of the spill proxy)
 
-sensitivity:                    # rank stability under weight perturbation
+sensitivity:                    # rank stability under weight perturbation (rank_airports)
   runs: 20
   weight_jitter: 0.25           # +/- relative change per weight, then renormalized
-  seed: 42
+  seed: 42                      # same seed, same result
+  top_n: 3                      # report the share of runs each airport spends in this top N
+  stable_share: 0.9             # the #1 airport is called unstable if first in fewer runs than this
+
+comparison:                     # compare_airports
+  confidence_level: 0.95        # margin of error on On-Time figures; a difference inside the combined
+                                # margin is reported as "no meaningful difference"
+  size_ratio_note: 3.0          # headline note when one airport has more than this many times the other's
+                                # departures (rates still compare; totals and margins differ in kind)
+
+commentary:                     # what the model may write under a card (src/figure_check.py)
+  # For these tools the card and headline give the result (an ordering or a verdict, which a figure
+  # check cannot verify): the commentary keeps only sentences with no digit, no airport code and no
+  # airport name (caveats, next steps). Other tools keep the figure check.
+  restricted_tools: [rank_airports, compare_airports]
 
 # Longest ranking rank_airports returns, whatever top_n asks for (scenario or not). Keeps tool
 # results within a local model's context window.

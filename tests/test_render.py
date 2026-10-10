@@ -128,3 +128,59 @@ def test_ranking_shows_delayed_departures_when_congestion_is_scored():
                         "| Confidence |")
     assert lines[2].endswith("| +2.5% | 22.8% | medium |")
     assert lines[3].endswith("| -1.0% | n/a | low |")  # PWM without On-Time data
+
+
+COMPARISON = {
+    "headline": "LAX vs SNA: ...",
+    "facts": [
+        {"label": "LAX: Departures delayed >= 15 min", "value": "18.1% ± 0.17 pts", "required": True, "airport": "LAX"},
+        {"label": "SNA: Departures delayed >= 15 min", "value": "19.2% ± 0.37 pts", "required": True, "airport": "SNA"},
+        {"label": "Verdict: Departures delayed >= 15 min", "value": "SNA higher", "required": False,
+         "metric": "dep_delay_rate"},
+        {"label": "Data period", "value": "2025-01..2025-12", "required": True},
+    ],
+    "data": {"airports": ["LAX", "SNA"], "names": {"LAX": "Los Angeles Intl", "SNA": "John Wayne"},
+             "metrics": [{"key": "dep_delay_rate", "label": "Departures delayed >= 15 min", "verdict": "SNA higher",
+                          "cells": {"LAX": {"display": "18.1% ± 0.17 pts"}, "SNA": {"display": "19.2% ± 0.37 pts"}}},
+                         {"key": "passengers", "label": "Passengers", "verdict": "LAX higher (full count)",
+                          "cells": {"LAX": {"display": "36,778,508"}, "SNA": {"display": "5,532,646"}}}]},
+    "data_period": "2025-01..2025-12", "freshness": "unknown", "assumptions": [], "confidence": "medium",
+}
+
+
+def test_comparison_is_a_two_column_table_and_its_facts_leave_the_card():
+    out = render_envelope(COMPARISON)
+    assert ("LAX = Los Angeles Intl; SNA = John Wayne\n\n"
+            "| Metric | LAX | SNA | Verdict |\n|---|---|---|---|\n"
+            "| Departures delayed >= 15 min | 18.1% ± 0.17 pts | 19.2% ± 0.37 pts | SNA higher |\n"
+            "| Passengers | 36,778,508 | 5,532,646 | LAX higher (full count) |") in out
+    assert render_facts(COMPARISON) == ("| Fact | Value |\n|---|---|\n| Data period * | 2025-01..2025-12 |\n"
+                                        "| Freshness | unknown |")
+
+
+def test_demand_gap_why_is_rendered_as_a_list_under_the_card():
+    env = {"headline": "PROXY, not a measurement: ...", "facts": [], "data": {"why": ["First.", "Second."]},
+           "assumptions": [], "confidence": "medium"}
+    assert "Why (built only from the facts above):\n\n- First.\n- Second." in render_envelope(env)
+
+
+def test_ranking_shows_stability_columns_when_computed():
+    env = {**RANKING, "data": {**RANKING["data"], "ranked": [
+        {**RANKING["data"]["ranked"][0], "stability": {"top_n": 3, "in_top_n_pct": 100.0, "min_rank": 1, "max_rank": 1}},
+        {**RANKING["data"]["ranked"][1], "stability": {"top_n": 3, "in_top_n_pct": 85.0, "min_rank": 2, "max_rank": 4}},
+    ]}}
+    table = render_ranking(env)
+    assert "| In top 3 (runs) | Rank range | Confidence |" in table
+    assert "| 100% | 1 | medium |" in table and "| 85% | 2-4 | low |" in table
+
+
+def test_drivers_table_and_facts_stay_out_of_the_card():
+    env = {**RANKING, "facts": [*RANKING["facts"], {"label": "Drivers: BOS", "value": "strongest: scale", "required": False,
+                                                     "ranked": "BOS"}],
+           "data": {**RANKING["data"], "ranked": [
+               {**RANKING["data"]["ranked"][0], "drivers": {"strongest": {"component": "scale", "percentile": 99.0},
+                                                             "weakest": {"component": "long_haul", "percentile": 43.0}}}]}}
+    out = render_envelope(env)
+    assert ("Drivers (component and national percentile in the peer set):\n\n| Rank | Airport | Strongest | Weakest |\n"
+            "|---|---|---|---|\n| 1 | BOS | scale (99) | long haul (43) |") in out
+    assert "Drivers: BOS" not in render_facts(env)
