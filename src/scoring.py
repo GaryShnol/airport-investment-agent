@@ -167,6 +167,13 @@ def _confidence(window: Window, missing: list[str], unavailable: dict[str, str],
     return ("medium", reasons) if reasons else ("high", [])
 
 
+def in_peer_set(metrics: pd.DataFrame, cfg: ScoringConfig) -> pd.Series:
+    """Peer set (docs/plan.md, Definitions): a US state or territory and at least
+    `min_passengers_per_year` passenger-service passengers in the window. Shared by scoring and
+    by ingest (which geocodes only peer-set airports)."""
+    return metrics["state"].notna() & (metrics["passengers"] >= cfg.min_passengers_per_year)
+
+
 def weighted_score(pct: pd.DataFrame, weights: Mapping[str, float], peer: pd.Series) -> tuple[pd.Series, pd.Series]:
     """(score, weight present) per row: the weighted mean of the component percentiles each airport
     has. Dividing by the sum of the weights present renormalizes per airport; no weighted component
@@ -206,7 +213,7 @@ def score(metrics: pd.DataFrame, cfg: ScoringConfig, window: Window) -> ScoreRes
     t["long_haul_share"] = long_haul_share(t["long_haul_departures"], t["departures"])
     t["long_haul_share_scored"] = floor_share(t["long_haul_share"], cfg.long_haul_min_share)
     t["growth"] = growth(t["passengers"], t["prev_passengers"])
-    t["in_peer_set"] = t["state"].notna() & (t["passengers"] >= cfg.min_passengers_per_year)
+    t["in_peer_set"] = in_peer_set(t, cfg)
 
     peer = t["in_peer_set"]
     if has_ontime:

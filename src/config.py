@@ -139,6 +139,7 @@ class ScoringConfig:
     census_variable: str         # population variable, e.g. B01003_001E
     census_vintage: int          # population vintage scored (demand_context)
     census_base_vintage: int     # earlier vintage, base for metro population growth
+    geocoder_benchmark: str      # Census Geocoder benchmark
     geocoder_vintage: str        # Census Geocoder vintage (CBSA delineation) for airport -> CBSA
     regions: dict[str, tuple[str, ...]]
     max_ranked: int            # longest ranking a tool returns (keeps tool results small)
@@ -221,6 +222,7 @@ def load_scoring(path: Path) -> ScoringConfig:
             census_variable=str(raw["census"]["variable"]),
             census_vintage=_positive_int("census.vintage", raw["census"]["vintage"]),
             census_base_vintage=_base_vintage(raw["census"]),
+            geocoder_benchmark=str(raw["census"]["geocoder_benchmark"]),
             geocoder_vintage=str(raw["census"]["geocoder_vintage"]),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
             max_ranked=_positive_int("max_ranked", raw["max_ranked"]),

@@ -49,6 +49,7 @@ census:                         # demand_context: metro population growth (Censu
   variable: B01003_001E         # total population
   vintage: 2024                 # ACS 5-year 2020-2024 (latest published as of 2026-10)
   base_vintage: 2019            # ACS 5-year 2015-2019: the previous non-overlapping period, base for growth
+  geocoder_benchmark: Public_AR_Current   # Census Geocoder benchmark (address ranges)
   geocoder_vintage: ACS2024_Current   # CBSA delineation the Census Geocoder uses (airport -> CBSA); matches `vintage`
 
 commentary:                     # what the model may write under a card (src/figure_check.py)

@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS census_metro (
     name TEXT,                 -- CBSA name as the Census API returns it for that vintage
     PRIMARY KEY (cbsa, year)
 );
+-- Census Geocoder cache: the CBSA each airport's coordinates fall in (null = outside every metro
+-- and micro area). Reused while the coordinates and the Geocoder vintage are unchanged, so reruns make
+-- no request. Failed requests are not cached (retried on the next run).
+CREATE TABLE IF NOT EXISTS airport_cbsa (
+    iata TEXT PRIMARY KEY,
+    lat REAL,
+    lon REAL,
+    cbsa TEXT,
+    cbsa_name TEXT,
+    kind TEXT,                 -- metro | micro | null
+    geocoder_vintage TEXT,
+    geocoded_at TEXT
+);
 """
 
 
@@ -116,6 +129,21 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 def loaded_periods(conn: sqlite3.Connection, source: str) -> set[str]:
     return {r[0] for r in conn.execute("SELECT period FROM ingest_log WHERE source = ?", (source,))}
+
+
+def cached_cbsa(conn: sqlite3.Connection, geocoder_vintage: str) -> dict[str, dict]:
+    """Geocoder cache rows of one vintage, by IATA (lat, lon, cbsa, cbsa_name, kind)."""
+    rows = conn.execute("SELECT iata, lat, lon, cbsa, cbsa_name, kind FROM airport_cbsa WHERE geocoder_vintage = ?",
+                        (geocoder_vintage,))
+    return {r[0]: dict(zip(("lat", "lon", "cbsa", "cbsa_name", "kind"), r[1:])) for r in rows}
+
+
+def apply_cbsa(conn: sqlite3.Connection, geocoder_vintage: str) -> int:
+    """Copy cached CBSAs of one Geocoder vintage into `airports.cbsa` (ingest_airports resets it on
+    every run). Returns the number of airports with a CBSA."""
+    conn.execute("UPDATE airports SET cbsa = (SELECT c.cbsa FROM airport_cbsa c "
+                 "WHERE c.iata = airports.iata AND c.geocoder_vintage = ?)", (geocoder_vintage,))
+    return conn.execute("SELECT COUNT(*) FROM airports WHERE cbsa IS NOT NULL").fetchone()[0]
 
 
 def route_totals(

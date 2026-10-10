@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 
 import requests
 
 # Census API geography name for CBSAs (metropolitan and micropolitan statistical areas).
 CBSA_GEOGRAPHY = "metropolitan statistical area/micropolitan statistical area"
+# Geocoder layers holding CBSAs, and the kind recorded for each.
+GEOCODER_LAYERS = {"Metropolitan Statistical Areas": "metro", "Micropolitan Statistical Areas": "micro"}
 USER_AGENT = "airport-investment-agent ingest"
 # Required wherever Census data is shown (Census Data API terms): sidebar, README, ingest output.
 ATTRIBUTION = "This product uses the Census Bureau Data API but is not endorsed or certified by the Census Bureau."
@@ -80,6 +83,44 @@ def fetch_population(session, api_url: str, dataset: str, variable: str, vintage
         return parse_population(response.status_code, response.text, variable)
     except CensusError as exc:
         raise CensusError(f"vintage {vintage}: {redact(str(exc), key)}") from None
+
+
+@dataclass(frozen=True)
+class GeocodeResult:
+    """One airport's CBSA, or None when it lies outside every metro and micro area."""
+    cbsa: str | None
+    name: str | None
+    kind: str | None    # metro | micro
+
+
+def parse_geocoder(payload: dict) -> GeocodeResult:
+    """The CBSA from a Geocoder `geographies/coordinates` response; metro wins over micro (an area
+    is one or the other, so both never appear for one point). Raises ValueError on an unexpected shape."""
+    geographies = payload["result"]["geographies"]
+    for layer, kind in GEOCODER_LAYERS.items():
+        for area in geographies.get(layer) or []:
+            code = area.get("CBSA") or area.get("GEOID")
+            if code:
+                return GeocodeResult(str(code), area.get("NAME"), kind)
+    return GeocodeResult(None, None, None)
+
+
+def geocode(session, geocoder_url: str, benchmark: str, vintage: str, lat: float, lon: float,
+            timeout: float) -> GeocodeResult:
+    """CBSA containing a point. Raises CensusError when the request or the response fails
+    (the caller retries such airports on the next run; a point outside any CBSA is a result)."""
+    params = {"x": lon, "y": lat, "benchmark": benchmark, "vintage": vintage,
+              "layers": ",".join(GEOCODER_LAYERS), "format": "json"}
+    try:
+        response = session.get(geocoder_url, params=params, timeout=timeout)
+    except requests.RequestException as exc:
+        raise CensusError(f"Geocoder not reachable ({type(exc).__name__})") from None
+    if response.status_code != 200:
+        raise CensusError(f"Geocoder returned HTTP {response.status_code}")
+    try:
+        return parse_geocoder(response.json())
+    except (ValueError, KeyError, TypeError):
+        raise CensusError("Geocoder returned an unexpected response") from None
 
 
 def session() -> requests.Session:
