@@ -310,9 +310,9 @@ def rank_stability(ranking: RegionRanking, weights: Mapping[str, float], cfg: Sc
 # --- demand-gap proxy (explain_demand_gap) -----------------------------------------------------
 
 def above_target(passengers: pd.Series, seats: pd.Series, target: float) -> pd.Series:
-    """Passengers carried above `target` x seats, per row (route-month); 0 where the load factor is at
-    or below the target. Summed, this is the spill proxy: how many passengers flew on loads above the
-    target, a hint of demand the capacity barely met. It is not observed unmet demand (no booking or
+    """Passengers in excess of `target` x seats, per row (route-month); 0 where the load factor is at
+    or below the target. Summed, this is the spill proxy: the number of passengers above the target
+    load level (not every passenger on a full flight), a hint of demand the capacity barely met. It is not observed unmet demand (no booking or
     spill data): passengers turned away never appear in T-100."""
     return (passengers - target * seats).clip(lower=0)
 

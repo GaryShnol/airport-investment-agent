@@ -879,8 +879,8 @@ def explain_demand_gap(conn: sqlite3.Connection, cfg: ScoringConfig, airport: st
 
     Unmet demand cannot be observed here (no booking or spill data). The proxy, all in code: months
     with load factor above the configured target and the peak months; the routes with the most
-    passengers and with the most passengers above the target; passengers carried above the target
-    load per route and month (spill proxy), also at each sensitivity target; the delay-cause mix
+    passengers and with the most passengers above the target; passengers above the target load
+    level per route and month (spill proxy: the excess over target x seats), also at each sensitivity target; the delay-cause mix
     (arrivals, On-Time); growth. Confidence is capped at medium."""
     code, err = _resolve_code(conn, cfg, airport)
     if err:
@@ -1040,7 +1040,7 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
     def explain_demand_gap_tool(airport: str) -> dict:
         """Unmet or excess demand at one airport (IATA code or name) and why: a labeled PROXY (unmet
         demand is not observable): months above the target load factor, peak months, densest routes,
-        passengers carried above the target load (spill proxy) with a sensitivity range, delay-cause
+        passengers above the target load level (spill proxy) with a sensitivity range, delay-cause
         mix and growth. Use for "unmet demand", "demand gap", "is X short of capacity and why"."""
         return run(explain_demand_gap, airport)
 
