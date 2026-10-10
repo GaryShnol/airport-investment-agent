@@ -4,10 +4,10 @@ LangGraph ReAct agent over a local SQLite DB, with deterministic scoring. Data: 
 Must answer: (1) New England expansion candidates (2) LAX vs SNA congestion (3) % long-haul out of ANC (4) SFO unmet demand and why.
 Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before building a step). Task board and status: `TASKS.md` (update it as you work).
 
-## Commands (uv; no pip, no manual venv)
+## Commands (uv; no pip, no manual venv). Commands marked (planned) are not built yet; see TASKS.md
 - `uv sync` install · `uv add <pkg>` add a dependency · `uv run pytest`
-- `uv run python -m src.ingest` load new files into SQLite (idempotent) · `uv run python -m src.ingest --check` report whether upstream has newer months
-- `uv run streamlit run app.py` · `docker compose up` (ships with `seed/airport.db`, needs only `.env` with an LLM key or a local model)
+- (planned) `uv run python -m src.ingest` load new files into SQLite (idempotent) · `uv run python -m src.ingest --check` report whether upstream has newer months
+- (planned) `uv run streamlit run app.py` · `docker compose up` (ships with `seed/airport.db`, needs only `.env` with an LLM key or a local model)
 - Do not run uv or pip inside the cloud sandbox against the user's folder: it would create a Linux `.venv` in a Windows project.
 
 ## Rules

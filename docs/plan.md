@@ -48,7 +48,7 @@ Component = percentile vs all US passenger airports with >= `min_departures` in 
 - Rank stability: re-rank with N random weight perturbations (seeded); report each airport's rank range and whether the top-3 holds.
 
 ## Agent and UI
-- LangGraph ReAct (`create_react_agent`) with a checkpointer and `thread_id` for follow-ups. System prompt: scope rules, assumptions policy, clarify when ambiguous, reply in the user's language.
+- LangGraph ReAct agent (`create_react_agent` from `langgraph.prebuilt`, or `create_agent` from `langchain.agents` if that is the current API in the installed version; same engine) with a checkpointer and `thread_id` for follow-ups. System prompt: scope rules, assumptions policy, clarify when ambiguous, reply in the user's language.
 - Output check: numbers in the answer should appear in tool results (tolerant to rounding); a soft warning, not a retry loop.
 - Streamlit chat, sidebar with data period and freshness, Census attribution. Voice is a stretch goal (`st.audio_input`).
 

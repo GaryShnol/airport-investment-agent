@@ -15,13 +15,13 @@ from .config import ConfigError, Settings
 
 def _openai(s: Settings) -> BaseChatModel:
     # Also covers any OpenAI-compatible server (Ollama /v1, LM Studio, vLLM) via LLM_BASE_URL.
-    from langchain_openai import ChatOpenAI
-
     if not s.openai_api_key and not s.llm_base_url:
         raise ConfigError(
             "OPENAI_API_KEY is required for LLM_PROVIDER=openai "
             "(or set LLM_BASE_URL to use a local OpenAI-compatible server)."
         )
+    from langchain_openai import ChatOpenAI
+
     return ChatOpenAI(
         model=s.llm_model,
         temperature=s.llm_temperature,
