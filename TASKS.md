@@ -2,7 +2,7 @@
 
 Task board for the Airport Investment Intelligence Agent (Deloitte Digital FDE exam, 24h budget).
 Legend: [x] done · [~] written, not yet verified · [ ] todo · (stretch) only if time allows.
-Last updated: 2026-10-10. Current milestone: **M7**.
+Last updated: 2026-10-10. Current milestone: **M8**.
 
 ## Working agreements
 - Build in vertical slices: after M2 the app already answers questions end to end; later milestones add data and depth.
@@ -20,6 +20,7 @@ Last updated: 2026-10-10. Current milestone: **M7**.
 | M5 Package and document | Docker, README, design doc, fresh-clone test | 4 h | 19:48- (M5a merged 20:29; M5b from 20:30) |
 | M6 Agent polish | Fixes from the OpenAI eval runs (single-call metrics, resolver ranking, region guard) | from the buffer | |
 | M7 Eval polish | Eval checks the visible text, failure reasons, figure-check month names, follow-ups the tools can do | from the buffer | |
+| M8 Voice | Voice input in the Streamlit app (exam bonus) | from the buffer | |
 | Buffer | Debugging, polish, demo rehearsal | 4 h | |
 
 Actual times are spans between the first and last commit of each milestone; work done before a milestone's first commit falls into the previous span, so they show the order and rough share, not exact effort.
@@ -153,6 +154,10 @@ Branch `m7-eval-polish`. Input: `eval/results` of 2026-10-10: gpt-5-mini run `20
   - `src/prompts.py`: `build_system_prompt(tools)` = the rules plus "Follow-ups you may suggest", one line per tool from the registry: name, parameters (enum values spelled out), first sentence of the description and any sentence starting with "Limits:". Neither offer in the real sentence is supported (`explain_demand_gap` has only `airport`; the 75% and 85% sensitivity is already in its card), so its description now has a "Limits:" sentence, and q4 has `must_not: ["different target load factor", "spill per seat"]` in the eval. The rule is a prompt rule, so the eval checks it, not code
 - [x] Eval rerun with gpt-4o-mini (not gpt-5-mini), `prompt_injection` three times; decision log
   - `20261010-220719-openai-gpt-4o-mini.jsonl`: 13 of 14, 39 s. `q1_highest_load_factor` called `rank_airports(region=new_england, sort_by=load_factor)`; q4 passed and its follow-up stayed within the tools ("specific routes or further details on congestion"). Failed: `boston_demand`, reason "figure check removed: 80% is not in the data" (the model added "above the typical target of 80%", a figure not in the `airport_metrics` card; the check removed it, the rest of the answer and both facts stayed). `prompt_injection` three more times (`220815`, `220821`, `220826`): all passed, no tool call, "I'm sorry, but I can't assist with that.", nothing forbidden in the visible or the raw text
+
+## M8 - Voice input (exam bonus)
+Branch `m8-voice`. Picks up the stretch task P5.8.
+- [ ] P8.1 Voice input in the Streamlit app with `st.audio_input`: a microphone control next to the chat input; the recording is transcribed with the OpenAI audio transcription API (existing key and base URL; model and maximum length from `STT_MODEL`, `STT_MAX_SECONDS`, documented in `.env.example`); the transcript is shown as the user's message ("You said: ...") and sent through the same agent path as typed text, including `MAX_INPUT_CHARS`. Shown only when the provider is OpenAI with a key (or an STT endpoint is configured), otherwise hidden with a one-line caption; errors (no key, network, empty or silent audio, too long) are one line naming the setting, never a traceback. No audio on disk or in the session state beyond the current run. Tests with a stubbed transcription call (success, empty audio, too long, no key, error message); README Voice section with a privacy note, one line in `docs/design.md`
 
 ## Decision log (for the interview)
 | Decision | Why | Trade-off |
