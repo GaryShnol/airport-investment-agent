@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src import agent as agent_mod
-from src.agent import InputRejected, build_agent, strip_reasoning
+from src.agent import FACTS_FOOTER, InputRejected, build_agent, ensure_facts, missing_facts, strip_reasoning
 from src.config import ConfigError, Settings
 from src.prompts import SYSTEM_PROMPT
 from tests.conftest import seed_analysis_db
@@ -132,3 +132,92 @@ def test_cli_prints_tools_and_answer(monkeypatch, capsys, settings, connect, sco
     assert agent_mod.main(["What data do you have?"]) == 0
     out = capsys.readouterr().out
     assert "- data_status()" in out and "Data: 2025." in out and "<think>" not in out
+
+
+# --- ensure_facts: required facts are guaranteed by code -----------------------------------
+
+
+
+def f(label, value, required=True):
+    return {"label": label, "value": value, "required": required}
+
+
+ANC = {"facts": [
+    f("Long-haul threshold", "2,500 mi"),
+    f("Long-haul share >= 2,500 mi, all flights (including cargo)", "43.2%"),
+    f("Long-haul share >= 2,500 mi, passenger service", "11.5%"),
+    f("Sensitivity: long-haul share >= 1,500 mi", "all flights 49.1%, passenger service 19.3%"),
+    f("Sensitivity: long-haul share >= 3,000 mi", "all flights 31.0%, passenger service 4.3%"),
+    f("Passengers (passenger service)", "2,714,358", required=False),
+    f("Data period", "2025-01..2025-12"),
+    f("Confidence", "medium"),
+]}
+ANC_FULL = ("For 2025-01..2025-12, at 2,500 mi, 43.2% of all departures from ANC are long haul "
+            "(cargo included) and 11.5% of passenger-service departures. Sensitivity: at 1,500 mi "
+            "49.1% / 19.3%, at 3,000 mi 31.0% / 4.3%. Confidence: medium.")
+
+
+def test_answer_with_all_required_facts_gets_no_footer():
+    assert ensure_facts(ANC_FULL, [ANC]) == ANC_FULL
+
+
+def test_missing_passenger_service_share_gets_exactly_that_fact():
+    answer = ANC_FULL.replace(" and 11.5% of passenger-service departures", "")
+    out = ensure_facts(answer, [ANC])
+    assert out == f"{answer}\n\n{FACTS_FOOTER}\n- Long-haul share >= 2,500 mi, passenger service: 11.5%"
+
+
+def test_real_model_answer_gets_the_missing_facts():
+    # what lfm2.5:8b answered in the first acceptance run (non-breaking hyphens in the period)
+    answer = ("According to the 2025‑01..2025‑12 data, at a 2500‑mile threshold, 43.2 % of departures "
+              "from Ted Stevens Anchorage International Airport are long‑haul (including cargo). "
+              "Confidence in the figure is medium.")
+    labels = [m["label"] for m in missing_facts(answer, [ANC])]
+    assert labels == ["Long-haul share >= 2,500 mi, passenger service",
+                      "Sensitivity: long-haul share >= 1,500 mi", "Sensitivity: long-haul share >= 3,000 mi"]
+
+
+@pytest.mark.parametrize("written", ["43.2%", "43.2 %", "43,2%", "43%", "43.20%"])
+def test_rounding_and_decimal_comma_tolerance(written):
+    env = {"facts": [f("share", "43.2%")]}
+    assert missing_facts(f"The share is {written}.", [env]) == []
+
+
+@pytest.mark.parametrize("written", ["44%", "4.32%", "143.2%", "43.7%"])
+def test_wrong_numbers_are_not_accepted(written):
+    env = {"facts": [f("share", "43.2%")]}
+    assert len(missing_facts(f"The share is {written}.", [env])) == 1
+
+
+def test_small_values_need_the_exact_number_but_dates_never_count():
+    env = {"facts": [f("passenger service", "11.5%"), f("small", "4.3%")]}
+    # 11.5 may round to 12, but the 12 in "2025-12" is a date, not a figure
+    assert [m["label"] for m in missing_facts("Data 2025-01..2025-12, 4%.", [env])] == ["passenger service", "small"]
+    assert missing_facts("Shares: 12% and 4.3%.", [env]) == []
+
+
+def test_weights_mix_up_footer_lists_the_weights_used():
+    env = {"facts": [f("Weights used (renormalized without congestion, demand_context)",
+                       "utilization 0.385, scale 0.231, growth 0.231, long_haul 0.154"),
+                     f("Data period", "2025-01..2025-12"), f("Confidence", "medium")]}
+    mixed = ("Data 2025-01..2025-12, confidence medium. Ranking weights: utilization 0.385, congestion 0.25, "
+             "scale 0.15, growth 0.15, long-haul 0.10, demand-context 0.10.")
+    out = ensure_facts(mixed, [env])
+    assert out.endswith(f"{FACTS_FOOTER}\n- Weights used (renormalized without congestion, demand_context): "
+                        "utilization 0.385, scale 0.231, growth 0.231, long_haul 0.154")
+    # weights phrased as percentages are accepted
+    assert missing_facts("Weights: utilization 38.5%, scale 23.1%, growth 23.1%, long haul 15.4%; "
+                         "2025, medium.", [env]) == []
+
+
+def test_later_fact_with_the_same_label_wins():
+    resolve = {"facts": [f("Confidence", "high")]}
+    metrics = {"facts": [f("Confidence", "medium")]}
+    assert missing_facts("Confidence: medium.", [resolve, metrics]) == []
+
+
+def test_ensure_facts_is_deterministic_and_ignores_non_envelopes():
+    answer = "Nothing useful."
+    envelopes = [ANC, "not json", {"data": None, "facts": [], "error": "x"}]
+    assert ensure_facts(answer, envelopes) == ensure_facts(answer, envelopes)
+    assert ensure_facts("Hi", []) == "Hi"

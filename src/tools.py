@@ -1,8 +1,11 @@
 """Agent tools. Each tool returns a small JSON-serializable envelope; the LLM only phrases it.
 
 Envelope (docs/plan.md, Tools and envelope):
-    {"data": ..., "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
+    {"data": ..., "facts": [...], "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
      "assumptions": [...], "confidence": "high|medium|low"}
+`facts` is a list of {label, value, required} with pre-formatted strings the model copies verbatim;
+src/agent.py `ensure_facts` appends any required fact the answer leaves out, so mandatory content
+does not depend on the model following the prompt.
 Errors use the same shape with `data` null, an `error` message and `candidates` to choose from;
 they are returned, never raised, so the model can ask the user instead of crashing.
 
@@ -49,14 +52,30 @@ def freshness(conn: sqlite3.Connection) -> str:
     return "current" if states else "unknown"
 
 
+def fact(label: str, value: str, required: bool = False) -> dict:
+    return {"label": label, "value": value, "required": required}
+
+
+def _miles(mi: int) -> str:
+    return f"{mi:,} mi"
+
+
+def _share(pct: float | None) -> str:
+    return "n/a" if pct is None else f"{pct}%"
+
+
 def _envelope(conn: sqlite3.Connection, window: store.Window | None, data, assumptions: list[str],
-              confidence: str) -> dict:
-    return {"data": data, "data_period": window.label if window else None, "freshness": freshness(conn),
-            "assumptions": assumptions, "confidence": confidence}
+              confidence: str, facts: list[dict] | None = None) -> dict:
+    """Standard envelope. Data period and confidence are required facts for every tool."""
+    period = window.label if window else None
+    base = [fact("Data period", period, True)] if period else []
+    base.append(fact("Confidence", confidence, True))
+    return {"facts": [*(facts or []), *base], "data": data, "data_period": period,
+            "freshness": freshness(conn), "assumptions": assumptions, "confidence": confidence}
 
 
 def _error(conn: sqlite3.Connection | None, message: str, candidates: list | None = None, **extra) -> dict:
-    return {"data": None, "error": message, "candidates": candidates or [], **extra,
+    return {"data": None, "facts": [], "error": message, "candidates": candidates or [], **extra,
             "data_period": None, "freshness": freshness(conn) if conn else "unknown",
             "assumptions": [], "confidence": "low"}
 
@@ -81,13 +100,19 @@ def data_status(conn: sqlite3.Connection, cfg: ScoringConfig) -> dict:
     assumptions = ["freshness is unknown until `ingest --check` compares with upstream"] \
         if freshness(conn) == "unknown" else []
     confidence = "high" if window.months == store.WINDOW_MONTHS else "low"
-    return _envelope(conn, window, data, assumptions, confidence)
+    facts = [fact("Freshness", freshness(conn)),
+             fact("Months loaded in the window", f"{window.months} of {store.WINDOW_MONTHS}")]
+    return _envelope(conn, window, data, assumptions, confidence, facts)
 
 
 # --- resolve_airport ---------------------------------------------------------------------
 
 def _brief(row: dict) -> dict:
     return {"iata": row["iata"], "name": row["name"], "state": row["state"]}
+
+
+def _airport_fact(row: dict) -> dict:
+    return fact("Airport", f"{row['iata']} ({row['name']})")
 
 
 def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> dict:
@@ -107,22 +132,26 @@ def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> 
             candidates.append(_brief(rows[0]) if rows else {"iata": code})
         data = {"query": query, "ambiguous": True, "default": alias["default"], "candidates": candidates}
         assumptions = [f"'{query}' is ambiguous; default definition {query} = {alias['default']} (configured)"]
-        return _envelope(conn, window, data, assumptions, "medium")
+        facts = [fact("Default definition", f"{query} = {alias['default']}"),
+                 fact("Other candidates", ", ".join(c["iata"] for c in candidates if c["iata"] != alias["default"]))]
+        return _envelope(conn, window, data, assumptions, "medium", facts)
 
     if len(query) == 3 and query.isalpha():
         rows = store.find_airports(conn, "iata", query, window)
         if rows:
-            return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])}, [], "high")
+            return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])}, [], "high",
+                             [_airport_fact(rows[0])])
 
     for column in ("name", "municipality"):
         rows = [r for r in store.find_airports(conn, column, query, window) if r["passengers"] > 0]
         if len(rows) == 1:
             return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])},
-                             [f"matched on airport {column}"], "high")
+                             [f"matched on airport {column}"], "high", [_airport_fact(rows[0])])
         if len(rows) > 1:
             data = {"query": query, "ambiguous": True, "default": None,
                     "candidates": [_brief(r) for r in rows[:MAX_LISTED]]}
-            return _envelope(conn, window, data, [f"several airports match on {column}; ask the user"], "low")
+            return _envelope(conn, window, data, [f"several airports match on {column}; ask the user"], "low",
+                             [fact("Candidates", ", ".join(c["iata"] for c in data["candidates"]))])
     return _error(conn, f"No airport with passenger service matches '{query}'")
 
 
@@ -189,7 +218,20 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
         f"long haul = segment distance >= {threshold} mi, share of departures",
         f"growth = passengers {window.label} vs {window.prev_start}..{window.prev_end}",
     ]
-    return _envelope(conn, window, data, assumptions, row["confidence"])
+    facts = [
+        fact("Airport", f"{code} ({row['name']})"),
+        fact("Long-haul threshold", _miles(threshold), True),
+        fact(f"Long-haul share >= {_miles(threshold)}, all flights (including cargo)",
+             _share(every_pct[threshold]), True),
+        fact(f"Long-haul share >= {_miles(threshold)}, passenger service", _share(pax_pct[threshold]), True),
+        *[fact(f"Sensitivity: long-haul share >= {_miles(t)}",
+               f"all flights {_share(every_pct[t])}, passenger service {_share(pax_pct[t])}", True)
+          for t in thresholds if t != threshold],
+        fact("Passengers (passenger service)", f"{data['passengers']:,}"),
+        fact("Load factor (passenger service, a demand-pressure proxy)", _share(data["load_factor_pct"])),
+        fact(f"Passenger growth vs {window.prev_start}..{window.prev_end}", _share(data["growth_pct"])),
+    ]
+    return _envelope(conn, window, data, assumptions, row["confidence"], facts)
 
 
 # --- rank_airports -----------------------------------------------------------------------
@@ -233,7 +275,8 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         # Largest first; the rest are smaller still and below the same floor.
         "excluded": [f"{r['iata']}: {r['reason']}" for _, r in ranking.excluded.head(MAX_LISTED).iterrows()],
         "excluded_total": len(ranking.excluded),
-        "weights_configured": cfg.weights,
+        # Only the weights actually applied: listing the configured ones too (with unavailable
+        # components) made small models mix the two sets. Configured weights are in data_status.
         "weights_used": {c: round(w, 3) for c, w in result.weights_used.items()},
         "components_unavailable": result.unavailable,
         "ties": [[x["iata"] for x in ranked if x["score"] == s] for s in ties],
@@ -248,7 +291,26 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
     ]
     levels = [x["confidence"] for x in ranked] or ["low"]
     confidence = max(levels, key=CONFIDENCE_ORDER.index)
-    return _envelope(conn, window, data, assumptions, confidence)
+    weights_label = "Weights used" + (f" (renormalized without {', '.join(sorted(result.unavailable))})"
+                                      if result.unavailable else "")
+    facts = [fact(weights_label, ", ".join(f"{c} {w}" for c, w in data["weights_used"].items()), True),
+             *[fact(f"#{x['rank']} {x['iata']} ({x['name']})", _ranked_summary(x)) for x in ranked]]
+    return _envelope(conn, window, data, assumptions, confidence, facts)
+
+
+COMPONENT_LABELS = {"utilization": "utilization (load factor)", "scale": "scale (annual passengers)",
+                    "growth": "growth (passengers vs previous 12 months)", "long_haul": "long-haul share"}
+
+
+def _ranked_summary(item: dict) -> str:
+    """One line per ranked airport: score, then each component's raw value and percentile."""
+    parts = [f"score {item['score']}"]
+    for c, v in item["components"].items():
+        raw = next(val for key, val in v.items() if key != "percentile")
+        shown = f"{raw:,}" if isinstance(raw, int) else _share(raw)
+        pct = "n/a" if v["percentile"] is None else f"{v['percentile']:.0f}"
+        parts.append(f"{COMPONENT_LABELS.get(c, c)} {shown}, percentile {pct}")
+    return "; ".join(parts)
 
 
 # --- LangChain wrappers ------------------------------------------------------------------
@@ -285,7 +347,7 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
 
     @tool("rank_airports", description=(
         "Rank airports in a region as terminal-expansion candidates: scores, component percentiles "
-        "with raw values, weights configured and used, excluded airports, confidence. "
+        "with raw values, the weights used, excluded airports, confidence. "
         f"region must be one of: {', '.join(sorted(cfg.regions))}."))
     def rank_airports_tool(region: str, top_n: int = 10) -> dict:
         return run(rank_airports, region, top_n)

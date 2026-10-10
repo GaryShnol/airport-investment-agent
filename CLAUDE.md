@@ -18,6 +18,7 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - One analysis window for all questions: trailing 12 complete months ending at `min(last_period)` across sources. Growth compares to the previous 12 months.
 - Stale = upstream has a newer month than the loaded data (from the last `ingest --check`, stored in `meta`). Never checked -> say "freshness unknown". Still answer, with a warning.
 - Every answer states data period, assumptions, confidence and the weights used.
+- Mandatory content is guaranteed by code, not by the prompt: tools mark required `facts`, and `ensure_facts` in `src/agent.py` appends any the answer omits. Do not fix a missing figure by tuning the prompt.
 - Ambiguous entity (e.g. "LA") -> ask, or state the definition used (LA = LAX).
 - Reply in the language of the user's question (default English). Code, docs and tool output in English.
 - Never commit `data/` or `.env`; never print keys. `seed/airport.db` (aggregated, small) is committed so the project runs without downloads.

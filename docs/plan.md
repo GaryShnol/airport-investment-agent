@@ -27,9 +27,13 @@ Task status lives in `TASKS.md`. This file holds the design.
 `data_status`, `resolve_airport`, `airport_metrics`, `compare_airports`, `rank_airports`, `explain_demand_gap`.
 Every tool returns:
 ```json
-{"data": {}, "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
+{"facts": [{"label": "Long-haul share >= 2,500 mi, passenger service", "value": "11.5%", "required": true}],
+ "data": {}, "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
  "assumptions": ["long-haul >= 2500 mi", "passenger flights only"], "confidence": "high|medium|low"}
 ```
+- `facts`: pre-formatted, human-readable strings the model copies instead of reading `data`. Required for every tool: data period and confidence. `airport_metrics`: the threshold, both long-haul shares (all flights and passenger service) and the sensitivity at each other configured threshold. `rank_airports`: the weights used, as one string. Component labels say what they measure ("scale (annual passengers)").
+- `ensure_facts` (src/agent.py), applied after `<think>` stripping: every required fact must appear in the answer, else a short "Key figures (from the data tool)" block lists only the missing ones. No retry loop. Matching: a period needs only its year(s); a word (confidence) must appear as is; numbers match exactly (trailing zeros ignored, decimal comma accepted), values above 10 also as the nearest integer (half up), values below 1 also as a percentage (0.385 = 38.5); date tokens such as 2025-12 in the answer never count as numbers. Mandatory content is therefore guaranteed by code, not by the prompt.
+- `rank_airports` exposes only `weights_used` (configured weights are in `data_status`): showing both made small models mix them.
 - `airport_metrics(airport)`: volume, load factor, congestion, long-haul share with and without cargo plus sensitivity at each configured threshold.
 - `compare_airports(a, b)`: side by side with normalized metrics.
 - `rank_airports(region, top_n)`: scores, component breakdown, weights, rank stability.
@@ -61,7 +65,7 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 
 ## Agent and UI
 - LangGraph ReAct agent built with `create_agent` from `langchain.agents` (`langgraph.prebuilt.create_react_agent` is deprecated since LangGraph 1.0; same engine) with a checkpointer and `thread_id` for follow-ups. System prompt: scope rules, assumptions policy, clarify when ambiguous, reply in the user's language.
-- Output check: numbers in the answer should appear in tool results (tolerant to rounding); a soft warning, not a retry loop.
+- Output check: `ensure_facts` (see Tools and envelope) appends required facts the answer omits; no retry loop.
 - Streamlit chat, sidebar with data period and freshness, Census attribution, and a collapsible panel listing the tools called and their envelopes (shows the reasoning and that numbers come from tools). Streamlit reruns the script on every message, so the agent and its memory live in `st.cache_resource` and the `thread_id` in `st.session_state`. SQLite is opened read-only (`mode=ro`) per call. Voice is a stretch goal (`st.audio_input`).
 
 ## Packaging

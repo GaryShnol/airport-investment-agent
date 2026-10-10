@@ -13,6 +13,7 @@ import re
 import sqlite3
 import sys
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Callable
 
 from langchain.agents import create_agent
@@ -53,6 +54,84 @@ def check_input(text: str | None, max_chars: int) -> str:
     return question
 
 
+FACTS_FOOTER = "Key figures (from the data tool):"
+# A period such as 2025-01 in a fact value: the answer only has to name its year(s), since models
+# write "January to December 2025". In the answer, such date tokens (any dash) are removed before
+# numbers are compared, so "2025-12" never counts as the number 12.
+_PERIOD_IN_FACT = re.compile(r"\b(\d{4})-\d{2}\b")
+_DATE_IN_ANSWER = re.compile(r"\b\d{4}[-\u2010\u2011\u2012\u2013\u2014/]\d{1,2}\b")
+_NUMBER_IN_FACT = re.compile(r"\d[\d,]*(?:\.\d+)?")     # tools write 2,714,358 and 43.2
+_NUMBER_IN_ANSWER = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _answer_numbers(answer: str) -> set[Decimal]:
+    """Every number in the answer, read both ways where ambiguous: '2,714,358' and '43.2' as
+    usual, and '43,2' (single comma, no dot) also as a decimal comma."""
+    numbers = set()
+    for token in _NUMBER_IN_ANSWER.findall(_DATE_IN_ANSWER.sub(" ", answer)):
+        readings = [token.replace(",", "")]
+        if token.count(",") == 1 and "." not in token:
+            readings.append(token.replace(",", "."))
+        for reading in readings:
+            try:
+                numbers.add(Decimal(reading))
+            except InvalidOperation:
+                pass  # e.g. "1.2.3"
+    return numbers
+
+
+def _number_present(target: Decimal, numbers: set[Decimal]) -> bool:
+    """Tolerance rule: the exact value (trailing zeros ignored: 0.10 = 0.1); for values above 10
+    also the nearest integer, half up (43.2 -> 43, 11.5 -> 12); for values below 1 also the
+    value written as a percentage (0.385 -> 38.5), since weights are often phrased that way."""
+    accepted = {target}
+    if abs(target) > 10:
+        accepted.add(target.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    if abs(target) < 1:
+        accepted.add(target * 100)
+    return bool(accepted & numbers)
+
+
+def _fact_present(value: str, answer: str, numbers: set[Decimal]) -> bool:
+    years = _PERIOD_IN_FACT.findall(value)
+    if years:
+        return all(re.search(rf"\b{y}\b", answer) for y in dict.fromkeys(years))
+    targets = _NUMBER_IN_FACT.findall(value)
+    if not targets:  # a word such as the confidence level
+        return value.lower() in answer.lower()
+    return all(_number_present(Decimal(t.replace(",", "")), numbers) for t in targets)
+
+
+def missing_facts(answer: str, envelopes: list[Any]) -> list[dict]:
+    """Required facts (from tool envelopes) whose numbers or words the answer does not contain.
+
+    Facts are taken in envelope order; a later fact with the same label replaces an earlier one
+    (the confidence of airport_metrics wins over that of resolve_airport in the same turn).
+    """
+    required: dict[str, dict] = {}
+    for env in envelopes:
+        if isinstance(env, dict):
+            for f in env.get("facts") or []:
+                if f.get("required") and f.get("value"):
+                    required.pop(f["label"], None)
+                    required[f["label"]] = f
+    numbers = _answer_numbers(answer)
+    return [f for f in required.values() if not _fact_present(str(f["value"]), answer, numbers)]
+
+
+def ensure_facts(answer: str, envelopes: list[Any]) -> str:
+    """Append a short block with the required facts the answer left out (no retry, deterministic).
+
+    Mandatory content (both ANC long-haul shares, the threshold sensitivity, the weights used,
+    data period and confidence) is guaranteed here by code, not by the prompt.
+    """
+    missing = missing_facts(answer, envelopes)
+    if not missing:
+        return answer
+    lines = "\n".join(f"- {f['label']}: {f['value']}" for f in missing)
+    return f"{answer}\n\n{FACTS_FOOTER}\n{lines}".strip()
+
+
 def _parse(content: Any) -> Any:
     """Tool envelopes reach the message history as JSON text; give callers the dict back."""
     try:
@@ -66,6 +145,7 @@ class Reply:
     text: str
     tool_calls: list[dict] = field(default_factory=list)     # {"name", "args"} in call order
     tool_results: list[Any] = field(default_factory=list)    # envelopes, same order
+    missing_facts: list[dict] = field(default_factory=list)  # required facts appended by ensure_facts
 
 
 @dataclass
@@ -85,7 +165,8 @@ class AirportAgent:
                  for c in m.tool_calls]
         results = [_parse(m.content) for m in turn if isinstance(m, ToolMessage)]
         final = next((m for m in reversed(turn) if isinstance(m, AIMessage)), None)
-        return Reply(strip_reasoning(final.text if final else ""), calls, results)
+        answer = strip_reasoning(final.text if final else "")
+        return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results))
 
 
 def build_agent(
@@ -136,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Tools called:" if reply.tool_calls else "Tools called: none")
     for call in reply.tool_calls:
         print(f"  - {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['args'].items())})")
+    print(f"Footer added: {'yes, ' + str(len(reply.missing_facts)) + ' fact(s)' if reply.missing_facts else 'no'}")
     print("\nAnswer:\n" + reply.text)
     return 0
 

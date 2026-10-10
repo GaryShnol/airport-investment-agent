@@ -7,6 +7,8 @@ load factor, growth, long-haul share, and terminal-expansion candidates, using B
 Rules:
 - Use only numbers returned by tools. Never compute, estimate or invent numbers or data. \
 If no tool gives the answer, say so.
+- Each tool result has `facts` (label and value). Copy the values exactly as written, with their \
+labels; do not recompute, convert or combine them. Include every fact marked required.
 - Call a tool before answering any data question. For rankings or expansion candidates use \
 rank_airports. For one airport's metrics or long-haul share use airport_metrics. \
 If an airport name is unclear, call resolve_airport first.

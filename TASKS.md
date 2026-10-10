@@ -49,6 +49,7 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [x] P2.5 `src/scoring.py` with the available components (utilization, scale, growth, long haul) and deterministic confidence
 - [x] P2.6 Tool envelope and tools: `data_status`, `resolve_airport` (handles "LA" ambiguity), `airport_metrics`, `rank_airports`
 - [x] P2.7 `src/agent.py`: LangGraph ReAct agent, memory by `thread_id`, system prompt (scope, assumptions, clarify, user language), light input guard; strip any reasoning (`<think>`) block from model output before it reaches the user
+- [x] P2.7b Required facts in every envelope and `ensure_facts` footer: mandatory content (both ANC shares, sensitivity, weights used, period, confidence) guaranteed by code; `rank_airports` exposes only the weights used
 - [x] P2.8 Agent test with a fake model: tool routing, ambiguity, out-of-scope, missing LLM key message
 - [ ] P2.9 `app.py` Streamlit chat with follow-ups; agent and memory in `st.cache_resource`, `thread_id` in `st.session_state`, SQLite read-only per call; sidebar with data period and provider; collapsible panel with the tools called and their envelopes
 - [ ] P2.10 Small eval (8-10 fixed questions with the expected tool) on local models (qwen3:4b-instruct-2507, lfm2.5:8b, gpt-oss:20b); record tool-choice accuracy and latency; set `num_ctx` in config; decide the reasoning setting (`reasoning` parameter of ChatOllama, verify it exists in the installed version)
@@ -59,7 +60,7 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [ ] P3.3 `compare_airports` (LAX vs SNA, normalized)
 - [ ] P3.4 `explain_demand_gap` for SFO: peak months, dense routes, spill proxy, delay-cause mix; confidence capped at medium
 - [ ] P3.5 Rank stability under weight perturbation (seeded)
-- [ ] P3.6 Soft output check: numbers appear in tool results (rounding tolerant)
+- [x] P3.6 Output check: done as P2.7b (`ensure_facts` appends missing required facts)
 - [ ] P3.7 Golden tests on the four exam questions
 
 ## M4 - Context and freshness

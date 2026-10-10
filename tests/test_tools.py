@@ -7,7 +7,12 @@ import pytest
 from src import tools
 from tests.conftest import seed_analysis_db
 
-ENVELOPE_KEYS = {"data", "data_period", "freshness", "assumptions", "confidence"}
+ENVELOPE_KEYS = {"facts", "data", "data_period", "freshness", "assumptions", "confidence"}
+
+
+def facts(result):
+    """label -> {value, required}"""
+    return {f["label"]: {"value": f["value"], "required": f["required"]} for f in result["facts"]}
 
 
 @pytest.fixture
@@ -95,6 +100,25 @@ def test_airport_metrics_long_haul_both_definitions(db, scoring_cfg):
     assert any("cargo" in a for a in r["assumptions"])
 
 
+def test_airport_metrics_required_facts(db, scoring_cfg):
+    f = facts(tools.airport_metrics(db, scoring_cfg, "ANC"))
+    required = {k: v["value"] for k, v in f.items() if v["required"]}
+    assert required == {
+        "Long-haul threshold": "2,500 mi",
+        "Long-haul share >= 2,500 mi, all flights (including cargo)": f"{round(62 / 122 * 100, 1)}%",
+        "Long-haul share >= 2,500 mi, passenger service": f"{round(12 / 72 * 100, 1)}%",
+        "Sensitivity: long-haul share >= 1,500 mi": "all flights 50.8%, passenger service 16.7%",
+        "Sensitivity: long-haul share >= 3,000 mi": "all flights 0.0%, passenger service 0.0%",
+        "Data period": "2025-01..2025-12",
+        "Confidence": "medium",
+    }
+    assert f["Passengers (passenger service)"] == {"value": "115,500", "required": False}
+
+
+def test_error_envelope_has_no_facts(db, scoring_cfg):
+    assert tools.rank_airports(db, scoring_cfg, "Texas")["facts"] == []
+
+
 def test_airport_metrics_custom_threshold_is_added_to_sensitivity(db, scoring_cfg):
     lh = tools.airport_metrics(db, scoring_cfg, "Anchorage", threshold_mi=2000)["data"]["long_haul"]
     assert lh["threshold_mi"] == 2000
@@ -121,8 +145,13 @@ def test_rank_airports_region(db, scoring_cfg):
     assert [x["rank"] for x in d["ranked"]] == [1, 2] and d["ranked_total"] == 3
     assert {x["iata"] for x in d["ranked"]} <= {"BOS", "PWM", "BTV"}
     assert d["excluded"] == [e for e in d["excluded"] if e.startswith("HYA")] and d["excluded_total"] == 1
-    assert d["weights_configured"] == scoring_cfg.weights
+    assert "weights_configured" not in d  # only the weights applied reach the model
     assert set(d["weights_used"]) == {"utilization", "scale", "growth", "long_haul"}
+    weights = facts(r)["Weights used (renormalized without congestion, demand_context)"]
+    assert weights == {"value": "utilization 0.385, scale 0.231, growth 0.231, long_haul 0.154", "required": True}
+    assert {"Data period", "Confidence"} <= {k for k, v in facts(r).items() if v["required"]}
+    assert not any(v["required"] for k, v in facts(r).items() if k.startswith("#"))
+    assert "scale (annual passengers)" in facts(r)[f"#1 {d['ranked'][0]['iata']} ({d['ranked'][0]['name']})"]["value"]
     assert sum(d["weights_used"].values()) == pytest.approx(1.0, abs=0.01)
     assert set(d["components_unavailable"]) == {"congestion", "demand_context"}
     top = d["ranked"][0]["components"]
