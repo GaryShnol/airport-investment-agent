@@ -27,10 +27,12 @@ Task status lives in `TASKS.md`. This file holds the design.
 `data_status`, `resolve_airport`, `airport_metrics`, `compare_airports`, `rank_airports`, `explain_demand_gap`.
 Every tool returns:
 ```json
-{"facts": [{"label": "Long-haul share >= 2,500 mi, passenger service", "value": "11.5%", "required": true}],
+{"headline": "43.2% of all departures from ANC (incl. cargo) are >= 2,500 mi (38,011 of 87,988); passenger service: 11.5% (...)",
+ "facts": [{"label": "Long-haul share >= 2,500 mi, passenger service", "value": "11.5%", "required": true}],
  "data": {}, "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
  "assumptions": ["long-haul >= 2500 mi", "passenger flights only"], "confidence": "high|medium|low"}
 ```
+- `headline`: one deterministic sentence with the answer, built by the tool (errors: the message). Rendered above the facts card; for long haul it states the threshold and both bases with departure counts. The model comments on it and must not restate it: `drop_restated_headlines` (src/agent.py) removes verbatim copies from the commentary.
 - `facts`: pre-formatted, human-readable strings the model copies instead of reading `data`. Required for every tool: data period and confidence. `airport_metrics` depends on its `focus` (`long_haul`, `load_factor`, `growth`, `all`; default `all`): the long-haul focus requires the threshold, both long-haul shares (all flights and passenger service) and the sensitivity at each other configured threshold; `load_factor` and `growth` require that one figure; `all` requires all of them. Every fact is still returned, so a load-factor question shows the long-haul figures without forcing them into the answer. `rank_airports`: the weights used, as one string. Component labels say what they measure ("scale (annual passengers)").
 - `ensure_facts` (src/agent.py), applied after `<think>` stripping: every required fact must appear in the answer, else a short "Key figures (from the data tool)" block lists only the missing ones. No retry loop. Matching: a period needs only its year(s); a word (confidence) must appear as is; numbers match exactly (trailing zeros ignored, decimal comma accepted), values above 10 also as the nearest integer (half up), values below 1 also as a percentage (0.385 = 38.5); date tokens such as 2025-12 in the answer never count as numbers. Mandatory content is therefore guaranteed by code, not by the prompt.
 - `rank_airports` exposes only `weights_used` (configured weights are in `data_status`): showing both made small models mix them.

@@ -134,6 +134,19 @@ def ensure_facts(answer: str, envelopes: list[Any]) -> str:
     return f"{answer}\n\n{FACTS_FOOTER}\n{lines}".strip()
 
 
+def drop_restated_headlines(commentary: str, envelopes: list[Any]) -> str:
+    """Remove verbatim copies of tool headlines from the commentary (case and spacing ignored).
+
+    The headline is rendered above the data card, so a model that copies it adds nothing;
+    paraphrases are left alone (the prompt asks for commentary, not a restatement)."""
+    for env in envelopes:
+        headline = env.get("headline") if isinstance(env, dict) else None
+        if headline:
+            pattern = r"(?:^|(?<=\s))(?:>\s*)?" + r"\s+".join(map(re.escape, headline.split()))
+            commentary = re.sub(pattern, "", commentary, flags=re.IGNORECASE)
+    return re.sub(r"\n{3,}", "\n\n", commentary).strip()
+
+
 def _parse(content: Any) -> Any:
     """Tool envelopes reach the message history as JSON text; give callers the dict back."""
     try:
@@ -170,7 +183,7 @@ class AirportAgent:
                  for c in m.tool_calls]
         results = [_parse(m.content) for m in turn if isinstance(m, ToolMessage)]
         final = next((m for m in reversed(turn) if isinstance(m, AIMessage)), None)
-        answer = strip_reasoning(final.text if final else "")
+        answer = drop_restated_headlines(strip_reasoning(final.text if final else ""), results)
         return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results), answer)
 
 

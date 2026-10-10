@@ -232,3 +232,22 @@ def test_reply_keeps_commentary_apart_from_the_footer(settings, connect, scoring
     assert [f["label"] for f in reply.missing_facts] == [
         "Load factor (passenger service, a demand-pressure proxy)", "Data period", "Confidence"]
     assert reply.text.startswith("ANC is busy.\n\n" + FACTS_FOOTER)
+
+
+# --- headline (P2.9c) ------------------------------------------------------------------------
+
+def test_commentary_drops_a_verbatim_headline(settings, connect, scoring_cfg):
+    headline = ("50.8% of all departures from ANC (incl. cargo) are >= 2,500 mi (744 of 1,464); "
+                "passenger service: 16.7% (144 of 864).")
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("airport_metrics", airport="ANC", focus="long_haul"),
+                    AIMessage(f"{headline.upper()}\n\nCargo flights to Asia explain the gap."))
+    reply = agent.ask("What share of ANC flights are long haul?", "t-headline")
+    assert reply.tool_results[0]["headline"] == headline
+    assert reply.commentary == "Cargo flights to Asia explain the gap."
+
+
+def test_drop_restated_headlines_keeps_paraphrases():
+    env = {"headline": "BOS leads."}
+    assert agent_mod.drop_restated_headlines("Boston is first. > BOS  leads.", [env]) == "Boston is first."
+    assert agent_mod.drop_restated_headlines("BOS clearly leads.", [env, "x"]) == "BOS clearly leads."

@@ -1,9 +1,10 @@
 """Agent tools. Each tool returns a small JSON-serializable envelope; the LLM only phrases it.
 
 Envelope (docs/plan.md, Tools and envelope):
-    {"data": ..., "facts": [...], "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
+    {"headline": "...", "data": ..., "facts": [...], "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
      "assumptions": [...], "confidence": "high|medium|low"}
-`facts` is a list of {label, value, required} with pre-formatted strings the model copies verbatim;
+`headline` is one deterministic sentence with the answer in plain words (rendered above the facts
+card; the model comments on it, never restates it). `facts` is a list of {label, value, required} with pre-formatted strings the model copies verbatim;
 src/agent.py `ensure_facts` appends any required fact the answer leaves out, so mandatory content
 does not depend on the model following the prompt.
 Errors use the same shape with `data` null, an `error` message and `candidates` to choose from;
@@ -32,6 +33,8 @@ MAX_LISTED = 5
 # them). All facts are always returned; focus only decides what the answer must mention.
 Focus = Literal["long_haul", "load_factor", "growth", "all"]
 FOCUS_VALUES = get_args(Focus)
+# Ranked airports named in a ranking headline; the table lists the rest.
+HEADLINE_TOP = 3
 LOAD_FACTOR_PROXY = "load factor = passengers / seats on passenger service: a demand-pressure proxy, not terminal utilization"
 
 
@@ -69,19 +72,21 @@ def _share(pct: float | None) -> str:
 
 
 def _envelope(conn: sqlite3.Connection, window: store.Window | None, data, assumptions: list[str],
-              confidence: str, facts: list[dict] | None = None) -> dict:
+              confidence: str, facts: list[dict] | None = None, *, headline: str) -> dict:
     """Standard envelope. Data period and confidence are required facts for every tool."""
     period = window.label if window else None
     base = [fact("Data period", period, True)] if period else []
     base.append(fact("Confidence", confidence, True))
-    return {"facts": [*(facts or []), *base], "data": data, "data_period": period,
+    return {"headline": headline, "facts": [*(facts or []), *base], "data": data, "data_period": period,
             "freshness": freshness(conn), "assumptions": assumptions, "confidence": confidence}
 
 
-def _error(conn: sqlite3.Connection | None, message: str, candidates: list | None = None, **extra) -> dict:
-    return {"data": None, "facts": [], "error": message, "candidates": candidates or [], **extra,
-            "data_period": None, "freshness": freshness(conn) if conn else "unknown",
-            "assumptions": [], "confidence": "low"}
+def _error(conn: sqlite3.Connection | None, message: str, candidates: list | None = None,
+           headline: str | None = None, **extra) -> dict:
+    """Error envelope; the headline is the message unless a fuller sentence is given."""
+    return {"headline": headline or message, "data": None, "facts": [], "error": message,
+            "candidates": candidates or [], **extra, "data_period": None,
+            "freshness": freshness(conn) if conn else "unknown", "assumptions": [], "confidence": "low"}
 
 
 def _window(conn: sqlite3.Connection) -> store.Window:
@@ -106,7 +111,9 @@ def data_status(conn: sqlite3.Connection, cfg: ScoringConfig) -> dict:
     confidence = "high" if window.months == store.WINDOW_MONTHS else "low"
     facts = [fact("Freshness", freshness(conn)),
              fact("Months loaded in the window", f"{window.months} of {store.WINDOW_MONTHS}")]
-    return _envelope(conn, window, data, assumptions, confidence, facts)
+    headline = (f"Data loaded for {window.label} ({window.months} of {store.WINDOW_MONTHS} months); "
+                f"freshness {freshness(conn)}.")
+    return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
 
 
 # --- resolve_airport ---------------------------------------------------------------------
@@ -117,6 +124,10 @@ def _brief(row: dict) -> dict:
 
 def _airport_fact(row: dict) -> dict:
     return fact("Airport", f"{row['iata']} ({row['name']})")
+
+
+def _resolved(query: str, row: dict) -> str:
+    return f"'{query}' = {row['iata']} ({row['name']}, {row['state'] or 'no US state'})."
 
 
 def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> dict:
@@ -138,24 +149,29 @@ def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> 
         assumptions = [f"'{query}' is ambiguous; default definition {query} = {alias['default']} (configured)"]
         facts = [fact("Default definition", f"{query} = {alias['default']}"),
                  fact("Other candidates", ", ".join(c["iata"] for c in candidates if c["iata"] != alias["default"]))]
-        return _envelope(conn, window, data, assumptions, "medium", facts)
+        others = [c["iata"] for c in candidates if c["iata"] != alias["default"]]
+        headline = f"'{query}' covers several airports; default {query} = {alias['default']}, others: {', '.join(others)}."
+        return _envelope(conn, window, data, assumptions, "medium", facts, headline=headline)
 
     if len(query) == 3 and query.isalpha():
         rows = store.find_airports(conn, "iata", query, window)
         if rows:
             return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])}, [], "high",
-                             [_airport_fact(rows[0])])
+                             [_airport_fact(rows[0])], headline=_resolved(query, rows[0]))
 
     for column in ("name", "municipality"):
         rows = [r for r in store.find_airports(conn, column, query, window) if r["passengers"] > 0]
         if len(rows) == 1:
             return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])},
-                             [f"matched on airport {column}"], "high", [_airport_fact(rows[0])])
+                             [f"matched on airport {column}"], "high", [_airport_fact(rows[0])],
+                             headline=_resolved(query, rows[0]))
         if len(rows) > 1:
             data = {"query": query, "ambiguous": True, "default": None,
                     "candidates": [_brief(r) for r in rows[:MAX_LISTED]]}
+            codes = ", ".join(c["iata"] for c in data["candidates"])
             return _envelope(conn, window, data, [f"several airports match on {column}; ask the user"], "low",
-                             [fact("Candidates", ", ".join(c["iata"] for c in data["candidates"]))])
+                             [fact("Candidates", codes)],
+                             headline=f"'{query}' matches several airports: {codes}.")
     return _error(conn, f"No airport with passenger service matches '{query}'")
 
 
@@ -236,6 +252,8 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
              _share(every_pct[threshold]), need["long_haul"]),
         fact(f"Long-haul share >= {_miles(threshold)}, passenger service", _share(pax_pct[threshold]),
              need["long_haul"]),
+        fact(f"Departures >= {_miles(threshold)}, all flights", _of(every, threshold)),
+        fact(f"Departures >= {_miles(threshold)}, passenger service", _of(pax, threshold)),
         *[fact(f"Sensitivity: long-haul share >= {_miles(t)}",
                f"all flights {_share(every_pct[t])}, passenger service {_share(pax_pct[t])}", need["long_haul"])
           for t in thresholds if t != threshold],
@@ -245,7 +263,33 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
         fact(f"Passenger growth vs {window.prev_start}..{window.prev_end}", _share(data["growth_pct"]),
              need["growth"]),
     ]
-    return _envelope(conn, window, data, assumptions, row["confidence"], facts)
+    return _envelope(conn, window, data, assumptions, row["confidence"], facts,
+                     headline=_metrics_headline(data, focus, window))
+
+
+def _of(counts: dict, threshold: int) -> str:
+    return f"{counts['long_haul'][threshold]:,} of {counts['departures']:,}"
+
+
+def _signed(pct: float | None) -> str:
+    return "n/a" if pct is None else f"{pct:+.1f}%"
+
+
+def _metrics_headline(data: dict, focus: str, window: store.Window) -> str:
+    """One sentence per focus; long haul states the definition and both bases with counts."""
+    code, lh = data["airport"], data["long_haul"]
+    every, pax = lh["all_flights"], lh["passenger_service"]
+    long_haul = (f"{_share(every['share_pct'])} of all departures from {code} (incl. cargo) are "
+                 f">= {_miles(lh['threshold_mi'])} ({every['long_haul_departures']:,} of {every['departures']:,}); "
+                 f"passenger service: {_share(pax['share_pct'])} "
+                 f"({pax['long_haul_departures']:,} of {pax['departures']:,}).")
+    load = (f"{code} load factor (passenger service) is {_share(data['load_factor_pct'])}: "
+            f"{data['passengers']:,} passengers on {data['seats']:,} seats in {window.label}.")
+    growth = (f"{code} passengers changed {_signed(data['growth_pct'])} in {window.label} "
+              f"({data['passengers']:,}) vs {window.prev_start}..{window.prev_end} ({data['previous_passengers']:,}).")
+    summary = (f"{code} in {window.label}: {data['passengers']:,} passengers (passenger service), load factor "
+               f"{_share(data['load_factor_pct'])}, growth {_signed(data['growth_pct'])}.")
+    return {"long_haul": long_haul, "load_factor": load, "growth": growth}.get(focus, f"{summary} {long_haul}")
 
 
 # --- rank_airports -----------------------------------------------------------------------
@@ -309,7 +353,10 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
                                       if result.unavailable else "")
     facts = [fact(weights_label, ", ".join(f"{c} {w}" for c, w in data["weights_used"].items()), True),
              *[fact(f"#{x['rank']} {x['iata']} ({x['name']})", _ranked_summary(x)) for x in ranked]]
-    return _envelope(conn, window, data, assumptions, confidence, facts)
+    top = ", ".join(f"{x['rank']} {x['iata']}" for x in ranked[:HEADLINE_TOP])
+    headline = (f"{key} terminal-expansion ranking by score: {top or 'no airport in the peer set'} "
+                f"({data['ranked_total']} ranked, {data['excluded_total']} excluded).")
+    return _envelope(conn, window, data, assumptions, confidence, facts, headline=headline)
 
 
 COMPONENT_LABELS = {"utilization": "utilization (load factor)", "scale": "scale (annual passengers)",

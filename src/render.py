@@ -31,6 +31,15 @@ def _table(header: list[str], rows: list[list[Any]]) -> str:
     return "\n".join(lines)
 
 
+def render_headline(envelope: dict) -> str:
+    """The envelope's deterministic one-sentence answer, as a quote above the card; empty for
+    errors whose headline only repeats the error message (render_error shows it)."""
+    headline = envelope.get("headline") or ""
+    if not headline or headline == envelope.get("error"):
+        return ""
+    return f"> {headline}"
+
+
 def render_facts(envelope: dict) -> str:
     """Facts card: one row per fact, then freshness unless a fact already states it.
 
@@ -98,11 +107,13 @@ def render_error(envelope: dict) -> str:
 
 
 def render_envelope(envelope: Any, title: str | None = None) -> str:
-    """Whole envelope as markdown: title, error or facts card, ranking, excluded, assumptions."""
+    """Whole envelope as markdown: title, headline, error or facts card, ranking, excluded, assumptions."""
     parts = [f"**{title}**"] if title else []
     if not isinstance(envelope, dict):  # a tool result that was not JSON
         parts.append(f"```\n{envelope if isinstance(envelope, str) else json.dumps(envelope)}\n```")
         return "\n\n".join(parts)
+    if headline := render_headline(envelope):
+        parts.append(headline)
     if envelope.get("error"):
         parts.append(render_error(envelope))
         return "\n\n".join(parts)

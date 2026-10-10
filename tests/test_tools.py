@@ -198,3 +198,36 @@ def test_make_tools_errors_become_envelopes(scoring_cfg):
     assert set(by_name) == {"data_status", "resolve_airport", "airport_metrics", "rank_airports"}
     r = by_name["airport_metrics"].invoke({"airport": "ANC"})
     assert r["data"] is None and "unable to open" in r["error"]
+
+
+# --- headline (P2.9c) --------------------------------------------------------------------
+
+def test_every_envelope_has_a_headline(db, scoring_cfg):
+    results = [tools.data_status(db, scoring_cfg), tools.resolve_airport(db, scoring_cfg, "LA"),
+               tools.resolve_airport(db, scoring_cfg, "Chicago"), tools.resolve_airport(db, scoring_cfg, "Atlantis"),
+               tools.airport_metrics(db, scoring_cfg, "BOS"), tools.rank_airports(db, scoring_cfg, "new_england"),
+               tools.rank_airports(db, scoring_cfg, "Texas")]
+    for r in results:
+        assert isinstance(r["headline"], str) and r["headline"]
+    assert results[0]["headline"] == "Data loaded for 2025-01..2025-12 (12 of 12 months); freshness unknown."
+
+
+def test_long_haul_headline_states_definition_both_bases_and_counts(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "ANC", focus="long_haul")
+    # per year: all flights 1,464 departures, 744 >= 2,500 mi; passenger service 864, 144
+    assert r["headline"] == ("50.8% of all departures from ANC (incl. cargo) are >= 2,500 mi (744 of 1,464); "
+                             "passenger service: 16.7% (144 of 864).")
+    assert facts(r)["Departures >= 2,500 mi, all flights"] == {"value": "744 of 1,464", "required": False}
+
+
+def test_metrics_headline_follows_focus(db, scoring_cfg):
+    load = tools.airport_metrics(db, scoring_cfg, "ANC", focus="load_factor")["headline"]
+    assert load.startswith("ANC load factor (passenger service) is 85.9%") and ">= 2,500" not in load
+    growth = tools.airport_metrics(db, scoring_cfg, "ANC", focus="growth")["headline"]
+    assert growth.startswith("ANC passengers changed +10.0% in 2025-01..2025-12")
+
+
+def test_ranking_headline_names_the_top(db, scoring_cfg):
+    r = tools.rank_airports(db, scoring_cfg, "new_england")
+    top = ", ".join(f"{x['rank']} {x['iata']}" for x in r["data"]["ranked"])
+    assert r["headline"] == f"new_england terminal-expansion ranking by score: {top} (3 ranked, 1 excluded)."
