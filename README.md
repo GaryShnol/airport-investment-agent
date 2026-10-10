@@ -1,0 +1,184 @@
+# Airport Investment Intelligence Agent
+
+A conversational agent that helps an analyst find US airports where renovation or terminal expansion is most likely to pay off, based on passenger and flight capacity pressure. Built as a 24-hour take-home for a Deloitte Digital Forward Deployed Engineer role.
+
+> **Status: work in progress.** The task board is in [TASKS.md](TASKS.md). Design details are in [docs/plan.md](docs/plan.md).
+
+## What it answers
+- Which airports in New England are strong candidates for terminal expansion?
+- Compare LA (LAX) and Santa Ana (SNA) airport congestion levels.
+- What is the percentage of long-haul flights out of Anchorage, with and without cargo?
+- What is the unmet flight demand at SFO and why? (a stated proxy, not a measured field)
+
+Follow-up questions work in the same chat.
+
+## How it works
+- **The LLM never computes numbers.** It chooses tools and phrases results. Every metric comes from SQL and a deterministic scoring module (`src/scoring.py`).
+- **Every answer states** the data period, assumptions, confidence, the weights used and whether the data is current.
+- **Data is loaded offline** into a local SQLite database by an idempotent `ingest` command. Nothing is fetched at chat time, so answers are fast and reproducible.
+- **No hardcoded values.** Infrastructure and secrets come from `.env` ([.env.example](.env.example)); scoring methodology lives in [config/weights.yaml](config/weights.yaml). Both are read through `src/config.py`.
+- **Swappable model.** `LLM_PROVIDER` selects OpenAI (or any OpenAI-compatible server) or a local Ollama model, with no code changes.
+
+## Architecture
+
+```mermaid
+classDiagram
+    direction LR
+
+    class ChatUI {
+        <<Streamlit>>
+        +send(message, thread_id)
+        +data_banner()
+    }
+
+    class Settings {
+        <<config>>
+        +from_env() Settings
+        +load_scoring() ScoringConfig
+    }
+
+    class LLMFactory {
+        <<factory>>
+        +get_chat_model(settings) BaseChatModel
+    }
+
+    class OpenAIBackend {
+        <<openai or compatible>>
+    }
+
+    class OllamaBackend {
+        <<local model>>
+    }
+
+    class ReActAgent {
+        -llm
+        -memory
+        +run(message, thread_id) Answer
+    }
+
+    class Tools {
+        <<6 tools>>
+        +data_status()
+        +resolve_airport(text)
+        +airport_metrics(airport)
+        +compare_airports(a, b)
+        +rank_airports(region)
+        +explain_demand_gap(airport)
+    }
+
+    class ScoringEngine {
+        <<deterministic>>
+        +score(metrics, weights) Score
+        +rank(region) Ranking
+        +rank_stability(region) Stability
+    }
+
+    class DataStore {
+        <<SQLite>>
+        +metrics(airport, window)
+        +delays(airport, window)
+        +airports_in(region)
+        +freshness() Report
+    }
+
+    class Ingest {
+        <<CLI offline>>
+        +load_files()
+        +check() Report
+        +download_missing()
+    }
+
+    ChatUI --> ReActAgent
+    ReActAgent --> LLMFactory
+    LLMFactory --> OpenAIBackend
+    LLMFactory --> OllamaBackend
+    LLMFactory ..> Settings : reads .env
+    ReActAgent --> Tools : tool calls
+    Tools --> DataStore : local SQL
+    Tools --> ScoringEngine
+    ScoringEngine --> DataStore
+    ScoringEngine ..> Settings : weights.yaml
+    Ingest --> DataStore : writes aggregates and meta
+    Ingest ..> Settings : keys and paths
+```
+
+## Request flow
+
+```mermaid
+graph TD
+    A["User query + thread_id"] --> B["Light guard in code: empty, length limit"]
+    B --> C["ReAct agent (LLM from LLM_PROVIDER + system prompt: scope rules, assumptions, clarify when ambiguous, reply in user language)"]
+
+    C --> D{"Next step?"}
+    D -- "Ambiguous or unknown entity" --> E["Ask clarifying question"]
+    D -- "Out of scope" --> F["Polite out-of-scope reply"]
+    D -- "Need data" --> G["Call tool"]
+
+    G --> H["Tools (6): data_status, resolve_airport, airport_metrics, compare_airports, rank_airports, explain_demand_gap"]
+    H --> I["SQLite (local) and ScoringEngine (deterministic, weights from config/weights.yaml)"]
+    I --> J["Tool result envelope: data, data_period, freshness, assumptions, confidence"]
+    J --> C
+
+    D -- "Enough data" --> K["LLM writes answer using only envelope numbers"]
+    K --> L["Soft output check: numbers appear in tool results (rounding tolerant)"]
+    L --> N["Final response: answer, period, assumptions, confidence, weights, freshness warning if behind"]
+
+    subgraph OFFLINE ["Offline refresh (CLI, never during chat)"]
+        O["ingest --check"] --> P{"Upstream has newer month than meta.last_period?"}
+        P -- "Yes" --> Q["Report missing months, store upstream_latest in meta"]
+        P -- "No" --> R["Mark data current"]
+        Q --> S["ingest: load new files, aggregate, update SQLite and last_period"]
+    end
+
+    S -.-> I
+    Q -.-> J
+```
+
+## Scoring
+Each component is a percentile against all US passenger airports with enough departures in the window. Airports are then ranked inside the requested region. A missing component renormalizes the weights and lowers the reported confidence.
+
+| Component | Weight | Signal |
+|---|---|---|
+| Utilization | 0.30 | Seat load factor on passenger flights (demand-pressure proxy) |
+| Congestion | 0.30 | Departure-delay rate, taxi-out time, NAS-delay minutes per flight |
+| Long haul | 0.15 | Share of departures at or above the distance threshold (2,500 mi by default) |
+| Growth | 0.15 | Passenger growth, window vs the previous 12 months |
+| Demand context | 0.10 | Metro-area population growth (Census) |
+
+Weights and thresholds are editable in `config/weights.yaml`. The ranking also reports how stable it is when the weights are perturbed.
+
+## Data sources
+- BTS T-100 Segment (All Carriers): departures, seats, passengers, distance.
+- BTS On-Time Reporting: delays, taxi-out, delay causes (domestic, large carriers only).
+- Census Bureau Data API: metro-area population.
+- OurAirports: airport names, states and coordinates.
+
+## Quickstart
+Available now:
+```bash
+cp .env.example .env     # choose LLM_PROVIDER and add a key, or point to a local model
+uv sync
+uv run pytest
+```
+Coming (see TASKS.md): `uv run python -m src.ingest`, `uv run streamlit run app.py` and `docker compose up` (ships with a prebuilt `seed/airport.db`).
+
+## Project layout
+```
+src/        config, LLM provider registry (ingest, store, scoring, tools, agent to come)
+config/     scoring methodology (weights.yaml)
+docs/       design plan (and later design.md)
+tests/      unit tests
+reports/    first-pass data analysis and cross-checks
+scripts/    one-off analysis scripts
+seed/       prebuilt aggregated database (committed)
+data/       raw downloads (not committed)
+```
+
+## Limits
+- Load factor is a demand-pressure proxy, not terminal utilization: public sources have no gate or terminal-area data.
+- "Unmet demand" is an estimate (seats needed to bring dense routes down to a target load factor), never an observed value.
+- On-Time covers domestic flights of large carriers only, so some small airports have partial coverage.
+- Cargo-heavy airports such as ANC need passenger-only and all-flights numbers side by side.
+
+## Attribution
+This product uses the Census Bureau Data API but is not endorsed or certified by the Census Bureau.

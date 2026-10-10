@@ -12,7 +12,7 @@ Last updated: 2026-10-10. Rule: finish a task, tick it here, commit with the tas
 - [x] P0.5 Document traps (cargo at ANC, config codes, empty vs zero delay causes, proxies) in `CLAUDE.md`
 - [x] P0.6 Feasibility checks: On-Time direct files work (404 when unpublished, latest 2026-07); T-100 download is a scriptable form (latest 2026-07); Census key works
 - [x] P0.7 Design review and decisions (see Decision log)
-- [x] P0.8 Align `CLAUDE.md`, `docs/plan.md`, `docs/architecture.mmd`, `docs/flow.mmd`
+- [x] P0.8 Align `CLAUDE.md`, `docs/plan.md` and the README diagrams (single source, no duplicates)
 
 ## Phase 1 - Foundations
 - [x] P1.0 Repo hygiene: cleanup, `.gitignore`, `.gitattributes` (LF), first commit
@@ -56,7 +56,7 @@ Last updated: 2026-10-10. Rule: finish a task, tick it here, commit with the tas
 ## Phase 6 - Packaging and documentation
 - [ ] P6.1 `Dockerfile`, `docker-compose.yml`, entrypoint that seeds the DB volume
 - [ ] P6.2 GitHub Actions: `pytest`
-- [ ] P6.3 `README.md`: two-command quickstart, local-model option, example questions
+- [~] P6.3 `README.md`: draft with diagrams (architecture and flow, single source), scoring and limits is in; finalize the quickstart when the app runs
 - [ ] P6.4 `docs/design.md`: scoring methodology, key tradeoffs, where AI is used, limits and assumptions, production path
 - [x] P6.5 Cleanup: removed one-off download helpers, a duplicate ZIP, an empty temp folder and caches (done at the first commit)
 - [ ] P6.6 Final check: fresh clone, `docker compose up`, run the four questions plus follow-ups

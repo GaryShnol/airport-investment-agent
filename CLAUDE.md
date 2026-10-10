@@ -22,6 +22,7 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - Ambiguous entity (e.g. "LA") -> ask, or state the definition used (LA = LAX).
 - Reply in the language of the user's question (default English). Code, docs and tool output in English.
 - Never commit `data/` or `.env`; never print keys. `seed/airport.db` (aggregated, small) is committed so the project runs without downloads.
+- Diagrams (architecture, request flow) live only in `README.md` as mermaid blocks, which GitHub renders. Edit them there; do not copy them elsewhere.
 - Work in small steps; update `TASKS.md` and commit per task.
 
 ## Traps
