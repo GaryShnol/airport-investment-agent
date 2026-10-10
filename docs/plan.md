@@ -33,7 +33,7 @@ Task status lives in `TASKS.md`. This file holds the design.
 `data_status`, `resolve_airport`, `airport_metrics`, `compare_airports`, `rank_airports`, `explain_demand_gap`.
 Every tool returns:
 ```json
-{"headline": "43.2% of all departures from ANC (incl. cargo) are >= 2,500 mi (38,011 of 87,988); passenger service: 11.5% (...)",
+{"headline": "43.2% of all departures from ANC (incl. cargo) are >= 2,500 mi (37,969 of 87,988); passenger service: 11.5% (...)",
  "facts": [{"label": "Long-haul share >= 2,500 mi, passenger service", "value": "11.5%", "required": true}],
  "data": {}, "data_period": "2025-01..2025-12", "freshness": "fresh|stale (upstream has 2026-07 for ontime)|unknown",
  "assumptions": ["long-haul >= 2500 mi", "passenger flights only"], "confidence": "high|medium|low"}
@@ -69,7 +69,7 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 - Why the 2% long-haul floor: without it, 55 peer airports with 0% tie at the bottom while airports with a few charters (about 0.1%) reach the 65th percentile; noise, not a facility signal.
 - Missing component -> renormalize weights, lower confidence, say so.
 - Question mapping: Q2 = Congestion; Q3 = LongHaul; Q4 = Utilization + Congestion + delay causes + spill proxy.
-- Confidence (deterministic): high = all components, full 12 months, in the peer set; medium = a component renormalized or partial coverage; low = fewer than 12 months or proxy-only. Unmet demand is capped at medium.
+- Confidence (deterministic): high = all components, full 12 months, in the peer set; medium = a component renormalized or partial coverage; low = fewer than 12 months in the window (`scoring._confidence`). Unmet demand is capped at medium.
 - Rank stability (`scoring.rank_stability`, in every `rank_airports` result): `sensitivity.runs` (20) runs; in each, every weight the ranking used is multiplied by (1 + u), u uniform in +/- `weight_jitter` (25%), drawn with numpy's generator seeded by `sensitivity.seed` (42), then renormalized; scores are recomputed from the same percentiles (`weighted_score`, shared with `score`) and the region re-ranked (ties by IATA). Per airport: share of runs in the top `top_n` (3), runs ranked first, min and max rank; shown as two ranking-table columns and in each airport's summary fact, with a method fact and "Stability of the top airport". If the score's #1 is first in fewer than `stable_share` (90%) of runs, the headline adds "Not stable: ...". Same seed, same output (tested). It tests sensitivity to the weights, not to the data.
 
 ## Agent and UI
@@ -85,7 +85,7 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 `scripts/eval.py` runs `eval/questions.yaml` (id, question, optional thread `group` for follow-ups, expected `tools`, `must_have` fact labels, `must_not` text) through `build_agent` with the normal `.env` settings, a fresh thread per group. Per question it appends one JSON line to `eval/results/<timestamp>-<model>.jsonl` at once: tools called, seconds, commentary, figure-check result, empty or cut-off flag, expected-tool check, missing facts and pass/fail (pass = expected tools called, or none when `tools: []`; must-have facts present; nothing forbidden written; no sentence removed by the figure check; not empty or cut). It prints a markdown table; `--report` re-renders a saved file, `--only` and `--out-dir` select questions and folder. It is the model-comparison tool: change the model in `.env` and rerun.
 
 ## Packaging
-Dockerfile (Python slim, `uv sync --locked --no-dev`, non-root, no `.env` in the image, healthcheck on `/_stcore/health`) + `docker-compose.yml` (one `app` service, `env_file: .env`, `APP_PORT` default 8501, named volume on `/app/data`; entrypoint = `src.bootstrap`, then Streamlit). LLM from a container: OpenAI (`OPENAI_API_KEY`) or a host Ollama (`OLLAMA_BASE_URL` / `LLM_BASE_URL` = `http://host.docker.internal:11434`, plus `extra_hosts: host.docker.internal:host-gateway` on Linux); no Ollama service. GitHub Actions runs `pytest` and `docker build` (no push). README: two-command quickstart. `docs/design.md`: scoring methodology, tradeoffs, where AI is used, limits, production path (scheduled ingest, tracing, secrets, evals).
+Dockerfile (Python slim, `uv sync --locked --no-dev`, non-root, no `.env` in the image, healthcheck on `/_stcore/health`) + `docker-compose.yml` (one `app` service, `env_file: .env`, `APP_PORT` default 8501, named volume on `/app/data`; entrypoint = `src.bootstrap`, then Streamlit). LLM from a container: OpenAI (`OPENAI_API_KEY`) or a host Ollama (`OLLAMA_BASE_URL` / `LLM_BASE_URL` = `http://host.docker.internal:11434`, plus `extra_hosts: host.docker.internal:host-gateway` on Linux); no Ollama service. GitHub Actions runs `pytest` and `docker build` (no push). README: quickstart (Docker and local), first start, data updates. `docs/design.md` (the reviewer's design doc): scoring methodology, tradeoffs, where AI is used, the four answers on the shipped seed, limits, next steps; it links here and to `config/weights.yaml` instead of copying values.
 
 ## Acceptance values (calendar 2025, real data)
 Checked against `data/airport.db`, which CI does not have. CI runs the golden tests instead (`tests/test_golden.py`, P3.7): the four exam questions and the edge cases (unknown airport, unsupported region, scenario weights, ambiguity) through the agent's tools on a small fixture DB, with every expected value worked out by hand. Model behavior (tool choice, commentary) is measured by the eval harness (`scripts/eval.py`, P3.7b), not in CI.
@@ -106,7 +106,7 @@ Re-baselined in P2.2 from `t100_route_month` under the Definitions above (passen
 - Long haul separates only the big hubs: 201 of 233 peer airports have no material long-haul share, so the component mainly adds a bonus for about 30 hubs (BOS in New England). It stays at 0.10 for that reason.
 - Exact score ties occur (19 of them) when all components are equal; they are broken by IATA code and should be reported as ties.
 - Scores are relative to the peer set, so adding or removing airports moves the percentiles. The rank-stability check (P3.5) shows how sensitive the ranking is to the weights: before congestion was scored, the scenario `weights={"growth": 0.30}` moved PWM to first and BOS to third in New England; with congestion (P3.2) the same scenario keeps BOS, BTV, BGR as the top 3.
-- On-Time coverage: 15 of 233 peer airports have no congestion value (2025): 2 with no flights of the reporting carriers (HVN, ILG) and 13 under `min_ontime_flights` (e.g. GUM, 968,896 passengers but 732 reported departures; ORH 962). HVN, fifth in New England, is therefore scored without congestion.
+- On-Time coverage: 15 of 233 peer airports have no congestion value (2025): 2 with no flights of the reporting carriers (HVN, ILG) and 13 under `min_ontime_flights` (e.g. GUM, 968,896 passengers but 732 reported departures; ORH 962). HVN (seventh in New England once demand_context is scored, P4.3) is therefore scored without congestion.
 
 ## Model comparison findings (lfm2.5:8b vs gpt-oss:20b, 2026-10-10)
 Same questions, same data, `OLLAMA_NUM_CTX=16384`, temperature 0, local Ollama on the development laptop.
@@ -126,4 +126,4 @@ Same questions, same data, `OLLAMA_NUM_CTX=16384`, temperature 0, local Ollama o
 | Load factor at Portland (ambiguous) | 70 | not run |
 | LA vs Santa Ana congestion (no congestion data) | 105 | not run |
 
-- Reading: both models take about one to four minutes per turn on this machine, so latency comes from the hardware and model size more than from the tools; gpt-oss:20b is slower on multi-step turns (ranking, scenario) and similar on single-tool turns. The P2.10 eval will record tool-choice accuracy and faithfulness per question.
+- Reading: both models take about one to four minutes per turn on this machine, so latency comes from the hardware and model size more than from the tools; gpt-oss:20b is slower on multi-step turns (ranking, scenario) and similar on single-tool turns. The eval harness (P3.7b, `scripts/eval.py`, which replaced P2.10) records tool choice, faithfulness and latency per question.
