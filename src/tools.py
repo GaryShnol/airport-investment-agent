@@ -254,10 +254,12 @@ def _resolve_code(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> tu
     if data is None:
         return None, result
     if data["ambiguous"]:
+        best, alternatives = data["best"], [a["iata"] for a in data["alternatives"]]
         return None, _error(conn, f"'{text}' is ambiguous; ask the user or state the definition used",
                             [c["iata"] for c in data["candidates"]], headline=result["headline"],
-                            default=data["default"], best=data["best"]["iata"],
-                            alternatives=[a["iata"] for a in data["alternatives"]])
+                            ambiguous=True, default=data["default"], best=best["iata"], alternatives=alternatives,
+                            facts=[fact("Best match", f"{best['iata']} ({best.get('name', best['iata'])})"),
+                                   fact("Alternatives", ", ".join(alternatives))])
     return data["iata"], None
 
 
@@ -299,6 +301,8 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
             "in_peer_set": bool(row["in_peer_set"])}
     facts = [fact("Airport", f"{code} ({row['name']})")]
     assumptions = [PASSENGER_SERVICE]
+    if airport.strip().upper() != code:  # resolved from a name: state the definition used
+        assumptions.insert(0, f"'{airport.strip()}' = {code} ({row['name']})")
     headlines = []
 
     if shows["demand"]:
@@ -1080,14 +1084,18 @@ def make_tools(connect: Callable[[], sqlite3.Connection], cfg: ScoringConfig) ->
 
     @tool("resolve_airport")
     def resolve_airport_tool(text: str) -> dict:
-        """Turn an airport name, city or code (e.g. 'Anchorage', 'Santa Ana', 'LA') into an IATA code.
+        """Look up which airport a name, city or code means (e.g. 'Anchorage', 'Santa Ana', 'LA'), for
+        questions about the name itself. Not needed before the other tools: they resolve names.
         Returns ambiguous=true with candidates and a default when the name covers several airports."""
         return run(resolve_airport, text)
 
     @tool("airport_metrics")
     def airport_metrics_tool(airport: str, threshold_mi: int | None = None,
                              topic: Topic = "all") -> dict:
-        """Metrics for one airport (IATA code or name). Set topic to what the question asks about:
+        """Metrics for one airport, given as an IATA code or a name or city as the user wrote it
+        (e.g. 'Boston'): the name is resolved here, no resolve_airport call needed. A name that
+        covers several airports returns ambiguous=true with the best match and the alternatives
+        instead of data. Set topic to what the question asks about:
         long_haul (share of departures >= threshold, all flights and passenger service, with
         sensitivity), demand (passengers, seats, load factor), growth (passengers vs the previous
         12 months), congestion (departure delay rate, taxi-out, NAS delay per arrival, cancellations);

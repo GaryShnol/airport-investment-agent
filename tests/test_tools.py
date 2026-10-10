@@ -198,6 +198,33 @@ def test_airport_metrics_ambiguous_returns_candidates(db, scoring_cfg):
     assert r["candidates"] == ["LAX", "BUR", "LGB", "ONT", "SNA"] and r["default"] == "LAX"
 
 
+def test_airport_metrics_takes_a_name_and_states_the_definition(db, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db, scoring_cfg, "Anchorage", topic="demand"))
+    assert r["data"]["airport"] == "ANC"
+    assert r["assumptions"][0] == "'Anchorage' = ANC (Ted Stevens Anchorage International Airport)"
+    assert "Passengers (passenger service)" in facts(r)
+
+
+def test_airport_metrics_takes_a_code_without_a_definition(db, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db, scoring_cfg, " anc ", topic="demand"))
+    assert r["data"]["airport"] == "ANC"
+    assert not any(a.startswith("'") for a in r["assumptions"])
+
+
+def test_airport_metrics_ambiguous_name_returns_the_ambiguity_not_data(db, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db, scoring_cfg, "Chicago", topic="demand"))
+    assert r["data"] is None and r["ambiguous"] is True
+    assert (r["best"], r["alternatives"]) == ("ORD", ["MDW"])
+    assert facts(r)["Best match"]["value"] == "ORD (Chicago O'Hare International Airport)"
+    assert facts(r)["Alternatives"]["value"] == "MDW"
+
+
+def test_airport_metrics_unknown_name_is_an_explicit_no_match(db, scoring_cfg):
+    r = check_envelope(tools.airport_metrics(db, scoring_cfg, "Gotham City", topic="demand"))
+    assert r["data"] is None and r["error"] == "No airport with passenger service matches 'Gotham City'"
+    assert facts(r)["Match"] == {"value": "no match for 'Gotham City'", "required": True}
+
+
 def test_airport_metrics_without_service(db, scoring_cfg):
     r = tools.airport_metrics(db, scoring_cfg, "MRI")
     assert r["data"] is None and "no passenger service" in r["error"]

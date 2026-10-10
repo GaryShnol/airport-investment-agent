@@ -57,6 +57,18 @@ def test_la_triggers_resolve_airport_and_answer_states_definition(settings, conn
     assert "LA = LAX" in reply.text
 
 
+def test_single_airport_question_by_name_needs_one_tool_call(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("airport_metrics", airport="Boston", topic="demand"),
+                    AIMessage("Load factor is a demand-pressure proxy, not terminal capacity."))
+    reply = agent.ask("How many passengers did Boston handle, and what is its load factor?", "t-one")
+    assert [c["name"] for c in reply.tool_calls] == ["airport_metrics"]
+    env = reply.tool_results[0]
+    assert env["data"]["airport"] == "BOS" and env["assumptions"][0].startswith("'Boston' = BOS")
+    assert {"Passengers (passenger service)", "Load factor (passenger service, a demand-pressure proxy)"} <= {
+        f["label"] for f in env["facts"]}
+
+
 def test_out_of_scope_question_makes_no_tool_call(settings, connect, scoring_cfg):
     agent, model = make(settings, connect, scoring_cfg,
                         AIMessage("Sorry, that is out of scope: I answer questions about US airports."))
@@ -330,7 +342,7 @@ def test_no_context_warning_without_num_ctx(settings, connect, scoring_cfg, capl
 
 def test_prompt_rules():
     for rule in ["do not repeat it", "Use only figures that appear in the card",
-                 "No conclusion without supporting data", "always call resolve_airport first",
+                 "No conclusion without supporting data", "one tool call is enough",
                  "ask the user which airport they mean"]:
         assert rule in SYSTEM_PROMPT
 
