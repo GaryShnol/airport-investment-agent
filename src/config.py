@@ -7,6 +7,7 @@ Nothing else in the project should read os.environ or hardcode these values.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -45,6 +46,10 @@ class Settings:
     db_path: Path
     seed_db_path: Path           # gzipped seed DB written by `src.seed build`
     seed_max_mb: float           # `src.seed build` stops if the compressed seed is larger
+    seed_db_url: str | None      # `src.bootstrap` downloads the seed from here when DB_PATH is not usable
+    seed_db_sha256: str | None   # expected sha256 of the seed; None = read `<SEED_DB_URL>.sha256`
+    bootstrap_check_timeout_s: float  # per request in the `ingest --check` run at startup
+    app_port: int                # Streamlit port in the container (docker-compose publishes it)
     raw_data_dir: Path
     weights_path: Path
     log_level: str
@@ -88,6 +93,16 @@ class Settings:
             raise ConfigError("SEED_MAX_MB must be a number of megabytes") from exc
         if seed_max_mb <= 0:
             raise ConfigError("SEED_MAX_MB must be positive")
+        seed_db_sha256 = get("SEED_DB_SHA256")
+        if seed_db_sha256 is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", seed_db_sha256):
+            raise ConfigError("SEED_DB_SHA256 must be 64 hex characters (a sha256), or unset")
+        try:
+            bootstrap_check_timeout_s = float(get("BOOTSTRAP_CHECK_TIMEOUT_S", "5"))
+            app_port = int(get("APP_PORT", "8501"))
+        except ValueError as exc:
+            raise ConfigError("BOOTSTRAP_CHECK_TIMEOUT_S must be seconds and APP_PORT a whole number") from exc
+        if bootstrap_check_timeout_s <= 0 or not 1 <= app_port <= 65535:
+            raise ConfigError("BOOTSTRAP_CHECK_TIMEOUT_S must be positive and APP_PORT between 1 and 65535")
         num_ctx = get("OLLAMA_NUM_CTX")
         try:
             num_ctx = int(num_ctx) if num_ctx is not None else None
@@ -108,6 +123,10 @@ class Settings:
             db_path=_resolve(get("DB_PATH", "data/airport.db")),
             seed_db_path=_resolve(get("SEED_DB_PATH", "data/seed/airport.db.gz")),
             seed_max_mb=seed_max_mb,
+            seed_db_url=get("SEED_DB_URL"),
+            seed_db_sha256=seed_db_sha256.lower() if seed_db_sha256 else None,
+            bootstrap_check_timeout_s=bootstrap_check_timeout_s,
+            app_port=app_port,
             raw_data_dir=_resolve(get("RAW_DATA_DIR", "data/raw")),
             weights_path=_resolve(get("WEIGHTS_PATH", "config/weights.yaml")),
             log_level=get("LOG_LEVEL", "INFO").upper(),
