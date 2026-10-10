@@ -37,8 +37,8 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 - [x] P1.3 Config and provider tests (`tests/test_config.py`): 8 of 8 pass with `uv run pytest`
 - [x] P1.4 `uv sync` and commit `uv.lock` (reproducible installs)
 - [x] P1.5 GitHub Actions: `uv run pytest` on push and pull request
-- [ ] P1.6 Download `airports.csv` (OurAirports) on the user's machine
-- [ ] P1.7 Create the real `.env`; smoke-test `get_chat_model` with the chosen model
+- [x] P1.6 Download `airports.csv` (OurAirports) on the user's machine (86,231 rows, 2,036 US airports with IATA)
+- [x] P1.7 Create the real `.env`; smoke-test `get_chat_model` with a local Ollama model (works; finding: the reply contained a `<think>` block, handled in P2.7 and P2.10)
 - [x] P1.8 Check which agent constructor the installed LangGraph/LangChain version provides
 
 ## M2 - Vertical slice on T-100 (Q3 complete, Q1 and Q4 partial)
@@ -48,10 +48,10 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 - [ ] P2.4 Scoring tests first: percentile, load factor, long-haul share, growth, renormalization when a component is missing
 - [ ] P2.5 `src/scoring.py` with the available components (utilization, scale, growth, long haul) and deterministic confidence
 - [ ] P2.6 Tool envelope and tools: `data_status`, `resolve_airport` (handles "LA" ambiguity), `airport_metrics`, `rank_airports`
-- [ ] P2.7 `src/agent.py`: LangGraph ReAct agent, memory by `thread_id`, system prompt (scope, assumptions, clarify, user language), light input guard
+- [ ] P2.7 `src/agent.py`: LangGraph ReAct agent, memory by `thread_id`, system prompt (scope, assumptions, clarify, user language), light input guard; strip any reasoning (`<think>`) block from model output before it reaches the user
 - [ ] P2.8 Agent test with a fake model: tool routing, ambiguity, out-of-scope, missing LLM key message
 - [ ] P2.9 `app.py` Streamlit chat with follow-ups; agent and memory in `st.cache_resource`, `thread_id` in `st.session_state`, SQLite read-only per call; sidebar with data period and provider; collapsible panel with the tools called and their envelopes
-- [ ] P2.10 Try a local model (Ollama) and record tool-calling quality
+- [ ] P2.10 Small eval (8-10 fixed questions with the expected tool) on local models (qwen3:4b-instruct-2507, lfm2.5:8b, gpt-oss:20b); record tool-choice accuracy and latency; set `num_ctx` in config; decide the reasoning setting (`reasoning` parameter of ChatOllama, verify it exists in the installed version)
 
 ## M3 - Congestion and depth (Q2 complete, Q4 complete)
 - [ ] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
