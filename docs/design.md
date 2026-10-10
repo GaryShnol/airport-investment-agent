@@ -50,4 +50,4 @@ Tool output on the seed `data-2025`: window 2025-01..2025-12, freshness stale (B
 ## 7. Uncertainty, limits, next steps
 Policy: state the period, definitions, confidence and freshness every time; ask about an ambiguous name or state the default used ("LA" = LAX); label proxies; answer stale data with a warning rather than refuse; report On-Time differences inside the margin of error as no difference.
 Limits: no terminal or gate data; On-Time misses smaller carriers (15 of 233 peer airports have no congestion value); percentiles depend on the peer set and its floor; stability covers weights only; the binomial margins assume independent flights (optimistic).
-Next steps: automated On-Time download (direct monthly files, already probed by `--check`); automated T-100 download (an ASP.NET form, manual files as fallback); scheduled ingest and seed release to move the window into 2026.
+Next steps: newer BTS months can already be loaded on demand (`ingest --update`, opt-in; this document stays on the 2025 window); a scheduled update and a new seed release would move the shipped window into 2026.

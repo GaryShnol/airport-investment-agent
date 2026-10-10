@@ -109,6 +109,8 @@ def test_dry_run_prints_the_plan_and_downloads_nothing(db):
     assert "ontime  loaded 2025-12, upstream 2026-02: 2 months: 2026-01..2026-02" in text
     assert "download: about 62 MB" in text and "Dry run: nothing downloaded." in text
     assert db.execute("SELECT last_period FROM meta WHERE source = 'ontime'").fetchone()[0] == "2025-12"
+    _, text, _ = run(db, bts, dry_run=True, through="2026-01")
+    assert "t100    loaded 2025-12, upstream 2026-02: 1 month: 2026-01" in text and "about 31 MB" in text
 
 
 def test_not_interactive_without_yes_aborts(db):

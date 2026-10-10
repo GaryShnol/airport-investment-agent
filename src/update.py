@@ -85,7 +85,12 @@ def estimate(plans: list[SourcePlan], src: SourcesConfig, delay_s: float) -> tup
 def plan_lines(plans: list[SourcePlan], mb: float, seconds: float, src: SourcesConfig) -> list[str]:
     lines = []
     for p in plans:
-        months = f"{len(p.months)} months: {p.months[0]}..{p.months[-1]}" if p.months else "nothing to load"
+        if not p.months:
+            months = "nothing to load"
+        elif len(p.months) == 1:
+            months = f"1 month: {p.months[0]}"
+        else:
+            months = f"{len(p.months)} months: {p.months[0]}..{p.months[-1]}"
         lines.append(f"{p.source:<7} loaded {p.loaded or 'none'}, upstream {p.upstream or 'unknown'}: {months}"
                      + (f" ({p.note})" if p.note else ""))
     if any(p.months for p in plans):
