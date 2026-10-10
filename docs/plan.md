@@ -10,14 +10,15 @@ Task status lives in `TASKS.md`. This file holds the design.
 `src/llm.py`: `PROVIDERS = {"openai": ..., "ollama": ...}`; `get_chat_model(settings)` returns a LangChain `BaseChatModel`. Lazy imports. `openai` accepts `LLM_BASE_URL` for any OpenAI-compatible server (Ollama `/v1`, LM Studio, vLLM). No class hierarchy: LangChain already provides the common interface. Local models are weaker at tool calling, so tools are few, typed and return small JSON; the agent is tested with a fake model too.
 
 ## SQLite schema
-- `meta(source, last_period, upstream_latest, checked_at, fetched_at)`
+- `meta(source, last_period, upstream_latest, checked_at, fetched_at)`  one row per source (freshness summary)
+- `ingest_log(source, period, rows, loaded_at)`  one row per loaded (source, month); makes ingest idempotent
 - `airports(iata, name, state, region, cbsa, lat, lon)`
-- `t100_route_month(origin, dest, year, month, config, distance, departures, seats, passengers)`  config = pax | cargo | combi | unknown
+- `t100_route_month(origin, origin_state, dest, year, month, config, distance, departures, seats, passengers)`  origin_state = ORIGIN_STATE_ABR (peer-set filter)  config = pax | cargo | combi | unknown
 - `ontime_airport_month(airport, year, month, dep_flights, dep_del15, dep_cancelled, taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, nas_min, security_min, late_aircraft_min)`  departure side at the origin airport; arrival side and cause minutes at the destination airport
 - `census_metro(cbsa, year, population, fetched_at)`
 
 ## Ingest (offline, idempotent, `src/ingest.py`)
-- Reads files from `RAW_DATA_DIR`; skips (source, year, month) already in `meta`; validates ZIPs with `zipfile`; aggregates On-Time in a stream with `usecols`.
+- Reads files from `RAW_DATA_DIR`; skips (source, month) already in `ingest_log`; validates ZIPs with `zipfile`; aggregates On-Time in a stream with `usecols`.
 - `--check`: HEAD the next On-Time month (404 = not published) and read T-100 "Latest Available Data"; stores `upstream_latest`, `checked_at`; prints what is missing. No downloads.
 - Optional (stretch): `--download` fetches missing On-Time months (direct URLs) and T-100 (form POST). Any failure falls back to local files.
 - `seed/airport.db` is built from the aggregated tables and committed; the container copies it to the `DB_PATH` volume if absent.
