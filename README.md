@@ -168,6 +168,13 @@ For development without an API key. The model runs in Ollama on the host, not in
 
 On CPU only, local models are slow: one to four minutes per answer with 8-20B models on a laptop in our runs, and their commentary is less reliable (the data card is not affected). Any OpenAI-compatible server also works: `LLM_PROVIDER=openai` with `LLM_BASE_URL=http://host.docker.internal:11434/v1`.
 
+### Voice
+Next to the chat input there is a microphone ("Or ask by voice"). Record a question, stop, and the app transcribes it with the OpenAI audio transcription API, shows it as your message ("You said: ...") so you can see what was understood, and answers it exactly like a typed question (same agent, same `MAX_INPUT_CHARS` limit).
+- Needs: `LLM_PROVIDER=openai` with `OPENAI_API_KEY` (the same key and `LLM_BASE_URL` as the chat), or `STT_BASE_URL` pointing to another OpenAI-compatible transcription server. Otherwise the microphone is hidden and a one-line caption says why.
+- Settings: `STT_MODEL` (default `gpt-4o-mini-transcribe`), `STT_MAX_SECONDS` (default 60; longer recordings are refused before anything is sent), `STT_BASE_URL` (optional). See `.env.example`.
+- Errors (no key, server unreachable, rejected key or model, empty, silent or too long recording) are one line naming the setting to fix.
+- Privacy: audio is sent to the OpenAI API (or `STT_BASE_URL`) only when you record a question. It is held in memory for that one request and is never written to disk or kept in the session; only the transcript stays in the chat.
+
 ## First start
 The data is not in git or in the image. `src.bootstrap` (the container entrypoint, or the command above) checks `DB_PATH`; if the DB is missing or invalid it downloads the seed DB from `SEED_DB_URL` (a gzipped SQLite file published as a GitHub Release asset), verifies its sha256 and installs it atomically. Later starts reuse it (in Docker it lives in the `data` volume). It then runs `ingest --check` with a short timeout so the sidebar can say whether newer data exists upstream; offline, freshness is "unknown" and the app still starts. If no data can be obtained it stops with three options: set `SEED_DB_URL`, mount an existing `airport.db` at `/app/data/airport.db`, or build the DB with `ingest` from the raw files.
 
@@ -223,6 +230,7 @@ Freshness, per source and overall, from the last `--check` (stored in the DB, sh
 - Percentiles are relative to the peer set, and the passenger floor that defines it is a policy line (airports just under it are listed as excluded, with the reason).
 - New BTS months are loaded from files downloaded by hand; `ingest --check` reports when upstream is ahead. Automated download is a next step ([docs/design.md](docs/design.md)).
 - The chat UI is in English; answers follow the language of the question.
+- Voice input was tested with a stubbed transcription call and once against the OpenAI API with a synthesized WAV clip, not with a live microphone in a browser; a silent recording is caught only when the model returns no text.
 
 ## Maintainers: publishing a new seed DB
 The seed DB is a GitHub Release asset, not a file in git. Each data version gets its own release tag, so an old URL keeps serving the data it was published with.
@@ -240,7 +248,7 @@ The seed DB is a GitHub Release asset, not a file in git. Each data version gets
 app.py      Streamlit chat (data from tools first, model commentary second)
 Dockerfile, docker-compose.yml, docker/   container image, one-service compose, entrypoint
 src/        config, LLM provider registry, ingest and upstream check, Census, store, scoring,
-            tools, render, figure check, agent (also the CLI), seed build, bootstrap
+            tools, render, figure check, agent (also the CLI), voice input, seed build, bootstrap
 config/     scoring methodology (weights.yaml)
 docs/       design.md (design doc), plan.md (build plan and definitions)
 tests/      unit and golden tests (CI)

@@ -57,10 +57,10 @@ def model_url(s: Settings) -> str:
 
 
 # Exception class names (anywhere in the cause chain) that mean the server could not be reached.
-_CONNECTION_ERRORS = {"APIConnectionError", "APITimeoutError", "ConnectError", "ConnectTimeout", "ReadTimeout"}
+CONNECTION_ERRORS = {"APIConnectionError", "APITimeoutError", "ConnectError", "ConnectTimeout", "ReadTimeout"}
 
 
-def _chain(exc: BaseException) -> list[BaseException]:
+def error_chain(exc: BaseException) -> list[BaseException]:
     seen: list[BaseException] = []
     while exc is not None and exc not in seen:
         seen.append(exc)
@@ -75,9 +75,9 @@ def llm_error_message(settings: Settings, exc: BaseException) -> str:
     `status_code`, so no provider package has to be imported here."""
     if isinstance(exc, ConfigError):
         return str(exc)
-    chain = _chain(exc)
+    chain = error_chain(exc)
     status = next((getattr(e, "status_code") for e in chain if isinstance(getattr(e, "status_code", None), int)), None)
-    if any(type(e).__name__ in _CONNECTION_ERRORS or isinstance(e, (ConnectionError, TimeoutError)) for e in chain):
+    if any(type(e).__name__ in CONNECTION_ERRORS or isinstance(e, (ConnectionError, TimeoutError)) for e in chain):
         setting = ("LLM_BASE_URL" if settings.llm_base_url or settings.llm_provider == "openai"
                    else "LLM_BASE_URL (or OLLAMA_BASE_URL)")
         return (f"Cannot reach the model server at {model_url(settings)}: check {setting} in .env "

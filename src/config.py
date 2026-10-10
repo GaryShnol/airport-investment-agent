@@ -54,6 +54,10 @@ class Settings:
     weights_path: Path
     log_level: str
     max_input_chars: int
+    # Voice input (app only): speech-to-text through the OpenAI audio transcription API.
+    stt_model: str               # transcription model, e.g. gpt-4o-mini-transcribe
+    stt_max_seconds: float       # longest recording accepted, checked before anything is sent
+    stt_base_url: str | None     # a separate transcription endpoint; None = the OpenAI API (or LLM_BASE_URL)
     # Upstream endpoints and HTTP behaviour, used only by `src.ingest` (never at chat time).
     census_api_url: str          # Census Data API root, e.g. https://api.census.gov/data
     census_geocoder_url: str     # Census Geocoder, coordinates -> geographies
@@ -103,6 +107,12 @@ class Settings:
             raise ConfigError("BOOTSTRAP_CHECK_TIMEOUT_S must be seconds and APP_PORT a whole number") from exc
         if bootstrap_check_timeout_s <= 0 or not 1 <= app_port <= 65535:
             raise ConfigError("BOOTSTRAP_CHECK_TIMEOUT_S must be positive and APP_PORT between 1 and 65535")
+        try:
+            stt_max_seconds = float(get("STT_MAX_SECONDS", "60"))
+        except ValueError as exc:
+            raise ConfigError("STT_MAX_SECONDS must be a number of seconds") from exc
+        if stt_max_seconds <= 0:
+            raise ConfigError("STT_MAX_SECONDS must be positive")
         num_ctx = get("OLLAMA_NUM_CTX")
         try:
             num_ctx = int(num_ctx) if num_ctx is not None else None
@@ -131,6 +141,9 @@ class Settings:
             weights_path=_resolve(get("WEIGHTS_PATH", "config/weights.yaml")),
             log_level=get("LOG_LEVEL", "INFO").upper(),
             max_input_chars=max_input_chars,
+            stt_model=get("STT_MODEL", "gpt-4o-mini-transcribe"),
+            stt_max_seconds=stt_max_seconds,
+            stt_base_url=get("STT_BASE_URL"),
             census_api_url=get("CENSUS_API_URL", "https://api.census.gov/data").rstrip("/"),
             census_geocoder_url=get("CENSUS_GEOCODER_URL",
                                     "https://geocoding.geo.census.gov/geocoder/geographies/coordinates"),
