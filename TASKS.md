@@ -36,7 +36,7 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 - [x] P1.2 LLM provider registry `src/llm.py` (openai, ollama, OpenAI-compatible via base URL)
 - [x] P1.3 Config and provider tests (`tests/test_config.py`): 8 of 8 pass with `uv run pytest`
 - [x] P1.4 `uv sync` and commit `uv.lock` (reproducible installs)
-- [ ] P1.5 GitHub Actions: `uv run pytest` on push and pull request
+- [x] P1.5 GitHub Actions: `uv run pytest` on push and pull request
 - [ ] P1.6 Download `airports.csv` (OurAirports) on the user's machine
 - [ ] P1.7 Create the real `.env`; smoke-test `get_chat_model` with the chosen model
 - [ ] P1.8 Check which agent constructor the installed LangGraph/LangChain version provides
