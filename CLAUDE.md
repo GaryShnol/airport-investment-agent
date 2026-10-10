@@ -14,7 +14,7 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - The LLM never computes numbers. It picks tools and phrases results; all metrics come from SQL and `src/scoring.py`.
 - No hardcoded values. Infra and secrets (provider, model, URLs, keys, paths) come from `.env` through `src/config.py`. Scoring methodology (weights, thresholds, regions, sensitivity) lives in `config/weights.yaml`. Code reads both only via `src/config.py`.
 - LLM access only through `src/llm.py` (`get_chat_model(settings)`): a registry of provider builders (openai, ollama). OpenAI-compatible local servers work through `LLM_BASE_URL`. Adding a provider = one builder function + one registry entry.
-- No network calls at chat time. Network is used only by `ingest` (offline refresh).
+- No network calls for data at chat time. Network is used only by `ingest` (offline refresh); at chat time only the model and, when the user records a question, the transcription API (`src/voice.py`) are called.
 - One analysis window for all questions: trailing 12 complete months ending at `min(last_period)` across sources. Growth compares to the previous 12 months.
 - Stale = upstream has a newer month than the loaded data (from the last `ingest --check`, stored in `meta`). Never checked -> say "freshness unknown". Still answer, with a warning.
 - Every answer states data period, assumptions, confidence and the weights used.

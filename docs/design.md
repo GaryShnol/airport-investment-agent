@@ -32,6 +32,7 @@ Both diagrams are in the [README](../README.md#architecture). The Streamlit chat
 
 ## 5. Where AI is used, and where it is not
 Used for: understanding the question, choosing the tool, extracting parameters (airport names, region, topic, sort order, scenario weights such as "growth 0.30"), asking when a name is ambiguous, and short commentary.
+Voice (optional, in the app): a recording is transcribed by the OpenAI audio API (`src/voice.py`), shown to the user as "You said: ..." and then takes the typed-text path; no audio is stored.
 Not used for: any number, ranking, comparison verdict, stability result or unmet-demand figure. These come from SQL and `src/scoring.py`, and the card is rendered from the envelopes by code.
 Guardrails, in code: the figure check (`src/figure_check.py`) removes commentary sentences whose numbers are not in the tool results or are credited to the wrong airport; after rankings and comparisons only caveat sentences without digits or airport names are kept; `ensure_facts` appends required facts the commentary omits.
 
@@ -49,4 +50,4 @@ Tool output on the seed `data-2025`: window 2025-01..2025-12, freshness stale (B
 ## 7. Uncertainty, limits, next steps
 Policy: state the period, definitions, confidence and freshness every time; ask about an ambiguous name or state the default used ("LA" = LAX); label proxies; answer stale data with a warning rather than refuse; report On-Time differences inside the margin of error as no difference.
 Limits: no terminal or gate data; On-Time misses smaller carriers (15 of 233 peer airports have no congestion value); percentiles depend on the peer set and its floor; stability covers weights only; the binomial margins assume independent flights (optimistic).
-Next steps: automated On-Time download (direct monthly files, already probed by `--check`); automated T-100 download (an ASP.NET form, manual files as fallback); scheduled ingest and seed release to move the window into 2026; voice input (`st.audio_input`).
+Next steps: automated On-Time download (direct monthly files, already probed by `--check`); automated T-100 download (an ASP.NET form, manual files as fallback); scheduled ingest and seed release to move the window into 2026.

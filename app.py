@@ -4,6 +4,7 @@ Each answer shows the data first, rendered by code from the tool envelopes (src/
 the model's text labeled as commentary, then the raw tool calls. Streamlit reruns this script on
 every interaction, so the agent (and its in-memory conversation store) lives in st.cache_resource
 and the thread_id and messages live in st.session_state. Tools open SQLite read-only per call.
+Voice input (src/voice.py) turns a recording into text that then takes the typed-text path.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from contextlib import closing
 import streamlit as st
 
 from src import agent as agent_mod
-from src import census, render, store, tools
+from src import census, render, store, tools, voice
 from src.config import ConfigError, Settings, get_settings, load_scoring
 from src.llm import llm_error_message
 
@@ -97,6 +98,31 @@ def show_assistant(msg: dict) -> None:
         st.json([{**c, "result": r} for c, r in zip(msg["tool_calls"], msg["tool_results"])], expanded=False)
 
 
+def show_user(msg: dict) -> None:
+    st.markdown(f"You said: {msg['content']}" if msg.get("voice") else msg["content"])
+
+
+def voice_input(settings: Settings) -> str | None:
+    """Microphone above the chat input; the transcript of a new recording, or None.
+
+    Each recording is read once: the widget key changes after use, so the next run shows an empty
+    microphone and Streamlit drops the old widget and its audio from the session state."""
+    if reason := voice.unavailable_reason(settings):
+        st.caption(reason)
+        return None
+    n = st.session_state.setdefault("voice_n", 0)
+    recording = st.audio_input("Or ask by voice", key=f"voice_{n}")
+    if recording is None:
+        return None
+    st.session_state.voice_n = n + 1
+    try:
+        with st.spinner("Transcribing..."):
+            return voice.transcribe(settings, recording.getvalue())
+    except voice.VoiceError as exc:
+        st.error(str(exc))
+        return None
+
+
 def answer(agent: agent_mod.AirportAgent, settings: Settings, question: str) -> dict:
     try:
         reply = agent.ask(question, st.session_state.thread_id)
@@ -126,23 +152,29 @@ def main() -> None:
 
     st.title("Airport Investment Agent")
     st.caption("Figures and rankings come from the data tools; the model only adds commentary.")
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            if msg["role"] == "assistant":
-                show_assistant(msg)
-            else:
-                st.markdown(msg["content"])
+    chat = st.container()  # the conversation, kept above the microphone and the chat input
+    with chat:
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                if msg["role"] == "assistant":
+                    show_assistant(msg)
+                else:
+                    show_user(msg)
 
-    question = st.chat_input("Ask about US airports") or st.session_state.pop("pending", None)
+    spoken = voice_input(settings)
+    typed = st.chat_input("Ask about US airports")
+    question = typed or spoken or st.session_state.pop("pending", None)
     if not question:
         return
-    st.session_state.messages.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.markdown(question)
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            msg = {"role": "assistant", **answer(agent, settings, question)}
-        show_assistant(msg)
+    user_msg = {"role": "user", "content": question, "voice": bool(spoken) and not typed}
+    st.session_state.messages.append(user_msg)
+    with chat:
+        with st.chat_message("user"):
+            show_user(user_msg)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                msg = {"role": "assistant", **answer(agent, settings, question)}
+            show_assistant(msg)
     st.session_state.messages.append(msg)
 
 
