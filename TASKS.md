@@ -51,8 +51,10 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [x] P2.7 `src/agent.py`: LangGraph ReAct agent, memory by `thread_id`, system prompt (scope, assumptions, clarify, user language), light input guard; strip any reasoning (`<think>`) block from model output before it reaches the user
 - [x] P2.7b Required facts in every envelope and `ensure_facts` footer: mandatory content (both ANC shares, sensitivity, weights used, period, confidence) guaranteed by code; `rank_airports` exposes only the weights used
 - [x] P2.8 Agent test with a fake model: tool routing, ambiguity, out-of-scope, missing LLM key message
-- [ ] P2.9 `app.py` Streamlit chat with follow-ups; agent and memory in `st.cache_resource`, `thread_id` in `st.session_state`, SQLite read-only per call; sidebar with data period and provider; collapsible panel with the tools called and their envelopes
-- [ ] P2.10 Small eval (8-10 fixed questions with the expected tool) on local models (qwen3:4b-instruct-2507, lfm2.5:8b, gpt-oss:20b); record tool-choice accuracy and latency; set `num_ctx` in config; decide the reasoning setting (`reasoning` parameter of ChatOllama, verify it exists in the installed version)
+- [x] P2.9 `app.py` Streamlit chat with follow-ups; agent and memory in `st.cache_resource`, `thread_id` in `st.session_state`, SQLite read-only per call; sidebar with data period and provider; collapsible panel with the tools called and their envelopes
+  - P2.9a `src/render.py`: data rendered from envelopes by code (facts card, ranking table, excluded, assumptions), shared by CLI and app; `airport_metrics(focus=...)` decides the required facts
+  - P2.9b `app.py`: per answer "Data (from tools)" first, "Commentary (model)" second, "Tools called" expander; sidebar with period, freshness, model, Census attribution, New chat, four sample questions; AppTest smoke test
+- [ ] P2.10 Small eval (8-10 fixed questions with the expected tool) on local models (qwen3:4b-instruct-2507, lfm2.5:8b, gpt-oss:20b); record tool-choice accuracy and latency; set `num_ctx` in config; decide the reasoning setting (`reasoning` parameter of ChatOllama, verify it exists in the installed version); also change the prompt to "comment on the data, do not repeat it" and measure faithfulness (commentary that contradicts the data card, for example the sign of a growth rate), with and without the change
 
 ## M3 - Congestion and depth (Q2 complete, Q4 complete)
 - [ ] P3.1 Ingest On-Time (stream, `usecols`) to `ontime_airport_month` (departure side at origin, arrival side and cause minutes at destination); verify 7,001,619 rows and January 539,747
@@ -61,6 +63,7 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 - [ ] P3.4 `explain_demand_gap` for SFO: peak months, dense routes, spill proxy, delay-cause mix; confidence capped at medium
 - [ ] P3.5 Rank stability under weight perturbation (seeded)
 - [x] P3.6 Output check: done as P2.7b (`ensure_facts` appends missing required facts)
+- [ ] P3.6b Commentary check: flag figures in the model's text that do not appear in the tool results (small warning under the commentary); the data card stays authoritative
 - [ ] P3.7 Golden tests on the four exam questions
 
 ## M4 - Context and freshness
@@ -97,6 +100,7 @@ Last updated: 2026-10-10. Current milestone: **M2**.
 | Scale component (0.15) in the score | Profit depends on volume, not only pressure and growth; stops tiny fast-growing airports from topping the ranking | One more weight to defend (it is in YAML and covered by the stability check) |
 | Passenger service = config 1 or 3, peer set = US airports above a passenger floor (100,000/yr; a departure floor admitted 9-seat commuter airports) | One explicit definition shared by ingest, scoring and tools | Acceptance values must be re-baselined once |
 | On-Time split into origin and destination sides | BTS records delay causes for arrivals; mixing sides would misattribute them | Slightly wider table |
+| UI shows the data rendered from tool envelopes first, the model text second as commentary | Numbers on screen never depend on the model copying them; the model's text is clearly labeled | Some repetition when the model restates figures |
 | Agent in `st.cache_resource`, SQLite opened read-only per call | Streamlit reruns the script per message; keeps memory and avoids thread errors | None |
 | Agent constructor: `create_agent` from `langchain.agents` (add the `langchain` package in P2.7) | Installed LangGraph 1.2.14 still ships `create_react_agent`, but it warns it is deprecated since V1.0 and removed in V2.0, moved to `langchain.agents` | One more dependency (`langchain`) |
 

@@ -161,11 +161,19 @@ cp .env.example .env     # choose LLM_PROVIDER and add a key, or point to a loca
 uv sync
 uv run pytest
 ```
-Coming (see TASKS.md): `uv run python -m src.ingest`, `uv run streamlit run app.py` and `docker compose up` (ships with a prebuilt `seed/airport.db`).
+Chat UI (needs the database: raw T-100 files and `airports.csv` in `data/raw`, loaded by ingest):
+```bash
+uv run python -m src.ingest      # builds data/airport.db (idempotent)
+uv run streamlit run app.py
+```
+Each answer shows the figures from the data tools first, then the model's commentary.
+
+Coming (see TASKS.md): `docker compose up` (ships with a prebuilt `seed/airport.db`).
 
 ## Project layout
 ```
-src/        config, LLM provider registry (ingest, store, scoring, tools, agent to come)
+app.py      Streamlit chat (data from tools first, model commentary second)
+src/        config, LLM provider registry, ingest, store, scoring, tools, render, agent
 config/     scoring methodology (weights.yaml)
 docs/       design plan (and later design.md)
 tests/      unit tests
