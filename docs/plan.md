@@ -66,9 +66,10 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 Dockerfile + `docker-compose.yml` (app service, `env_file: .env`, volume for the DB, entrypoint seeds the DB). Local model from a container: `OLLAMA_BASE_URL=http://host.docker.internal:11434`. GitHub Actions runs `pytest`. README: two-command quickstart. `docs/design.md`: scoring methodology, tradeoffs, where AI is used, limits, production path (scheduled ingest, tracing, secrets, evals).
 
 ## Acceptance values (calendar 2025; become golden tests in P3.5)
-These came from the exploratory pass (passenger-only = config 1; SFO load factor = rows with seats). Re-baseline in P2.2 under the Definitions above; the ANC passenger-only share may move by about 0.1 point because combi flights are now included, and the new numbers replace these.
-- T-100 2025 ANC, all configs: 87,988 departures; share >= 2,500 mi = 43.2%; passenger-config only = 11.4%.
-- T-100 2025 SFO load factor = 82.3%.
+Re-baselined in P2.2 from `t100_route_month` under the Definitions above (passenger service = config 1 or 3). Only the passenger figures moved, because combi flights are now included; the exploratory pass used config 1 only.
+- T-100 2025 ANC, all configs: 87,988 departures; share >= 2,500 mi = 43.2% (unchanged).
+- T-100 2025 ANC, passenger service: share >= 2,500 mi = 11.5% (was 11.4% with config 1 only). Sensitivity: >= 1,500 mi 19.3%, >= 3,000 mi 4.3% (were 19.4% and 4.0%).
+- T-100 2025 SFO load factor, passenger service = 82.3% (82.26%; unchanged).
 - On-Time 2025: 7,001,619 rows; January = 539,747.
 
 ## Data validation (first pass on T-100 2024-2025, done before building)
