@@ -34,7 +34,7 @@ Last updated: 2026-10-10. Current milestone: **M1**.
 ## M1 - Foundations (current)
 - [x] P1.1 Config: `.env.example`, `config/weights.yaml`, `src/config.py`
 - [x] P1.2 LLM provider registry `src/llm.py` (openai, ollama, OpenAI-compatible via base URL)
-- [~] P1.3 Config and provider tests (`tests/test_config.py`): 7 of 8 pass in a sandbox with stubbed packages; run the full suite with `uv run pytest`
+- [x] P1.3 Config and provider tests (`tests/test_config.py`): 8 of 8 pass with `uv run pytest`
 - [ ] P1.4 `uv sync` and commit `uv.lock` (reproducible installs)
 - [ ] P1.5 GitHub Actions: `uv run pytest` on push and pull request
 - [ ] P1.6 Download `airports.csv` (OurAirports) on the user's machine
