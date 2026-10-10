@@ -2,7 +2,7 @@
 
 Task board for the Airport Investment Intelligence Agent (Deloitte Digital FDE exam, 24h budget).
 Legend: [x] done · [~] written, not yet verified · [ ] todo · (stretch) only if time allows.
-Last updated: 2026-10-10. Current milestone: **M6**.
+Last updated: 2026-10-10. Current milestone: **M7**.
 
 ## Working agreements
 - Build in vertical slices: after M2 the app already answers questions end to end; later milestones add data and depth.
@@ -19,6 +19,7 @@ Last updated: 2026-10-10. Current milestone: **M6**.
 | M4 Context and freshness | Census, `ingest --check`, seed DB | 3 h | 19:07-19:48, about 0.75 h |
 | M5 Package and document | Docker, README, design doc, fresh-clone test | 4 h | 19:48- (M5a merged 20:29; M5b from 20:30) |
 | M6 Agent polish | Fixes from the OpenAI eval runs (single-call metrics, resolver ranking, region guard) | from the buffer | |
+| M7 Eval polish | Eval checks the visible text, failure reasons, figure-check month names, follow-ups the tools can do | from the buffer | |
 | Buffer | Debugging, polish, demo rehearsal | 4 h | |
 
 Actual times are spans between the first and last commit of each milestone; work done before a milestone's first commit falls into the previous span, so they show the order and rough share, not exact effort.
@@ -141,6 +142,13 @@ Branch `m6-agent-polish`. Input: `eval/results` of 2026-10-10 (gitignored): `ope
   - P6.1 showed gpt-4o-mini remapped California to a configured region, so both: a prompt rule (pass the region as written, never substitute national or another region) and a code guard in `src/agent.py` (`guard_regions`, using `tools.unsupported_region`): state names in the question are checked against the states of the region passed, and a ranking that stands in for an unconfigured state is replaced by the configured-regions envelope plus fixed commentary. Limits: only US state names are detected (not "West Coast" or "Midwest"); a question that names a state for another reason ("rank New England, is it better than New York?") is also guarded; the replaced ranking stays in the thread memory
 - [x] Eval rerun with gpt-4o-mini only (gpt-5-mini not rerun), decision log with both model results, one sentence in `docs/design.md`
   - `20261010-214549-openai-gpt-4o-mini.jsonl`: 14 of 14, 34 s in total (before M6: 12 of 14, 33 s). `q3_anchorage_long_haul`, `boston_demand` and `unknown_airport` now call `airport_metrics` directly (no `resolve_airport`); `boston_demand` called it twice (two topics), still one tool. `california`: the model passed "California" itself (the new prompt rule), so the region guard did not have to fire in this run; it is covered by unit tests
+
+## M7 - Eval polish and figure-check month handling
+Branch `m7-eval-polish`. Input: `eval/results` of 2026-10-10: gpt-5-mini run `20261010-215548` failed `q4_sfo_unmet_demand` with no missing fact and no forbidden string, and `prompt_injection` because its refusal quoted the injected sentence (which the figure check removed).
+- [ ] P7.1 Eval harness: `must_not` is checked against the text the user sees (rendered cards plus the commentary after the figure check); a raw-reply match that the check removed is a note (`forbidden_filtered`), not a failure. A `reason` per failed question (jsonl field and table column); tool call arguments in the jsonl. `q1_highest_load_factor` passes with a `rank_airports` call sorted by load factor, or with no tool and every figure supported by an earlier card (the sort fact is required only when a tool was called)
+- [ ] P7.2 Figure check: month names and month ranges without a year ("June-July", "December") pass when every month is named in the envelopes (peak months, periods); months and years outside the data period or not in the facts are still dropped. Tests: the real q4 sentence passes, the earlier SFO failure ("Mar 2025 - Dec 2025") stays dropped
+- [ ] P7.3 Follow-up suggestions: the system prompt lists what the tools can do from the tool registry (names, parameters, first line of each description) and allows only follow-ups those tools can answer; `explain_demand_gap` says the target load factor is fixed by configuration. Test with the real sentence ("rerun the proxy with a different target load factor", "routes ranked by spill per seat")
+- [ ] Eval rerun with gpt-4o-mini (not gpt-5-mini), `prompt_injection` three times; decision log
 
 ## Decision log (for the interview)
 | Decision | Why | Trade-off |
