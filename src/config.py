@@ -42,6 +42,7 @@ class Settings:
     raw_data_dir: Path
     weights_path: Path
     log_level: str
+    max_input_chars: int
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -55,6 +56,12 @@ class Settings:
             temperature = float(get("LLM_TEMPERATURE", "0"))
         except ValueError as exc:
             raise ConfigError("LLM_TEMPERATURE must be a number") from exc
+        try:
+            max_input_chars = int(get("MAX_INPUT_CHARS", "2000"))
+        except ValueError as exc:
+            raise ConfigError("MAX_INPUT_CHARS must be a whole number") from exc
+        if max_input_chars <= 0:
+            raise ConfigError("MAX_INPUT_CHARS must be positive")
 
         return cls(
             llm_provider=get("LLM_PROVIDER", "ollama").lower(),
@@ -69,6 +76,7 @@ class Settings:
             raw_data_dir=_resolve(get("RAW_DATA_DIR", "data/raw")),
             weights_path=_resolve(get("WEIGHTS_PATH", "config/weights.yaml")),
             log_level=get("LOG_LEVEL", "INFO").upper(),
+            max_input_chars=max_input_chars,
         )
 
 
@@ -85,6 +93,8 @@ class ScoringConfig:
     sensitivity_jitter: float
     sensitivity_seed: int
     regions: dict[str, tuple[str, ...]]
+    # name -> {"default": IATA, "candidates": (IATA, ...)}; e.g. LA -> LAX by default
+    metro_aliases: dict[str, dict] = field(default_factory=dict)
 
 
 _WEIGHT_KEYS = {"utilization", "congestion", "scale", "growth", "long_haul", "demand_context"}
@@ -121,6 +131,8 @@ def load_scoring(path: Path) -> ScoringConfig:
             sensitivity_jitter=float(raw["sensitivity"]["weight_jitter"]),
             sensitivity_seed=int(raw["sensitivity"]["seed"]),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
+            metro_aliases={k.upper(): {"default": v["default"], "candidates": tuple(v["candidates"])}
+                           for k, v in (raw.get("metro_aliases") or {}).items()},
         )
     except KeyError as exc:
         raise ConfigError(f"Missing key in {path}: {exc}") from exc

@@ -2,8 +2,8 @@
 Task status lives in `TASKS.md`. This file holds the design.
 
 ## Configuration (no hardcoded values)
-- `.env` (see `.env.example`) -> `src/config.py` `Settings.from_env()`: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_TEMPERATURE`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `CENSUS_API_KEY`, `DB_PATH`, `SEED_DB_PATH`, `RAW_DATA_DIR`, `WEIGHTS_PATH`, `LOG_LEVEL`. Secrets are hidden from `repr`. Relative paths resolve against the project root.
-- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles, minimum long-haul share and sensitivity list, min passengers, target load factor, sensitivity runs/jitter/seed, regions.
+- `.env` (see `.env.example`) -> `src/config.py` `Settings.from_env()`: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_TEMPERATURE`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `CENSUS_API_KEY`, `DB_PATH`, `SEED_DB_PATH`, `RAW_DATA_DIR`, `WEIGHTS_PATH`, `LOG_LEVEL`, `MAX_INPUT_CHARS` (input guard for the agent). Secrets are hidden from `repr`. Relative paths resolve against the project root.
+- `config/weights.yaml` -> `load_scoring()` validates (weights sum to 1) and returns `ScoringConfig`: weights, congestion sub-weights, long-haul miles, minimum long-haul share and sensitivity list, min passengers, target load factor, sensitivity runs/jitter/seed, regions, metro aliases (ambiguous names such as LA, with the default airport).
 - Why split: env is per-deployment and secret; methodology is reviewable, versioned and part of the design doc.
 
 ## LLM provider
@@ -12,7 +12,7 @@ Task status lives in `TASKS.md`. This file holds the design.
 ## SQLite schema
 - `meta(source, last_period, upstream_latest, checked_at, fetched_at)`  one row per source (freshness summary)
 - `ingest_log(source, period, rows, loaded_at)`  one row per loaded (source, month); makes ingest idempotent
-- `airports(iata, name, state, region, cbsa, lat, lon)`
+- `airports(iata, name, state, region, cbsa, lat, lon, municipality)`  municipality = city served, used by `resolve_airport`
 - `t100_route_month(origin, origin_state, dest, year, month, config, distance, departures, seats, passengers)`  origin_state = ORIGIN_STATE_ABR (peer-set filter)  config = pax | cargo | combi | unknown
 - `ontime_airport_month(airport, year, month, dep_flights, dep_del15, dep_cancelled, taxi_out_sum, taxi_out_n, arr_flights, arr_del15, carrier_min, weather_min, nas_min, security_min, late_aircraft_min)`  departure side at the origin airport; arrival side and cause minutes at the destination airport
 - `census_metro(cbsa, year, population, fetched_at)`
@@ -27,14 +27,19 @@ Task status lives in `TASKS.md`. This file holds the design.
 `data_status`, `resolve_airport`, `airport_metrics`, `compare_airports`, `rank_airports`, `explain_demand_gap`.
 Every tool returns:
 ```json
-{"data": {}, "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
+{"facts": [{"label": "Long-haul share >= 2,500 mi, passenger service", "value": "11.5%", "required": true}],
+ "data": {}, "data_period": "2025-01..2025-12", "freshness": "current|behind|unknown",
  "assumptions": ["long-haul >= 2500 mi", "passenger flights only"], "confidence": "high|medium|low"}
 ```
+- `facts`: pre-formatted, human-readable strings the model copies instead of reading `data`. Required for every tool: data period and confidence. `airport_metrics`: the threshold, both long-haul shares (all flights and passenger service) and the sensitivity at each other configured threshold. `rank_airports`: the weights used, as one string. Component labels say what they measure ("scale (annual passengers)").
+- `ensure_facts` (src/agent.py), applied after `<think>` stripping: every required fact must appear in the answer, else a short "Key figures (from the data tool)" block lists only the missing ones. No retry loop. Matching: a period needs only its year(s); a word (confidence) must appear as is; numbers match exactly (trailing zeros ignored, decimal comma accepted), values above 10 also as the nearest integer (half up), values below 1 also as a percentage (0.385 = 38.5); date tokens such as 2025-12 in the answer never count as numbers. Mandatory content is therefore guaranteed by code, not by the prompt.
+- `rank_airports` exposes only `weights_used` (configured weights are in `data_status`): showing both made small models mix them.
 - `airport_metrics(airport)`: volume, load factor, congestion, long-haul share with and without cargo plus sensitivity at each configured threshold.
 - `compare_airports(a, b)`: side by side with normalized metrics.
 - `rank_airports(region, top_n)`: scores, component breakdown, weights, rank stability.
 - `explain_demand_gap(airport)`: peak months, highest load-factor routes, spill proxy (seats needed to bring dense routes to the target load factor), delay-cause mix.
-- `resolve_airport(text)`: name or city -> IATA; ambiguity returns candidates for the agent to ask about.
+- `resolve_airport(text)`: configured metro alias (ambiguous, with a default: LA = LAX), then exact IATA, airport name, municipality; name and city matches count only airports with passenger service in the window. Ambiguity returns candidates for the agent to ask about.
+- Errors come back as an envelope with `data` null, `error` and `candidates`; tools never raise to the model. Lists are capped (`MAX_LISTED`) to fit short local-model contexts.
 
 ## Definitions (fixed; used by ingest, scoring and tools)
 - Passenger service: T-100 rows with AIRCRAFT_CONFIG 1 (passenger) or 3 (combi) and DEPARTURES_PERFORMED > 0. Cargo (2) and undocumented (4) are excluded from passenger metrics; they count only in "all flights" figures.
@@ -60,7 +65,7 @@ Component = percentile inside the peer set; airports are ranked inside the reque
 
 ## Agent and UI
 - LangGraph ReAct agent built with `create_agent` from `langchain.agents` (`langgraph.prebuilt.create_react_agent` is deprecated since LangGraph 1.0; same engine) with a checkpointer and `thread_id` for follow-ups. System prompt: scope rules, assumptions policy, clarify when ambiguous, reply in the user's language.
-- Output check: numbers in the answer should appear in tool results (tolerant to rounding); a soft warning, not a retry loop.
+- Output check: `ensure_facts` (see Tools and envelope) appends required facts the answer omits; no retry loop.
 - Streamlit chat, sidebar with data period and freshness, Census attribution, and a collapsible panel listing the tools called and their envelopes (shows the reasoning and that numbers come from tools). Streamlit reruns the script on every message, so the agent and its memory live in `st.cache_resource` and the `thread_id` in `st.session_state`. SQLite is opened read-only (`mode=ro`) per call. Voice is a stretch goal (`st.audio_input`).
 
 ## Packaging
