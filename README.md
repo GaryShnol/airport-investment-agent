@@ -168,7 +168,26 @@ uv run streamlit run app.py
 ```
 Each answer shows the figures from the data tools first, then the model's commentary.
 
-Coming (see TASKS.md): `docker compose up` (ships with a prebuilt `seed/airport.db`).
+### Docker
+```bash
+cp .env.example .env     # choose the LLM (below); SEED_DB_URL already points to the seed release
+docker compose up --build
+```
+Then open http://localhost:8501 (`APP_PORT` in `.env`). The data is not in git or in the image: on first start the entrypoint (`python -m src.bootstrap`) downloads the seed DB from `SEED_DB_URL` (a GitHub Release asset), checks its sha256 and installs it in the `data` volume; later starts reuse it. It then runs `ingest --check` with a short timeout, so the sidebar can say whether newer data exists upstream (offline = "freshness unknown"; the app still starts). If no data can be obtained it stops with three options: set `SEED_DB_URL`, mount an existing `airport.db` at `/app/data/airport.db`, or run `uv run python -m src.ingest` with the raw files.
+
+LLM from the container, set in `.env` (there is no Ollama service in the compose file):
+- OpenAI: `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4o-mini`, `OPENAI_API_KEY=...`
+- Ollama on the host: `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://host.docker.internal:11434` (or `LLM_PROVIDER=openai` with `LLM_BASE_URL=http://host.docker.internal:11434/v1`). Docker Desktop resolves `host.docker.internal`; on Linux the `extra_hosts: host.docker.internal:host-gateway` line in `docker-compose.yml` does. Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0`) for the container to reach it on Linux.
+
+## Maintainers: publishing a new seed DB
+The seed DB is a GitHub Release asset, not a file in git. Each data version gets its own release tag, so an old URL keeps serving the data it was published with.
+1. Refresh the data: `uv run python -m src.ingest` (raw files in `data/raw`), then `uv run python -m src.ingest --check`.
+2. Rebuild the seed: `uv run python -m src.seed build` writes `data/seed/airport.db.gz` and `airport.db.gz.sha256` and prints the sizes (it stops above `SEED_MAX_MB`).
+3. Publish a new release with both files (new tag, e.g. `data-2026-07`):
+   ```bash
+   gh release create data-2026-07 data/seed/airport.db.gz data/seed/airport.db.gz.sha256      --title "Seed data 2026-07" --notes "Aggregated SQLite seed DB, window ending 2026-07. sha256 in airport.db.gz.sha256."
+   ```
+4. Point `SEED_DB_URL` in `.env.example` to `https://github.com/<owner>/<repo>/releases/download/<tag>/airport.db.gz` and commit. Existing volumes keep their DB until it is invalid (bump `store.SCHEMA_VERSION` when the schema changes) or the volume is removed (`docker compose down -v`).
 
 ## Testing
 - `uv run pytest`: unit and golden tests, no model and no network (CI runs them on every push). The golden tests (`tests/test_golden.py`) put the four exam questions and the edge cases (unknown airport, unsupported region, scenario weights, ambiguity) through the agent's tools on a small fixture database; agent tests use a scripted fake model.
@@ -179,14 +198,14 @@ Coming (see TASKS.md): `docker compose up` (ships with a prebuilt `seed/airport.
 ## Project layout
 ```
 app.py      Streamlit chat (data from tools first, model commentary second)
+Dockerfile, docker-compose.yml, docker/   container image, one-service compose, entrypoint
 src/        config, LLM provider registry, ingest, store, scoring, tools, render, agent
 config/     scoring methodology (weights.yaml)
 docs/       design plan (and later design.md)
 tests/      unit and golden tests (CI)
 eval/       eval questions; results/ (not committed) from scripts/eval.py
 scripts/    eval.py (eval harness, model comparison)
-seed/       prebuilt aggregated database (committed)
-data/       raw downloads (not committed)
+data/       raw downloads, airport.db, seed/ (built seed DB); not committed
 ```
 
 ## Limits

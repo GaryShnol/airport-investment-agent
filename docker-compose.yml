@@ -1,0 +1,25 @@
+# One service: the Streamlit app. Start with `docker compose up` after `cp .env.example .env`.
+# On first start the entrypoint downloads the seed DB (SEED_DB_URL in .env) into the `data` volume;
+# later starts reuse it. To use your own DB, put airport.db in the volume (or bind-mount ./data).
+#
+# LLM, set in .env (no Ollama service here):
+#   - OpenAI: LLM_PROVIDER=openai, LLM_MODEL=gpt-4o-mini, OPENAI_API_KEY=...
+#   - Ollama on the host: LLM_PROVIDER=ollama, OLLAMA_BASE_URL=http://host.docker.internal:11434
+#     (or an OpenAI-compatible server: LLM_PROVIDER=openai, LLM_BASE_URL=http://host.docker.internal:11434/v1).
+#     Docker Desktop (Windows, macOS) resolves host.docker.internal; on Linux the extra_hosts line does.
+services:
+  app:
+    build: .
+    image: airport-investment-agent
+    env_file: .env
+    environment:
+      DB_PATH: /app/data/airport.db      # inside the volume, whatever .env says for local runs
+    ports:
+      - "${APP_PORT:-8501}:${APP_PORT:-8501}"
+    volumes:
+      - data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Linux: reach a host Ollama; harmless elsewhere
+
+volumes:
+  data:

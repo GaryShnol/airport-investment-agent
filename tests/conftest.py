@@ -177,3 +177,14 @@ def seed_census(conn, vintage=2024, base=2019):
                      [(str(vintage),), (str(base),)])
     conn.execute("INSERT INTO meta (source, last_period, fetched_at) VALUES ('census', ?, 'now')", (str(vintage),))
     conn.commit()
+
+
+def full_db(path):
+    """A DB at `path` with every schema table non-empty (what `store.db_problem` accepts as valid)."""
+    with store.connect_rw(path) as c:
+        seed_analysis_db(c)
+        seed_ontime(c)
+        seed_census(c)
+        c.execute("INSERT INTO airport_cbsa (iata, lat, lon, cbsa, cbsa_name, kind, geocoder_vintage, geocoded_at) "
+                  "VALUES ('BOS', 42.36, -71.01, '14460', 'Boston', 'metro', 'ACS2024_Current', 'now')")
+    return path

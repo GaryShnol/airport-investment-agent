@@ -7,7 +7,7 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 ## Commands (uv; no pip, no manual venv). Commands marked (planned) are not built yet; see TASKS.md
 - `uv sync` install · `uv add <pkg>` add a dependency · `uv run pytest`
 - (planned) `uv run python -m src.ingest` load new files into SQLite (idempotent) · `uv run python -m src.ingest --check` report whether upstream has newer months
-- (planned) `uv run streamlit run app.py` · `docker compose up` (ships with `seed/airport.db`, needs only `.env` with an LLM key or a local model)
+- (planned) `uv run streamlit run app.py` · `docker compose up` (first start downloads the seed DB from `SEED_DB_URL`, a GitHub Release asset; needs only `.env` with an LLM key or a local model)
 - Do not run uv or pip inside the cloud sandbox against the user's folder: it would create a Linux `.venv` in a Windows project.
 
 ## Rules
@@ -21,7 +21,7 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - Mandatory content is guaranteed by code, not by the prompt: tools mark required `facts`, and `ensure_facts` in `src/agent.py` appends any the answer omits. Do not fix a missing figure by tuning the prompt.
 - Ambiguous entity (e.g. "LA") -> ask, or state the definition used (LA = LAX).
 - Reply in the language of the user's question (default English). Code, docs and tool output in English.
-- Never commit `data/` or `.env`; never print keys. `seed/airport.db` (aggregated, small) is committed so the project runs without downloads.
+- Never commit `data/` or `.env`; never print keys. The seed DB (`uv run python -m src.seed build` -> `data/seed/airport.db.gz` + `.sha256`) is not committed: it is published as a GitHub Release asset and fetched by `src.bootstrap`.
 - Diagrams (architecture, request flow) live only in `README.md` as mermaid blocks, which GitHub renders. Edit them there; do not copy them elsewhere.
 - Work in small steps; update `TASKS.md` and commit per task.
 
@@ -36,7 +36,7 @@ Plan, schema, tools, scoring, acceptance values: `docs/plan.md` (read before bui
 - BTS T-100 Segment download is an ASP.NET form (`DL_SelectFields.aspx?gnoyr_VQ=FMG&QO_fu146_anzr=Nv4%20Pn44vr45`): POST with `__VIEWSTATE`, `__VIEWSTATEGENERATOR`, `__EVENTVALIDATION`, `cboYear`, `cboPeriod`, field checkboxes, `chkDownloadZip`, `btnDownload`. Page says "Latest Available Data: July 2026". Not yet verified end to end; manual download + local file is the fallback. One request at a time; validate ZIPs with `zipfile`.
 - Census: key in the query string (`key=`), kept in `.env` as `CENSUS_API_KEY` (needed only by ingest); ACS 5-year is smoothed and values come back as strings; Boston CBSA = 14460. UI must show: "This product uses the Census Bureau Data API but is not endorsed or certified by the Census Bureau."
 - The cloud sandbox cannot reach external sites (api.census.gov, transtats.bts.gov, davidmegginson.github.io); run network fetches on the user's machine.
-- `airports.csv` (OurAirports) is needed for IATA -> name/state/lat/lon. It has no CBSA: airport -> CBSA comes from the Census Geocoder (lat/lon), cached in the seed DB.
+- `airports.csv` (OurAirports) is needed for IATA -> name/state/lat/lon. It has no CBSA: airport -> CBSA comes from the Census Geocoder (lat/lon), cached in the DB (and so in the seed).
 - FAA NAS Status was considered and dropped: it is live operational status only, no history, passengers or distances.
 
 ## Defaults (all in `config/weights.yaml`, change there)
