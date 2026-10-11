@@ -400,3 +400,41 @@ def test_month_counts_not_in_the_data_are_removed(sentence):
 ])
 def test_month_counts_from_the_data_pass_and_june_july_stays(sentence):
     assert check_commentary(sentence, [SFO_GAP]).removed == []
+
+
+# --- airport names next to codes (fix/entity-name-match) ---------------------------------------
+
+# Names as in the airports table. Real failure: "At San Francisco International Airport (SFO)" was
+# called PSM, because "at" (from the sentence) is a word of "Portsmouth International Airport at Pease".
+NAMED = {"data": {"names": {"SFO": "San Francisco International Airport", "LAX": "Los Angeles International Airport",
+                            "SNA": "John Wayne Orange County International Airport",
+                            "PWM": "Portland International Jetport", "PSM": "Portsmouth International Airport at Pease",
+                            "OAK": "Oakland San Francisco Bay Airport"}}}
+
+
+@pytest.mark.parametrize("sentence", [
+    "At San Francisco International Airport (SFO) load factor stays high.",
+    "SFO (San Francisco International Airport) is above the target.",
+    "Los Angeles International Airport (LAX) is busier.",
+    "At Los Angeles International (LAX) delays are longer.",
+    "John Wayne Orange County International Airport (SNA) cancels more.",
+    "John Wayne (SNA) cancels more.",
+    "SNA (Orange County) cancels more.",
+    "Portland International Jetport (PWM) is in Maine.",
+    "Portsmouth International Airport at Pease (PSM) is below the floor.",
+])
+def test_official_and_short_names_resolve_to_their_own_code(sentence):
+    assert sentence_problems(sentence, [NAMED]) == []
+
+
+@pytest.mark.parametrize("sentence, reason", [
+    ("Portland International Jetport (PSM) is in Maine.",
+     "'Portland International Jetport' is PWM (Portland International Jetport), not PSM"),
+    ("John Wayne (LAX) cancels more.", "'John Wayne' is SNA (John Wayne Orange County International Airport), not LAX"),
+    ("San Francisco International Airport (OAK) is busier.",
+     "'San Francisco International Airport' is SFO (San Francisco International Airport), not OAK"),
+])
+def test_genuine_name_mismatch_is_removed_with_the_right_note(sentence, reason):
+    out = check_commentary(f"{sentence} Demand presses hardest in summer.", [NAMED])
+    assert out.text == "Demand presses hardest in summer."
+    assert out.removed[0]["reasons"][0].startswith(reason)
