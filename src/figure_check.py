@@ -37,6 +37,7 @@ commentary block. `removal_note` is the one-line caption: the count and each dis
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
@@ -51,9 +52,11 @@ MISREADINGS = (
     (re.compile(r"\d\s*%\s+of\s+(?:all\s+|the\s+)?long[- ]haul\s+(?:flights|departures)", re.IGNORECASE),
      "a long-haul share is the share of the airport's departures that are long haul, not a share of long-haul flights"),
 )
-# Words that do not identify an airport in a name ("Burlington International" = "Burlington").
+# Words that do not identify an airport in a name ("Burlington International" = "Burlington"), including
+# connecting words: "at" is in "Portsmouth International Airport at Pease" and in "At San Francisco ...".
 GENERIC_NAME_WORDS = {"airport", "international", "intl", "regional", "municipal", "field", "the", "of", "county",
-                      "jetport", "memorial", "air", "terminal"}
+                      "jetport", "memorial", "air", "terminal", "at", "in", "on", "and", "for", "from", "by", "to",
+                      "with", "near", "a", "an"}
 
 _DATE = re.compile(r"\b\d{4}[-‐‑‒–—/.]\d{1,2}(?:[-./]\d{1,2})?\b")
 _NUMBER = re.compile(
@@ -197,20 +200,35 @@ def _words(name: str) -> set[str]:
     return {w for w in re.findall(r"[a-z]+", name.lower()) if w not in GENERIC_NAME_WORDS}
 
 
+def _full_name_owner(written: str, names: dict[str, str]) -> str | None:
+    """Code of the airport whose full official name is in the written name (the longest such name)."""
+    found = [(len(name), code) for code, name in names.items()
+             if re.search(rf"\b{re.escape(name)}\b", written, re.IGNORECASE)]
+    return max(found)[1] if found else None
+
+
 def _name_mismatches(sentence: str, names: dict[str, str]) -> list[str]:
     """'Bradley (BTV)' or 'BTV (Bradley International)': the name belongs to another airport in the
-    envelopes and not to the code it is attached to. Names not in the envelopes are not judged."""
+    envelopes and not to the code it is attached to. Names not in the envelopes are not judged.
+
+    A full official name decides on its own ("San Francisco International Airport (SFO)" passes even
+    when "Oakland San Francisco Bay Airport" is in the envelopes). Otherwise only distinctive words
+    carry a match: not generic ("International", "at"), and in exactly one airport's name ("San" in
+    SFO and OAK names neither)."""
     pairs = [(m.group(1), m.group(2)) for m in _NAME_BEFORE_CODE.finditer(sentence)]
     pairs += [(m.group(2), m.group(1)) for m in _CODE_BEFORE_NAME.finditer(sentence)]
+    counts = Counter(w for name in names.values() for w in _words(name))
     reasons = []
     for written, code in pairs:
         if code not in names:
             continue
-        # Words of the written name that are not in this airport's name ("Notably Bradley" -> notably,
-        # bradley); flagged only if one of them is in another airport's name in the envelopes.
-        foreign = _words(written) - _words(names[code])
-        other = next((o for o, name in names.items() if o != code and foreign & _words(name)), None)
-        if other:
+        other = _full_name_owner(written, names)
+        if other is None:
+            # Words of the written name that are not in this airport's name ("Notably Bradley" -> notably,
+            # bradley); flagged only if one of them is distinctive of another airport in the envelopes.
+            foreign = {w for w in _words(written) - _words(names[code]) if counts.get(w) == 1}
+            other = next((o for o, name in names.items() if o != code and foreign & _words(name)), None)
+        if other and other != code:
             reasons.append(f"'{written.strip()}' is {other} ({names[other]}), not {code} ({names[code]})")
     return reasons
 
