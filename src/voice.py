@@ -1,10 +1,10 @@
 """Voice input for the app: a recording becomes text through the OpenAI audio transcription API.
 
 The transcript then takes the typed-text path (`AirportAgent.ask`, with the MAX_INPUT_CHARS guard), so
-voice adds no second way into the agent. The audio is held in memory for one call only: it is never
-written to disk or kept in the session state. Problems become a `VoiceError` with one line naming the
-setting to fix, never a traceback (that goes to the log). STT_LANGUAGE fixes the language (an accent is
-not read as Spanish) and STT_PROMPT, a one-sentence vocabulary hint, is sent with each recording when set.
+voice adds no second way into the agent. The audio is never written to disk: it stays only in the
+microphone widget until the next recording, Send or Discard. Problems become a `VoiceError` with one line
+naming the setting to fix, never a traceback (that goes to the log). STT_LANGUAGE fixes the language (an
+accent is not read as Spanish); STT_PROMPT, an optional vocabulary hint (off by default), is sent when set.
 On silence a model can answer with the hint itself, so a transcript that is empty or repeats the hint
 counts as no speech: the result is "" and nothing reaches the agent. The app shows the transcript for review before it is sent.
 """
