@@ -218,7 +218,7 @@ def _strength(query: str, row: dict) -> int:
 
 
 def _matches(conn: sqlite3.Connection, cfg: ScoringConfig, query: str,
-             window: store.Window) -> tuple[list[dict], str, int]:
+             window: store.Window, state: str | None = None) -> tuple[list[dict], str, int]:
     """Matching airports, best first, how the best matched, and how many share the best rank.
 
     An exact IATA code wins outright. Otherwise airports with passenger service whose name or
@@ -226,15 +226,19 @@ def _matches(conn: sqlite3.Connection, cfg: ScoringConfig, query: str,
     exact match wins (SFO, city and name "San Francisco", over OAK, name only). Airports below the
     peer-set passenger floor count as exact only when no larger airport matches exactly, so a
     seaplane base named "New York ..." never beats JFK. Ties are ranked by passengers; when two or
-    more share the best rank (Portland: PDX and PWM), the caller reports the name as ambiguous."""
+    more share the best rank (Portland: PDX and PWM), the caller reports the name as ambiguous.
+    `state` (a US state code) keeps only airports in that state ("Portland, Maine")."""
+    def in_state(r: dict) -> bool:
+        return state is None or r["state"] == state
+
     if len(query) == 3 and query.isalpha():
-        rows = store.find_airports(conn, "iata", query, window)
+        rows = [r for r in store.find_airports(conn, "iata", query, window) if in_state(r)]
         if rows:
             return rows[:1], "iata", 1
     found: dict[str, dict] = {}
     for column in ("name", "municipality"):
         for r in store.find_airports(conn, column, query, window):
-            if r["passengers"] > 0:
+            if r["passengers"] > 0 and in_state(r):
                 found.setdefault(r["iata"], {**r, "strength": _strength(query, r)})
     exact = [r for r in found.values() if r["strength"]]
     pool = {r["iata"] for r in [r for r in exact if r["passengers"] >= cfg.min_passengers_per_year] or exact}
@@ -250,6 +254,17 @@ def _matches(conn: sqlite3.Connection, cfg: ScoringConfig, query: str,
         "city and name" if rows[0]["strength"] == 2 else
         "city" if (rows[0]["municipality"] or "").lower().split() == query.lower().split() else "name")
     return rows, how, tied
+
+
+def split_state(query: str) -> tuple[str, str] | None:
+    """(place, state code) for a query that ends with a US state name or code ("Anchorage, Alaska",
+    "Anchorage AK", "Portland, Maine"), else None. Used only when the whole query matches nothing."""
+    m = _PLACE_AND_STATE.fullmatch(query.strip())
+    if not m:
+        return None
+    word = m.group(2).rstrip(".").lower()
+    code = next((c for n, c in US_STATES.items() if word in (n.lower(), c.lower())), None)
+    return (m.group(1).strip(), code) if code else None
 
 
 def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> dict:
@@ -279,6 +294,11 @@ def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> 
         return _envelope(conn, window, data, assumptions, "medium", facts, headline=headline)
 
     rows, how, tied = _matches(conn, cfg, query, window)
+    place_state = None if rows else split_state(query)
+    if place_state:  # "Anchorage, Alaska": the city, kept to airports in the state the user named
+        place, state = place_state
+        rows, how, tied = _matches(conn, cfg, place, window, state)
+        how = how if how == "iata" else f"{how} in {state}"
     if not rows:
         return _no_match(conn, query, window)
     if tied == 1:
@@ -595,8 +615,10 @@ US_STATES = {
     "Washington": "WA", "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
 }
 # Longest names first, so "West Virginia" is read as one state, not as "Virginia".
-_STATE_NAMES = re.compile(r"\b(" + "|".join(map(re.escape, sorted(US_STATES, key=len, reverse=True))) + r")\b",
-                          re.IGNORECASE)
+_STATE_ALTERNATIVES = "|".join(map(re.escape, sorted(US_STATES, key=len, reverse=True)))
+_STATE_NAMES = re.compile(rf"\b({_STATE_ALTERNATIVES})\b", re.IGNORECASE)
+# "<place>, <state name or code>" or "<place> <state name or code>" (resolver fallback, `split_state`).
+_PLACE_AND_STATE = re.compile(rf"(.+?)(?:\s*,\s*|\s+)({_STATE_ALTERNATIVES}|[A-Za-z]{{2}}\.?)", re.IGNORECASE)
 
 
 def unsupported_region(question: str, region: str, cfg: ScoringConfig) -> str | None:

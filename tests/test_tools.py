@@ -475,6 +475,36 @@ def test_only_partial_matches_stay_ambiguous(db_names, scoring_cfg):
     assert d["ambiguous"] is True and d["matches_total"] > 2
 
 
+@pytest.mark.parametrize("text", ["Anchorage, Alaska", "Anchorage Alaska", "Anchorage, AK", "anchorage, ak.",
+                                  "ANC, Alaska"])
+def test_city_with_state_suffix_resolves(db, scoring_cfg, text):
+    r = check_envelope(tools.resolve_airport(db, scoring_cfg, text))
+    assert (r["data"]["iata"], r["data"]["ambiguous"]) == ("ANC", False)
+    assert r["headline"].startswith(f"'{text}' = ANC (")
+
+
+def test_state_suffix_picks_the_airport_in_that_state(db_names, scoring_cfg):
+    assert tools.resolve_airport(db_names, scoring_cfg, "Portland, Maine")["data"]["iata"] == "PWM"
+    r = tools.resolve_airport(db_names, scoring_cfg, "Portland OR")
+    assert r["data"]["iata"] == "PDX" and "matched on airport city and name in OR" in r["assumptions"]
+    assert tools.resolve_airport(db_names, scoring_cfg, "New York, NY")["data"]["ambiguous"] is True
+
+
+@pytest.mark.parametrize("text", ["Anchorage, Texas", "Gotham, NY", "Anchorage, XX"])
+def test_state_suffix_that_does_not_fit_is_no_match(db, scoring_cfg, text):
+    r = tools.resolve_airport(db, scoring_cfg, text)
+    assert r["data"] is None and facts(r)["Match"]["value"] == f"no match for '{text}'"
+
+
+@pytest.mark.parametrize("text, expected", [("Anchorage, Alaska", ("Anchorage", "AK")),
+                                            ("Charleston, West Virginia", ("Charleston", "WV")),
+                                            ("New York NY", ("New York", "NY")), ("Anchorage", None),
+                                            ("Kennedy Inter", None), ("Anchorage, XX", None),
+                                            ("airport XYZ", None), ("Paris, France", None)])
+def test_split_state(text, expected):
+    assert tools.split_state(text) == expected
+
+
 def test_airport_metrics_boston_answers_with_bos(db_names, scoring_cfg):
     r = tools.airport_metrics(db_names, scoring_cfg, "Boston", topic="demand")
     assert r["data"]["airport"] == "BOS"
