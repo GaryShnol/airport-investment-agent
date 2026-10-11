@@ -3,7 +3,8 @@
 The transcript then takes the typed-text path (`AirportAgent.ask`, with the MAX_INPUT_CHARS guard), so
 voice adds no second way into the agent. The audio is held in memory for one call only: it is never
 written to disk or kept in the session state. Problems become a `VoiceError` with one line naming the
-setting to fix, never a traceback.
+setting to fix, never a traceback. STT_PROMPT (a vocabulary hint: airport codes and domain words) is sent
+with each recording when set, so accented speech is read as "Santa Ana congestion", not as similar sounds.
 """
 from __future__ import annotations
 
@@ -93,7 +94,9 @@ def transcribe(s: Settings, audio: bytes | None, client: Any = None) -> str:
     check_recording(audio, s.stt_max_seconds)
     client = client or _client(s)
     try:
-        result = client.audio.transcriptions.create(model=s.stt_model, file=("recording.wav", audio, "audio/wav"))
+        hint = {"prompt": s.stt_prompt} if s.stt_prompt else {}   # STT_PROMPT: vocabulary hint, optional
+        result = client.audio.transcriptions.create(model=s.stt_model, file=("recording.wav", audio, "audio/wav"),
+                                                    **hint)
     except Exception as exc:  # noqa: BLE001 - every failure becomes one line naming the setting
         raise VoiceError(error_message(s, exc)) from exc
     text = (getattr(result, "text", None) or "").strip()

@@ -106,6 +106,18 @@ def test_api_errors_become_one_line_naming_the_setting(error, expected):
     assert str(err.value) == expected and "Traceback" not in str(err.value)
 
 
+def test_vocabulary_hint_is_sent_when_set_and_omitted_when_empty():
+    client = FakeClient(text="Compare LA and Santa Ana congestion.")
+    transcribe(OPENAI, wav(1), client)
+    assert client.calls[0]["prompt"] == OPENAI.stt_prompt and "Santa Ana" in OPENAI.stt_prompt
+    custom = Settings.from_env({"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test", "STT_PROMPT": " LAX, SNA "})
+    transcribe(custom, wav(1), client)
+    assert client.calls[1]["prompt"] == "LAX, SNA"
+    off = Settings.from_env({"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test", "STT_PROMPT": ""})
+    transcribe(off, wav(1), client)
+    assert off.stt_prompt == "" and "prompt" not in client.calls[2]
+
+
 def test_stt_settings_have_defaults_and_are_validated():
     s = Settings.from_env({})
     assert (s.stt_model, s.stt_max_seconds, s.stt_base_url) == ("gpt-4o-mini-transcribe", 60.0, None)
