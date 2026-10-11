@@ -26,7 +26,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from src import store
 from src.config import ConfigError, ScoringConfig, Settings, get_settings, load_scoring
-from src.figure_check import check_commentary, restrict_commentary
+from src.figure_check import check_commentary, finish_commentary, removal_note, restrict_commentary
 from src.llm import get_chat_model, llm_error_message
 from src.prompts import build_system_prompt
 from src.render import render_reply
@@ -249,7 +249,7 @@ class Reply:
     missing_facts: list[dict] = field(default_factory=list)  # required facts appended by ensure_facts
     commentary: str = ""                                     # the model's text, reasoning stripped
     fallback: bool = False                                   # commentary is a fixed message (empty reply)
-    figure_check: dict = field(default_factory=dict)         # commentary check: mode, removed, hidden
+    figure_check: dict = field(default_factory=dict)         # commentary check: mode, removed, hidden, note
 
 
 def _fallback(raw: str, results: list[Any]) -> str:
@@ -335,14 +335,20 @@ class AirportAgent:
         cleaned = drop_restated_headlines(raw, results)
         restricted = any(c["name"] in self.restricted_tools for c in calls)
         check = restrict_commentary(cleaned, thread) if restricted else check_commentary(cleaned, thread)
-        if check.removed:
-            log.info("Commentary check (%s) removed %d sentence(s).", check.mode, len(check.removed))
+        note = ""
+        if self.cfg is not None:
+            check = finish_commentary(check, self.cfg.commentary_min_words, self.cfg.commentary_fallback)
+            note = removal_note(check.removed, self.cfg.commentary_removed_note)
+        if check.removed:  # the full detail stays in the log; the user sees the compact note
+            log.info("Commentary check (%s) removed %d sentence(s): %s", check.mode, len(check.removed),
+                     [item["reasons"] for item in check.removed])
+            log.debug("Removed sentences: %s", [item["sentence"] for item in check.removed])
         answer = check.text
         fallback = not answer and not check.hidden   # hidden: the card is the whole answer
         if fallback:
             answer = _fallback(raw, results)
         return Reply(ensure_facts(answer, results), calls, results, missing_facts(answer, results), answer, fallback,
-                     check.as_dict())
+                     {**check.as_dict(), "note": note})
 
 
 def build_agent(

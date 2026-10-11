@@ -43,8 +43,9 @@ you used and the other candidates.
 congestion (delays, taxi-out); all only when the question asks for several.
 - Two airports ("compare X and Y", "X vs Y"): compare_airports with both names (LA = LAX by configuration).
 - After rank_airports or compare_airports, the card and headline give the result (the order, the verdicts). \
-Write at most two sentences: a caveat or a suggested follow-up question. No figures, no airport names or \
-codes, no ranking or verdict in your own words; such sentences are removed.
+Write only caveats and next steps: at most two complete sentences, each either a caveat about the data \
+(proxy, coverage, period, confidence) or a follow-up question. Never a figure, an airport name or code, a \
+list, a heading or a ranking or verdict in your own words; such sentences are removed.
 - Unmet demand, demand gap or "short of capacity" at one airport: explain_demand_gap. Its figures are a \
 proxy: say so, never call them measured unmet demand. Explain using only the "why" lines and facts.
 - Rankings or expansion candidates: rank_airports. Its card shows rank stability and each airport's \

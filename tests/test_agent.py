@@ -384,12 +384,13 @@ def test_sentence_with_a_misread_figure_is_removed_from_the_commentary(settings,
 
 
 def test_commentary_with_only_unsupported_figures_is_withheld(settings, connect, scoring_cfg):
-    from src.figure_check import WITHHELD
     agent, _ = make(settings, connect, scoring_cfg,
                     call("airport_metrics", airport="ANC", topic="demand"),
                     AIMessage("ANC carried 9,999,999 passengers."))
     reply = agent.ask("How many passengers at Anchorage?", "t-withheld")
-    assert reply.commentary == WITHHELD and reply.figure_check["withheld"] is True
+    assert reply.commentary == scoring_cfg.commentary_fallback and reply.figure_check["withheld"] is True
+    assert reply.figure_check["note"] == scoring_cfg.commentary_removed_note.format(
+        count=1, reasons="9999999 is not in the data")
 
 
 def test_follow_up_may_quote_figures_from_an_earlier_card(settings, connect, scoring_cfg):
@@ -415,9 +416,17 @@ def test_comparison_commentary_is_restricted_to_caveats(settings, connect, scori
     assert reply.figure_check["mode"] == "restricted"
 
 
-def test_restricted_commentary_left_empty_is_hidden_not_a_fallback(settings, connect, scoring_cfg):
+def test_restricted_commentary_with_everything_removed_shows_the_fallback_line(settings, connect, scoring_cfg):
     agent, _ = make(settings, connect, scoring_cfg,
                     call("rank_airports", region="new_england"), AIMessage("BOS is first with 0.7."))
+    reply = agent.ask("Rank New England", "t-removed")
+    assert reply.commentary == scoring_cfg.commentary_fallback and reply.figure_check["hidden"] is False
+    assert reply.fallback is False and reply.figure_check["note"]
+
+
+def test_restricted_commentary_never_written_is_hidden_not_a_fallback(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg,
+                    call("rank_airports", region="new_england"), AIMessage(""), AIMessage(""))
     reply = agent.ask("Rank New England", "t-hidden")
     assert reply.commentary == "" and reply.figure_check["hidden"] is True and reply.fallback is False
 
