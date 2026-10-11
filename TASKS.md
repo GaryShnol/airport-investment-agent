@@ -181,7 +181,8 @@ Branch `m9-update-probe`. Time-boxed probe on 2026-10-10, no `src/` change, file
 
 Submission polish, 2026-10-11, one pull request per fix:
 - [x] Region guard keeps a ranking whose target region the question names (#16); airports outside the US labeled as US-linked traffic only (#17); commentary check for airport cities, aliases and month counts (#18); compose project name pinned (#19); resolver reads "City, State" (#20); commentary fragments and fallback line (#21); README polish and screenshots (#22); voice vocabulary hint `STT_PROMPT` (#23)
-- [~] Final docs polish (branch `docs/final-polish`): TASKS consistency, `docs/design.md` tidy and eval pass rate, README diagram names `update`, browser upload note for voice
+- [x] Final docs polish (branch `docs/final-polish`): TASKS consistency, `docs/design.md` tidy and eval pass rate, README diagram names `update`, browser upload note for voice (#24)
+- [~] Voice follow-up (branch `fix/stt-vocabulary-hint`, after #23): `STT_LANGUAGE`, transcript review with Send and Discard, no-speech guard, named and logged errors, `STT_PROMPT` empty by default; voice docs updated to match
 
 ## Decision log (for the interview)
 Rows in the order the decisions were recorded (git history of this file).
