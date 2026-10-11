@@ -49,5 +49,5 @@ Tool output on the seed `data-2025`: window 2025-01..2025-12, freshness stale (B
 
 ## 7. Uncertainty, limits, next steps
 Policy: state the period, definitions, confidence and freshness every time; ask about an ambiguous name or state the default used ("LA" = LAX); label proxies; answer stale data with a warning rather than refuse; report On-Time differences inside the margin of error as no difference.
-Limits: no terminal or gate data; On-Time misses smaller carriers (15 of 233 peer airports have no congestion value); percentiles depend on the peer set and its floor; stability covers weights only; the binomial margins assume independent flights (optimistic).
+Limits: no terminal or gate data; On-Time misses smaller carriers (15 of 233 peer airports have no congestion value); percentiles depend on the peer set and its floor; stability covers weights only; the binomial margins assume independent flights (optimistic); airports outside the US have only their US-linked T-100 segments, which their cards label (`scope.non_us_airport` in the YAML), but the model's commentary may still quote those figures without the label.
 Next steps: newer BTS months can already be loaded on demand (`ingest --update`, opt-in; this document stays on the 2025 window); a scheduled update and a new seed release would move the shipped window into 2026.

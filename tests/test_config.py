@@ -124,3 +124,13 @@ def test_sources_yaml_rejects_bad_values(tmp_path):
     bad.write_text(good.replace("Origin: ORIGIN", "Origin: DEST"), encoding="utf-8")
     with pytest.raises(ConfigError, match="different name"):
         load_sources(bad)
+
+
+def test_non_us_airport_note_is_required_text(tmp_path):
+    text = Settings.from_env({}).weights_path.read_text(encoding="utf-8")
+    assert load_scoring(Settings.from_env({}).weights_path).non_us_airport_note.startswith("US-linked traffic only")
+    bad = tmp_path / "w.yaml"
+    bad.write_text(text.replace('non_us_airport: "US-linked traffic only (T-100), not total airport traffic."',
+                                'non_us_airport: ""'), encoding="utf-8")
+    with pytest.raises(ConfigError, match="scope.non_us_airport"):
+        load_scoring(bad)

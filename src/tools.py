@@ -88,6 +88,14 @@ def _envelope(conn: sqlite3.Connection, window: store.Window | None, data, assum
             "freshness": fresh, "assumptions": assumptions, "confidence": confidence}
 
 
+def _scope_notes(cfg: ScoringConfig, states: dict[str, str | None]) -> tuple[list[str], list[dict]]:
+    """Assumptions and required facts for airports outside the US (no US state in `airports`): T-100
+    holds only their US-linked segments, so their figures are partial (wording: scope.non_us_airport)."""
+    codes = [code for code, state in states.items() if state is None or state != state]
+    return ([f"{code} is outside the US: {cfg.non_us_airport_note}" for code in codes],
+            [fact(f"Coverage: {code}", cfg.non_us_airport_note, True) for code in codes])
+
+
 def _error(conn: sqlite3.Connection | None, message: str, candidates: list | None = None,
            headline: str | None = None, **extra) -> dict:
     """Error envelope; the headline is the message unless a fuller sentence is given."""
@@ -261,8 +269,10 @@ def resolve_airport(conn: sqlite3.Connection, cfg: ScoringConfig, text: str) -> 
         assumptions = [] if how == "iata" else [f"matched on airport {how}"]
         if weaker:
             assumptions.append(f"weaker matches not used: {', '.join(weaker)}")
+        scope, scope_facts = _scope_notes(cfg, {rows[0]["iata"]: rows[0]["state"]})
         return _envelope(conn, window, {"query": query, "ambiguous": False, **_brief(rows[0])},
-                         assumptions, "high", [_airport_fact(rows[0])], headline=_resolved(query, rows[0]))
+                         [*scope, *assumptions], "high", [_airport_fact(rows[0]), *scope_facts],
+                         headline=_resolved(query, rows[0]))
     shown = [_brief(r) for r in rows[:min(tied, MAX_LISTED)]]
     best, alternatives = shown[0], shown[1:]
     data = {"query": query, "ambiguous": True, "default": None, "best": best, "candidates": shown,
@@ -329,8 +339,9 @@ def airport_metrics(conn: sqlite3.Connection, cfg: ScoringConfig, airport: str,
     data = {"airport": code, "name": row["name"], "state": row["state"], "topic": topic,
             "passengers": int(row["passengers"]), "months_active": int(row["months_active"]),
             "in_peer_set": bool(row["in_peer_set"])}
-    facts = [fact("Airport", f"{code} ({row['name']})")]
-    assumptions = [PASSENGER_SERVICE]
+    scope, scope_facts = _scope_notes(cfg, {code: row["state"]})
+    facts = [fact("Airport", f"{code} ({row['name']})"), *scope_facts]
+    assumptions = [*scope, PASSENGER_SERVICE]
     if airport.strip().upper() != code:  # resolved from a name: state the definition used
         assumptions.insert(0, f"'{airport.strip()}' = {code} ({row['name']})")
     headlines = []
@@ -980,7 +991,9 @@ def compare_airports(conn: sqlite3.Connection, cfg: ScoringConfig, a: str, b: st
 
     data = {"airports": codes, "names": {c: rows[c]["name"] for c in codes}, "confidence_level": level,
             "ontime_status": status, "metrics": metrics}
-    assumptions = [*notes,
+    scope, scope_facts = _scope_notes(cfg, {c: rows[c]["state"] for c in codes})
+    facts = [*scope_facts, *facts]
+    assumptions = [*scope, *notes,
                    f"On-Time figures carry a {level} margin of error: rates from the flight counts, minute "
                    "averages from the spread of the 12 monthly means; a difference inside the combined margin "
                    "(square root of the sum of the squared margins) is reported as no meaningful difference",
@@ -1134,7 +1147,9 @@ def explain_demand_gap(conn: sqlite3.Connection, cfg: ScoringConfig, airport: st
     why.append(f"Passengers changed {_signed(growth_pct)} vs {previous}.")
     data["why"] = why
 
-    assumptions = [UNMET_DEMAND_PROXY, NEEDED_TO_MEASURE,
+    scope, scope_facts = _scope_notes(cfg, {code: row["state"]})
+    facts = [*scope_facts, *facts]
+    assumptions = [*scope, UNMET_DEMAND_PROXY, NEEDED_TO_MEASURE,
                    f"spill proxy = passengers in excess of {t_text} x seats, summed over the route-months whose load "
                    f"factor is above {t_text}: only the excess counts (a route-month at 85% adds 5% of its seats), "
                    "not every passenger on a full flight; sensitivity at "

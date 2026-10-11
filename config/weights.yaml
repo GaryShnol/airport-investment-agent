@@ -58,6 +58,11 @@ commentary:                     # what the model may write under a card (src/fig
   # airport name (caveats, next steps). Other tools keep the figure check.
   restricted_tools: [rank_airports, compare_airports]
 
+scope:                          # fixed wording the tools attach to answers outside the data's scope
+  # Airports outside the US (no US state): T-100 holds only segments that touch the US, so their
+  # figures are partial. Added as an assumption and a required fact to every envelope about one.
+  non_us_airport: "US-linked traffic only (T-100), not total airport traffic."
+
 # Longest ranking rank_airports returns, whatever top_n asks for (scenario or not). Keeps tool
 # results within a local model's context window.
 max_ranked: 25
