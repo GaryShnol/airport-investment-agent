@@ -23,6 +23,10 @@ _TOLERANCE = 1e-6
 ONTIME_PREZIP_URL = ("https://transtats.bts.gov/PREZIP/On_Time_Reporting_Carrier_On_Time_Performance_1987_present_"
                      "{year}_{month}.zip")
 T100_PAGE_URL = "https://www.transtats.bts.gov/DL_SelectFields.aspx?gnoyr_VQ=FMG&QO_fu146_anzr=Nv4%20Pn44vr45"
+# Vocabulary hint for speech-to-text (the transcription API's `prompt`): domain words and codes an
+# accent or a short clip makes hard to hear ("Santa Ana congestion", not "Santa Ana Congue Station").
+STT_PROMPT = ("Airport questions: airport, congestion, LAX, SNA, Santa Ana, LA, Anchorage, ANC, New England, BOS, "
+              "SFO, load factor, long-haul, terminal expansion, unmet demand.")
 HTTP_USER_AGENT = "airport-investment-agent/1.0 (offline data refresh; https://github.com/GaryShnol/airport-investment-agent)"
 
 
@@ -61,6 +65,7 @@ class Settings:
     stt_model: str               # transcription model, e.g. gpt-4o-mini-transcribe
     stt_max_seconds: float       # longest recording accepted, checked before anything is sent
     stt_base_url: str | None     # a separate transcription endpoint; None = the OpenAI API (or LLM_BASE_URL)
+    stt_prompt: str              # vocabulary hint sent with each recording; "" = none (STT_PROMPT set empty)
     # Upstream endpoints and HTTP behaviour, used only by `src.ingest` (never at chat time).
     census_api_url: str          # Census Data API root, e.g. https://api.census.gov/data
     census_geocoder_url: str     # Census Geocoder, coordinates -> geographies
@@ -162,6 +167,7 @@ class Settings:
             stt_model=get("STT_MODEL", "gpt-4o-mini-transcribe"),
             stt_max_seconds=stt_max_seconds,
             stt_base_url=get("STT_BASE_URL"),
+            stt_prompt=(env.get("STT_PROMPT", STT_PROMPT) or "").strip(),   # set but empty = no hint
             census_api_url=get("CENSUS_API_URL", "https://api.census.gov/data").rstrip("/"),
             census_geocoder_url=get("CENSUS_GEOCODER_URL",
                                     "https://geocoding.geo.census.gov/geocoder/geographies/coordinates"),
