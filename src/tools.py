@@ -96,6 +96,23 @@ def _scope_notes(cfg: ScoringConfig, states: dict[str, str | None]) -> tuple[lis
             [fact(f"Coverage: {code}", cfg.non_us_airport_note, True) for code in codes])
 
 
+def _aliases(conn: sqlite3.Connection, cfg: ScoringConfig, codes: list[str],
+             written: dict[str, str] | None = None) -> dict[str, list[str]]:
+    """Other words that name each airport in prose, for the commentary check (src/figure_check.py): the
+    city it serves ("Santa Ana" for SNA, "Los Angeles" for LAX), the configured metro aliases that
+    default to it ("LA") and the text the user wrote for it. Code and official name are in the envelope
+    already."""
+    cities = store.municipalities(conn, codes)
+    out = {}
+    for code in codes:
+        terms = [cities.get(code), *(k for k, v in cfg.metro_aliases.items() if v["default"] == code),
+                 (written or {}).get(code)]
+        terms = [t.strip() for t in terms if isinstance(t, str) and t.strip() and t.strip().upper() != code]
+        if terms:
+            out[code] = list(dict.fromkeys(terms))
+    return out
+
+
 def _error(conn: sqlite3.Connection | None, message: str, candidates: list | None = None,
            headline: str | None = None, **extra) -> dict:
     """Error envelope; the headline is the message unless a fuller sentence is given."""
@@ -746,6 +763,10 @@ def rank_airports(conn: sqlite3.Connection, cfg: ScoringConfig, region: str, top
         "weights_used": {c: round(w, 3) for c, w in result.weights_used.items()},
         "components_unavailable": result.unavailable,
         "ties": [[x["iata"] for x in ranked if x["score"] == s] for s in ties],
+        # Cities and aliases of the airports listed (ranked and excluded), so the commentary check
+        # also catches "Santa Ana" or "Portland" in a restricted-mode sentence.
+        "aliases": _aliases(conn, cfg, [x["iata"] for x in ranked]
+                            + [r["iata"] for _, r in ranking.excluded.head(MAX_LISTED).iterrows()]),
         "drivers_basis": "national percentile in the peer set (higher = stronger)",
         "stability": {"runs": cfg.sensitivity_runs, "weight_jitter": cfg.sensitivity_jitter,
                       "seed": cfg.sensitivity_seed, "top_n": cfg.sensitivity_top_n},
@@ -990,7 +1011,8 @@ def compare_airports(conn: sqlite3.Connection, cfg: ScoringConfig, a: str, b: st
         facts += [fact(f"{c}: {label}", _t100_display(kind, values[c])) | {"airport": c} for c in codes]
 
     data = {"airports": codes, "names": {c: rows[c]["name"] for c in codes}, "confidence_level": level,
-            "ontime_status": status, "metrics": metrics}
+            "ontime_status": status, "metrics": metrics,
+            "aliases": _aliases(conn, cfg, codes, {codes[0]: a, codes[1]: b})}
     scope, scope_facts = _scope_notes(cfg, {c: rows[c]["state"] for c in codes})
     facts = [*scope_facts, *facts]
     assumptions = [*scope, *notes,

@@ -286,3 +286,58 @@ def test_month_ranges_not_named_or_outside_the_data_still_drop(sentence, reason)
 
 def test_period_check_needs_a_data_period():
     assert check_commentary("Load factor peaked in June 2023.", [{"headline": "x", "facts": []}]).removed == []
+
+
+# --- airport aliases and month counts (audit H3, H7) ------------------------------------------
+
+# compare_airports as the tool now returns it: the city each airport serves, "LA" and the user's words.
+LAX_SNA_ALIASES = {**LAX_SNA, "data": {**LAX_SNA["data"],
+                                       "aliases": {"LAX": ["Los Angeles", "LA"], "SNA": ["Santa Ana"]}}}
+
+
+@pytest.mark.parametrize("sentence", [
+    "Santa Ana has the longer taxi-out time.",          # false (LAX 17.7 vs SNA 16.1 min): passed before
+    "santa ana is the more congested airport.",
+    "LA is less delayed overall.",
+    "Additionally, Santa Ana has a higher cancellation rate.",   # kept in the audit's live Q2 run
+])
+def test_restricted_mode_catches_cities_and_aliases(sentence):
+    caveat = "On-Time covers only the large carriers."
+    out = restrict_commentary(f"{sentence} {caveat}", [LAX_SNA_ALIASES])
+    assert out.text == caveat
+    assert out.removed[0]["reasons"][-1].startswith("names an airport (")
+
+
+@pytest.mark.parametrize("sentence", [
+    "These are per-flight rates, so the larger airport is not penalized for its size.",
+    "La plupart des retards sont mineurs.",     # "la" is not the alias "LA"
+    "A Santa Claus rally is not in the data.",   # a partial city name is not the city
+])
+def test_restricted_mode_aliases_do_not_drop_unnamed_caveats(sentence):
+    assert restrict_commentary(sentence, [LAX_SNA_ALIASES]).removed == []
+
+
+def test_swapped_figure_credited_by_city_name_is_caught():
+    # 13.2% is SNA's delayed-departure share; credited to LAX by its city
+    assert sentence_problems("Los Angeles has 13.2% of departures delayed.", [LAX_SNA_ALIASES]) == [
+        "13.2% is SNA's figure, credited to LAX"]
+    assert sentence_problems("Santa Ana has 13.2% of departures delayed.", [LAX_SNA_ALIASES]) == []
+
+
+@pytest.mark.parametrize("sentence", [
+    "SFO was above the target in 11 of 12 months.",       # the card says 10 of 12 (audit H7)
+    "Load factor was above 80% in 12 out of 12 months.",
+    "It ran hot in 9 of the 12 months.",
+])
+def test_month_counts_not_in_the_data_are_removed(sentence):
+    out = check_commentary(sentence, [SFO_GAP])
+    assert out.removed and out.removed[0]["reasons"][-1].endswith("months' is not in the data")
+
+
+@pytest.mark.parametrize("sentence", [
+    "SFO was above the target in 10 of 12 months.",
+    "Load factor topped 80% in 10 out of the 12 months, peaking June–July.",   # "June–July" stays
+    "Peak months were June–July and December, 10 of 12 months above target.",
+])
+def test_month_counts_from_the_data_pass_and_june_july_stays(sentence):
+    assert check_commentary(sentence, [SFO_GAP]).removed == []
