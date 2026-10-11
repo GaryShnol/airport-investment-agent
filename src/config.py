@@ -205,6 +205,7 @@ class ScoringConfig:
     geocoder_vintage: str        # Census Geocoder vintage (CBSA delineation) for airport -> CBSA
     regions: dict[str, tuple[str, ...]]
     max_ranked: int            # longest ranking a tool returns (keeps tool results small)
+    non_us_airport_note: str   # scope.non_us_airport: caveat for airports outside the US (partial T-100)
     # name -> {"default": IATA, "candidates": (IATA, ...)}; e.g. LA -> LAX by default
     metro_aliases: dict[str, dict] = field(default_factory=dict)
 
@@ -242,6 +243,13 @@ def _ratio(name: str, value) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 1:
         raise ConfigError(f"{name} must be a number greater than 1 (got {value!r})")
     return float(value)
+
+
+def _text(name: str, value) -> str:
+    """A non-empty string (wording shown to the user)."""
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{name} must be a non-empty string (got {value!r})")
+    return value.strip()
 
 
 def _base_vintage(census: Mapping) -> int:
@@ -288,6 +296,7 @@ def load_scoring(path: Path) -> ScoringConfig:
             geocoder_vintage=str(raw["census"]["geocoder_vintage"]),
             regions={k: tuple(v) for k, v in raw["regions"].items()},
             max_ranked=_positive_int("max_ranked", raw["max_ranked"]),
+            non_us_airport_note=_text("scope.non_us_airport", raw["scope"]["non_us_airport"]),
             metro_aliases={k.upper(): {"default": v["default"], "candidates": tuple(v["candidates"])}
                            for k, v in (raw.get("metro_aliases") or {}).items()},
         )

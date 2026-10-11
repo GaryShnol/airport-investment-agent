@@ -860,3 +860,42 @@ def test_unsupported_region_reads_the_question(scoring_cfg, question, region, ex
 ])
 def test_region_named_finds_the_target_region(scoring_cfg, question, region, expected):
     assert tools.region_named(question, region, scoring_cfg) is expected
+
+
+# --- airports outside the US (audit H2) ------------------------------------------------------
+
+@pytest.fixture
+def db_foreign(db):
+    """LHR: no US state; T-100 holds only its US-linked segments (here LHR-BOS)."""
+    db.execute("INSERT INTO airports (iata, name, state, region, municipality) "
+               "VALUES ('LHR', 'London Heathrow Airport', NULL, NULL, 'London')")
+    db.executemany("INSERT INTO t100_route_month VALUES (?,?,?,?,?,?,?,?,?,?)",
+                   [("LHR", None, "BOS", y, m, "pax", 3255, 30, 6000, 5000) for y in (2024, 2025) for m in range(1, 13)])
+    db.commit()
+    return db
+
+
+def test_non_us_airport_carries_the_configured_scope_note(db_foreign, scoring_cfg):
+    note = scoring_cfg.non_us_airport_note
+    assert note == "US-linked traffic only (T-100), not total airport traffic."   # config/weights.yaml
+    envelopes = [tools.resolve_airport(db_foreign, scoring_cfg, "Heathrow"),
+                 tools.airport_metrics(db_foreign, scoring_cfg, "LHR", None, "demand"),
+                 tools.compare_airports(db_foreign, scoring_cfg, "BOS", "LHR"),
+                 tools.explain_demand_gap(db_foreign, scoring_cfg, "LHR")]
+    for r in envelopes:
+        check_envelope(r)
+        assert r["assumptions"][0] == f"LHR is outside the US: {note}"
+        assert facts(r)["Coverage: LHR"] == {"value": note, "required": True}
+        assert "Coverage: BOS" not in facts(r)   # a US airport gets no note
+
+
+def test_scope_note_wording_comes_from_config(db_foreign, scoring_cfg):
+    from dataclasses import replace
+    r = tools.airport_metrics(db_foreign, replace(scoring_cfg, non_us_airport_note="Partial."), "LHR", None, "demand")
+    assert facts(r)["Coverage: LHR"]["value"] == "Partial."
+
+
+def test_us_airport_has_no_scope_note(db, scoring_cfg):
+    r = tools.airport_metrics(db, scoring_cfg, "BOS", None, "all")
+    assert not any(f["label"].startswith("Coverage:") for f in r["facts"])
+    assert not any("outside the US" in a for a in r["assumptions"])

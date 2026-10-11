@@ -92,7 +92,7 @@ def cfg():
         sensitivity_top_n=2, sensitivity_stable_share=0.9, commentary_restricted_tools=("rank_airports",),
         census_dataset="acs/acs5", census_variable="B01003_001E", census_vintage=2024, census_base_vintage=2019,
         geocoder_benchmark="Public_AR_Current", geocoder_vintage="ACS2024_Current",
-        regions={"north": ("AA", "BB"), "south": ("CC",)}, max_ranked=25,
+        regions={"north": ("AA", "BB"), "south": ("CC",)}, max_ranked=25, non_us_airport_note="US-linked only.",
     )
 
 
