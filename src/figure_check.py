@@ -6,10 +6,13 @@ Pure functions (commentary and envelopes in, cleaned commentary out), applied by
   81.6%, 2,714,358, 2.7 million; a value matches when it rounds to the precision written, so 81.58
   supports 81.6 and 82; values below 1 also count as percentages, 0.385 = 38.5);
 - in a compare_airports answer, a value plainly credited to one airport ("LAX has 13.2%", "13.2% at
-  LAX") that belongs to the other (in the other airport's column and not in this one's);
+  LAX") that belongs to the other (in the other airport's column and not in this one's); airports are
+  recognized by code, name and the aliases the tools list (city served such as "Santa Ana", "LA");
 - an airport name in parentheses next to a code (or the reverse) that is another airport's name in
   the envelopes, such as "Bradley (BTV)" when Bradley is BDL;
 - a known misreading of a definition (MISREADINGS);
+- a month count ("11 of 12 months") that no envelope states ("10 of 12"): small whole numbers are
+  otherwise not checked as figures;
 - a month or year outside the data periods of the envelopes, or a month range that is neither one of
   them nor made only of months the envelopes name ("Mar 2025 - Dec 2025" when the data is
   2025-01..2025-12; "January to December 2025", "2025-01..2025-12" and, with peak months 2025-06 and
@@ -23,7 +26,7 @@ Restricted mode (`restrict_commentary`, for the tools in `commentary.restricted_
 comparisons). Presence of a number cannot show that an ordering or a direction is right ("BDL ranks
 first", "LAX has the shorter taxi-out" with real figures from the card). For these tools the card
 and headline give the result, and the commentary may only add caveats or a next step: every
-sentence with a digit, an airport code or an airport name from the envelopes is dropped, and so
+sentence with a digit, an airport code, name or alias (city served) from the envelopes is dropped, and so
 are tables, headings and rules (a restated card). If nothing is left, there is no commentary.
 """
 from __future__ import annotations
@@ -167,6 +170,24 @@ def _airport_names(envelopes: list[Any]) -> dict[str, str]:
     return names
 
 
+def _airport_aliases(envelopes: list[Any]) -> dict[str, list[str]]:
+    """IATA -> other words naming it in prose (city served, "LA", the user's words), from the `aliases`
+    map that compare_airports and rank_airports put in their data."""
+    aliases: dict[str, list[str]] = {}
+    for env in envelopes:
+        data = env.get("data") if isinstance(env, dict) else None
+        found = data.get("aliases") if isinstance(data, dict) else None
+        if isinstance(found, dict):
+            for code, terms in found.items():
+                aliases.setdefault(code, []).extend(t for t in terms or [] if isinstance(t, str) and t.strip())
+    return aliases
+
+
+def _alias_pattern(term: str) -> re.Pattern:
+    """A whole-word pattern for an alias: case-insensitive, except short ones ("LA", not "la")."""
+    return re.compile(rf"\b{re.escape(term.strip())}\b", 0 if len(term.strip()) <= 3 else re.IGNORECASE)
+
+
 def _words(name: str) -> set[str]:
     return {w for w in re.findall(r"[a-z]+", name.lower()) if w not in GENERIC_NAME_WORDS}
 
@@ -202,7 +223,9 @@ def _compare_columns(envelopes: list[Any]) -> list[tuple[dict[str, set[Decimal]]
                 _numbers_in(f.get("value"), per_airport.setdefault(f["airport"], set()))
         if len(per_airport) == 2:
             names = (env.get("data") or {}).get("names") or {}
-            out.append((per_airport, {c: [c, *([names[c]] if names.get(c) else [])] for c in per_airport}))
+            aliases = _airport_aliases([env])
+            out.append((per_airport, {c: [c, *([names[c]] if names.get(c) else []), *aliases.get(c, [])]
+                                      for c in per_airport}))
     return out
 
 
@@ -358,6 +381,26 @@ def period_problems(sentence: str, periods: Periods) -> list[str]:
     return reasons
 
 
+# --- month counts --------------------------------------------------------------------------
+
+# "11 of 12 months" in the commentary; whole numbers up to IGNORE_SMALL_INTEGERS are not checked as
+# figures, so a wrong count of months (11 when the card says 10 of 12) needs its own check.
+_MONTH_COUNT = re.compile(r"\b(\d{1,2})\s+(?:out\s+)?of\s+(?:the\s+)?(\d{1,2})\s+months?\b", re.IGNORECASE)
+# "10 of 12" as the envelopes write counts ("Months with load factor above 80%: 10 of 12").
+_COUNT_IN_DATA = re.compile(r"\b(\d+)\s+(?:out\s+)?of\s+(?:the\s+)?(\d+)\b")
+
+
+def data_counts(envelopes: list[Any]) -> frozenset[tuple[int, int]]:
+    """Every "N of M" pair the envelopes state."""
+    return frozenset((int(a), int(b)) for a, b in _COUNT_IN_DATA.findall("\n".join(_strings(envelopes))))
+
+
+def count_problems(sentence: str, counts: frozenset[tuple[int, int]]) -> list[str]:
+    """Month counts ("N of M months") that no envelope states."""
+    return [f"'{m.group()}' is not in the data" for m in _MONTH_COUNT.finditer(sentence)
+            if (int(m.group(1)), int(m.group(2))) not in counts]
+
+
 # --- the check -----------------------------------------------------------------------------
 
 def _sentences(commentary: str) -> list[list[str]]:
@@ -366,16 +409,18 @@ def _sentences(commentary: str) -> list[list[str]]:
 
 
 def sentence_problems(sentence: str, envelopes: list[Any], allowed: set[Decimal] | None = None,
-                      periods: Periods | None = None) -> list[str]:
+                      periods: Periods | None = None, counts: frozenset[tuple[int, int]] | None = None) -> list[str]:
     """Why a sentence is unsupported (empty list: it is fine)."""
     allowed = allowed if allowed is not None else _numbers_in(envelopes, set())
     periods = periods if periods is not None else data_periods(envelopes)
+    counts = counts if counts is not None else data_counts(envelopes)
     numbers = _written_numbers(sentence)
     reasons = [f"{n.value}{'%' if n.percent else ''} is not in the data" for n in numbers if not _supported(n, allowed)]
     reasons += _swapped(sentence, numbers, _compare_columns(envelopes))
     reasons += _name_mismatches(sentence, _airport_names(envelopes))
     reasons += [reason for pattern, reason in MISREADINGS if pattern.search(sentence)]
     reasons += period_problems(sentence, periods)
+    reasons += count_problems(sentence, counts)
     return reasons
 
 
@@ -401,21 +446,25 @@ def check_commentary(commentary: str, envelopes: list[Any]) -> FigureCheck:
     `envelopes` should hold every tool result of the conversation: a follow-up may quote an
     earlier card. Non-dict results are ignored."""
     envelopes = [e for e in envelopes if isinstance(e, dict)]
-    allowed, periods = _numbers_in(envelopes, set()), data_periods(envelopes)
-    text, removed = _filter(commentary, lambda s: sentence_problems(s, envelopes, allowed, periods))
+    allowed, periods, counts = _numbers_in(envelopes, set()), data_periods(envelopes), data_counts(envelopes)
+    text, removed = _filter(commentary, lambda s: sentence_problems(s, envelopes, allowed, periods, counts))
     if removed and not re.search(r"\w", text):
         return FigureCheck(WITHHELD, removed, True)
     return FigureCheck(text, removed, False)
 
 
-def _airport_mentions(names: dict[str, str]) -> list[tuple[str, re.Pattern]]:
-    """(label, pattern) for every airport in the envelopes: its code, its full name and each
-    distinctive word of the name as written ("Bradley", "Burlington"; generic and short words skipped)."""
+def _airport_mentions(names: dict[str, str],
+                      aliases: dict[str, list[str]] | None = None) -> list[tuple[str, re.Pattern]]:
+    """(label, pattern) for every airport in the envelopes: its code, its full name, each distinctive
+    word of the name as written ("Bradley", "Burlington"; generic and short words skipped) and its
+    aliases (city served such as "Santa Ana", "LA", the user's words; see `_airport_aliases`)."""
     out = []
     for code, name in names.items():
         words = [w for w in re.findall(r"[A-Z][\w'-]+", name) if len(w) >= 4 and w.lower() not in GENERIC_NAME_WORDS]
         for term in dict.fromkeys([code, name, *words]):
             out.append((code, re.compile(rf"\b{re.escape(term)}\b")))
+    for code, terms in (aliases or {}).items():
+        out += [(code, _alias_pattern(term)) for term in dict.fromkeys(terms)]
     return out
 
 
@@ -431,7 +480,8 @@ def restriction_problems(sentence: str, mentions: list[tuple[str, re.Pattern]]) 
 def restrict_commentary(commentary: str, envelopes: list[Any]) -> FigureCheck:
     """Restricted mode (see module docstring): keep only sentences with no digit, no airport code and
     no airport name from the envelopes; `hidden` when nothing is left (no commentary block)."""
-    mentions = _airport_mentions(_airport_names([e for e in envelopes if isinstance(e, dict)]))
+    envelopes = [e for e in envelopes if isinstance(e, dict)]
+    mentions = _airport_mentions(_airport_names(envelopes), _airport_aliases(envelopes))
     text, removed = _filter(commentary, lambda s: restriction_problems(s, mentions))
     hidden = not re.search(r"\w", text)
     return FigureCheck("" if hidden else text, removed, mode="restricted", hidden=hidden)

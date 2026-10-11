@@ -899,3 +899,12 @@ def test_us_airport_has_no_scope_note(db, scoring_cfg):
     r = tools.airport_metrics(db, scoring_cfg, "BOS", None, "all")
     assert not any(f["label"].startswith("Coverage:") for f in r["facts"])
     assert not any("outside the US" in a for a in r["assumptions"])
+
+
+# --- aliases for the commentary check (audit H3) ---------------------------------------------
+
+def test_compare_and_rank_list_city_and_alias_names(db, scoring_cfg):
+    r = tools.compare_airports(db, scoring_cfg, "LA", "Santa Ana")
+    assert r["data"]["aliases"] == {"LAX": ["Los Angeles", "LA"], "SNA": ["Santa Ana"]}
+    ranked = tools.rank_airports(db, scoring_cfg, "new_england")["data"]
+    assert ranked["aliases"]["PWM"] == ["Portland"] and ranked["aliases"]["HYA"] == ["Hyannis"]   # HYA excluded

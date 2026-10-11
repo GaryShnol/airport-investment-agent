@@ -453,6 +453,13 @@ def find_airports(conn: sqlite3.Connection, column: str, text: str, window: Wind
     return [dict(zip(cols, r)) for r in conn.execute(sql, params)]
 
 
+def municipalities(conn: sqlite3.Connection, codes: Iterable[str]) -> dict[str, str | None]:
+    """City served (OurAirports municipality) per IATA code; codes without a row are left out."""
+    codes = tuple(codes)
+    sql = f"SELECT iata, municipality FROM airports WHERE iata IN ({','.join('?' * len(codes))})"
+    return dict(conn.execute(sql, codes).fetchall()) if codes else {}
+
+
 def served_airports(conn: sqlite3.Connection, window: Window) -> list[dict]:
     """Airports with passenger service in the window (iata, name, state, municipality, passengers),
     largest first. Used to suggest names when resolve_airport finds no match."""
