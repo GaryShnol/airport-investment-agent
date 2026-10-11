@@ -57,6 +57,15 @@ commentary:                     # what the model may write under a card (src/fig
   # check cannot verify): the commentary keeps only sentences with no digit, no airport code and no
   # airport name (caveats, next steps). Other tools keep the figure check.
   restricted_tools: [rank_airports, compare_airports]
+  # After the check removed sentences, what is left must still read as sentences: a leftover with
+  # fewer words than this, ending with ":" or without a sentence end ("F.", "The ranking is as
+  # follows:") is dropped too. Commentary the check left intact is never trimmed.
+  min_words: 4
+  # Shown instead of the commentary when the checks removed everything the model wrote.
+  fallback: "No additional commentary beyond the data above."
+  # One caption under the commentary: how many sentences were removed and each distinct reason
+  # once ({count}, {reasons}); the removed sentences themselves go to the log.
+  removed_note: "Commentary check: {count} sentence(s) removed ({reasons})."
 
 scope:                          # fixed wording the tools attach to answers outside the data's scope
   # Airports outside the US (no US state): T-100 holds only segments that touch the US, so their

@@ -19,24 +19,28 @@ Pure functions (commentary and envelopes in, cleaned commentary out), applied by
   2025-07, "June-July" pass). Single months and years pass when a period covers them or the envelopes
   name them (peak months, the upstream month of a freshness note, Census vintages).
 Ignored as figures: years, periods (2025-01), numbers glued to letters (T-100, A320, 2nd) and whole numbers up
-to IGNORE_SMALL_INTEGERS without a % sign (counts such as "3 airports", "12 months"). If nothing is left, the
-commentary is replaced by WITHHELD. The data card stays the authoritative answer either way.
+to IGNORE_SMALL_INTEGERS without a % sign (counts such as "3 airports", "12 months"). The data card stays the
+authoritative answer either way.
 
 Restricted mode (`restrict_commentary`, for the tools in `commentary.restricted_tools`: rankings and
 comparisons). Presence of a number cannot show that an ordering or a direction is right ("BDL ranks
 first", "LAX has the shorter taxi-out" with real figures from the card). For these tools the card
 and headline give the result, and the commentary may only add caveats or a next step: every
 sentence with a digit, an airport code, name or alias (city served) from the envelopes is dropped, and so
-are tables, headings and rules (a restated card). If nothing is left, there is no commentary.
+are tables, headings and rules (a restated card).
+
+After either check, `finish_commentary` (thresholds and wording from `commentary` in config/weights.yaml)
+drops the fragments a removal leaves behind ("F.", "The ranking is as follows:") and, when nothing is
+left, shows one fixed fallback line; when the model wrote nothing a restricted answer shows no
+commentary block. `removal_note` is the one-line caption: the count and each distinct reason once.
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
-WITHHELD = "The commentary was withheld because it contained figures that are not in the data."
 # Whole numbers this small (without %) are counts, ordinals or months in prose, not figures from the card.
 IGNORE_SMALL_INTEGERS = 12
 YEARS = range(1900, 2101)
@@ -55,7 +59,8 @@ _DATE = re.compile(r"\b\d{4}[-‐‑‒–—/.]\d{1,2}(?:[-./]\d{1,2})?\b")
 _NUMBER = re.compile(
     r"(?<![\w.,])(?<![A-Za-z]-)(\d{1,3}(?:,\d{3})+|\d+)(?:([.,])(\d+))?(?![\w])"
     r"(?:\s?(%|percent\b|pts\b|points\b|million\b|billion\b|bn\b|thousand\b|[mk]\b))?", re.IGNORECASE)
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# A sentence ends at . ! ? and a space, but not after an initial ("T. F. Green" is one name).
+_SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\b[A-Z]\.)\s+")
 _NAME_BEFORE_CODE = re.compile(r"((?:[A-Z][\w.'-]*\s+){0,4}[A-Z][\w.'-]*)\s*\(([A-Z]{3})\)")
 _CODE_BEFORE_NAME = re.compile(r"\b([A-Z]{3})\s*\(([^)]{3,60})\)")
 
@@ -69,9 +74,9 @@ _DIGIT = re.compile(r"\d")
 class FigureCheck:
     text: str                                             # commentary, unsupported sentences removed
     removed: list[dict] = field(default_factory=list)     # {"sentence": ..., "reasons": [...]}
-    withheld: bool = False                                # nothing was left: text is WITHHELD
+    withheld: bool = False                                # removals left nothing: text is the fallback line
     mode: str = "figures"                                 # "figures" or "restricted"
-    hidden: bool = False                                  # restricted mode left nothing: show no commentary
+    hidden: bool = False                                  # restricted, and the model wrote nothing: no block
 
     def as_dict(self) -> dict:
         return {"mode": self.mode, "removed": self.removed, "withheld": self.withheld, "hidden": self.hidden}
@@ -441,16 +446,14 @@ def _filter(commentary: str, judge) -> tuple[str, list[dict]]:
 
 
 def check_commentary(commentary: str, envelopes: list[Any]) -> FigureCheck:
-    """Remove sentences with unsupported figures; WITHHELD if nothing is left (see module docstring).
+    """Remove sentences with unsupported figures (see module docstring); then `finish_commentary`.
 
     `envelopes` should hold every tool result of the conversation: a follow-up may quote an
     earlier card. Non-dict results are ignored."""
     envelopes = [e for e in envelopes if isinstance(e, dict)]
     allowed, periods, counts = _numbers_in(envelopes, set()), data_periods(envelopes), data_counts(envelopes)
     text, removed = _filter(commentary, lambda s: sentence_problems(s, envelopes, allowed, periods, counts))
-    if removed and not re.search(r"\w", text):
-        return FigureCheck(WITHHELD, removed, True)
-    return FigureCheck(text, removed, False)
+    return FigureCheck(text, removed)
 
 
 def _airport_mentions(names: dict[str, str],
@@ -479,10 +482,49 @@ def restriction_problems(sentence: str, mentions: list[tuple[str, re.Pattern]]) 
 
 def restrict_commentary(commentary: str, envelopes: list[Any]) -> FigureCheck:
     """Restricted mode (see module docstring): keep only sentences with no digit, no airport code and
-    no airport name from the envelopes; `hidden` when nothing is left (no commentary block)."""
+    no airport name from the envelopes; then `finish_commentary`."""
     envelopes = [e for e in envelopes if isinstance(e, dict)]
     mentions = _airport_mentions(_airport_names(envelopes), _airport_aliases(envelopes))
     text, removed = _filter(commentary, lambda s: restriction_problems(s, mentions))
-    hidden = not re.search(r"\w", text)
-    return FigureCheck("" if hidden else text, removed, mode="restricted", hidden=hidden)
+    return FigureCheck(text, removed, mode="restricted")
+
+
+# --- after the check -----------------------------------------------------------------------
+
+FRAGMENT = "fragment left after the removals"
+# A sentence end, possibly followed by closing quotes, brackets or markdown emphasis.
+_TERMINAL = re.compile(r"[.!?…][\"'”’)\]*_]*$")
+
+
+def fragment_problems(sentence: str, min_words: int) -> list[str]:
+    """Why a leftover is not a sentence: fewer than `min_words` words, ends with ":", or no sentence end."""
+    text = sentence.strip()
+    if len(re.findall(r"\w+", text)) < min_words or text.endswith(":") or not _TERMINAL.search(text):
+        return [FRAGMENT]
+    return []
+
+
+def finish_commentary(check: FigureCheck, min_words: int, fallback: str) -> FigureCheck:
+    """Clean up after a check: if it removed anything, drop the fragments left behind; if removals
+    left nothing, the `fallback` line (`withheld`). Nothing written at all: a restricted answer is
+    `hidden` (the card is the whole answer), a figures answer stays empty for the agent's fallback."""
+    text, removed = check.text, check.removed
+    if removed:
+        text, fragments = _filter(text, lambda s: fragment_problems(s, min_words))
+        removed = [*removed, *fragments]
+    if re.search(r"\w", text):
+        return replace(check, text=text, removed=removed)
+    if removed:
+        return replace(check, text=fallback, removed=removed, withheld=True)
+    return replace(check, text="", hidden=check.mode == "restricted")
+
+
+def removal_note(removed: list[dict], template: str) -> str:
+    """One caption for the removed sentences (empty when none): the count and each distinct reason
+    once, without the per-sentence detail in parentheses ("names an airport (BOS, PVD)" ->
+    "names an airport"). The sentences and full reasons stay in the check result and the log."""
+    if not removed:
+        return ""
+    reasons = dict.fromkeys(re.sub(r"\s*\([^)]*\)$", "", r) for item in removed for r in item["reasons"])
+    return template.format(count=len(removed), reasons="; ".join(reasons))
 

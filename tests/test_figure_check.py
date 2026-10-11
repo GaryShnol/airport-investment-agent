@@ -2,7 +2,10 @@
 seen in earlier UI tests."""
 import pytest
 
-from src.figure_check import WITHHELD, check_commentary, sentence_problems
+from src.figure_check import (FRAGMENT, check_commentary, finish_commentary, removal_note, restrict_commentary,
+                              sentence_problems)
+
+FALLBACK = "No additional commentary beyond the data above."
 
 
 def f(label, value, **extra):
@@ -63,9 +66,9 @@ def test_sentence_with_an_unsupported_figure_is_removed_and_the_rest_kept():
     assert not out.withheld
 
 
-def test_nothing_left_gives_the_fixed_note():
-    out = check_commentary("About 47% of flights are long haul.", [ANC])
-    assert out.withheld and out.text == WITHHELD
+def test_nothing_left_gives_the_fallback_line():
+    out = finish_commentary(check_commentary("About 47% of flights are long haul.", [ANC]), 4, FALLBACK)
+    assert out.withheld and out.text == FALLBACK and len(out.removed) == 1
 
 
 def test_no_figures_no_change():
@@ -135,8 +138,6 @@ def test_lists_and_line_breaks_are_kept():
 
 
 # --- restricted mode (P3.8b): rank_airports and compare_airports -------------------------------
-
-from src.figure_check import restrict_commentary  # noqa: E402
 
 NE_RANKING = {"headline": "new_england terminal-expansion ranking by score: 1 BOS, 2 BTV, 3 BGR (10 ranked).",
               "facts": [], "data": {"ranked": [
@@ -208,9 +209,67 @@ def test_restricted_mode_drops_sentences_naming_excluded_airports(sentence):
     assert out.removed[0]["reasons"][-1].startswith("names an airport (")
 
 
-def test_restricted_mode_with_nothing_left_hides_the_commentary():
-    out = restrict_commentary("BOS ranks first with 0.799.", [NE_RANKING])
-    assert out.hidden and out.text == "" and not out.withheld
+def test_restricted_mode_with_nothing_left_shows_the_fallback_line():
+    out = finish_commentary(restrict_commentary("BOS ranks first with 0.799.", [NE_RANKING]), 4, FALLBACK)
+    assert out.text == FALLBACK and out.withheld and not out.hidden and out.removed
+
+
+def test_restricted_mode_with_nothing_written_hides_the_commentary():
+    out = finish_commentary(restrict_commentary("", [NE_RANKING]), 4, FALLBACK)
+    assert out.hidden and out.text == "" and not out.withheld and not out.removed
+
+
+# --- fragments and the removal note (manual test 2026-10-11: Compare BOS and PVD) -------------
+
+BOS_PVD = {"headline": "BOS vs PVD ...", "facts": [f("BOS: Departures delayed >= 15 min", "21.0%", airport="BOS"),
+                                                   f("PVD: Departures delayed >= 15 min", "17.4%", airport="PVD")],
+           "data": {"airports": ["BOS", "PVD"],
+                    "names": {"BOS": "Boston Logan International Airport",
+                              "PVD": "Rhode Island T. F. Green International Airport"}}}
+# gpt-4o-mini wrote sentences like these; the splitter cut "T. F. Green" and the check left "F.".
+BOS_PVD_REPLY = ("The comparison shows that Boston Logan International Airport (BOS) experiences higher congestion. "
+                 "In contrast, Rhode Island T. F. Green International Airport (PVD) has a higher cancellation rate. "
+                 "The ranking of the two is as follows:\n"
+                 "Given the scale difference, the congestion figures compare rates, not totals.")
+
+
+def test_initials_do_not_end_a_sentence():
+    out = restrict_commentary(BOS_PVD_REPLY, [BOS_PVD])
+    assert "F." not in out.text and not any(r["sentence"] == "F." for r in out.removed)
+
+
+def test_fragments_left_after_removals_are_dropped_and_caveats_kept():
+    reply = "BOS is busier. The ranking is as follows:\nDelays. Rates compare, totals do not, given the scale gap."
+    out = finish_commentary(restrict_commentary(reply, [BOS_PVD]), 4, FALLBACK)
+    assert out.text == "Rates compare, totals do not, given the scale gap."
+    assert [r["sentence"] for r in out.removed if r["reasons"] == [FRAGMENT]] == ["The ranking is as follows:",
+                                                                                 "Delays."]
+
+
+def test_real_bos_pvd_reply_keeps_only_the_caveat():
+    out = finish_commentary(restrict_commentary(BOS_PVD_REPLY, [BOS_PVD]), 4, FALLBACK)
+    assert out.text == "Given the scale difference, the congestion figures compare rates, not totals."
+
+
+def test_untouched_commentary_is_never_trimmed():
+    out = finish_commentary(check_commentary("Cargo drives it", [ANC]), 4, FALLBACK)
+    assert out.text == "Cargo drives it" and not out.removed
+
+
+def test_june_july_case_survives_the_fragment_step():
+    real = ("The excess is concentrated on key transcontinental routes (EWR, JFK, ORD account for a large share "
+            "of the spill) and peak June–July and December months drive the pressure.")
+    out = finish_commentary(check_commentary(f"{real} Load peaked at 99.9%.", [SFO_GAP]), 4, FALLBACK)
+    assert out.text == real and len(out.removed) == 1
+
+
+def test_removal_note_counts_sentences_and_lists_each_reason_once():
+    removed = [{"sentence": "a", "reasons": ["names an airport (BOS)"]},
+               {"sentence": "b", "reasons": ["contains a figure", "names an airport (BOS, PVD)"]},
+               {"sentence": "c", "reasons": ["names an airport (PVD)"]}, {"sentence": "F.", "reasons": [FRAGMENT]}]
+    assert removal_note(removed, "{count} removed ({reasons}).") == (
+        f"4 removed (names an airport; contains a figure; {FRAGMENT}).")
+    assert removal_note([], "{count} removed ({reasons}).") == ""
 
 
 # --- periods (P5.9b) -------------------------------------------------------------------------

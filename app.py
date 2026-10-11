@@ -87,13 +87,12 @@ def show_assistant(msg: dict) -> None:
         return
     show_data(msg["tool_calls"], msg["tool_results"])
     check = msg.get("figure_check", {})
-    if not check.get("hidden"):  # rankings and comparisons: no commentary block when only the card remains
+    if not check.get("hidden"):  # rankings and comparisons: no commentary block when the model wrote nothing
         st.markdown("##### Commentary (model)")
         st.caption("Written by the language model about the data above; the figures come from the data card.")
         st.markdown(msg["commentary"] or "_(the model returned no text)_")
-        if removed := check.get("removed"):
-            st.caption(f"Commentary check: {len(removed)} sentence(s) removed ("
-                       + "; ".join(r for item in removed for r in item["reasons"]) + ").")
+        if note := check.get("note"):
+            st.caption(note)
     with st.expander(f"Tools called ({len(msg['tool_calls'])})"):
         st.json([{**c, "result": r} for c, r in zip(msg["tool_calls"], msg["tool_results"])], expanded=False)
 

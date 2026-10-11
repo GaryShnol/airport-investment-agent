@@ -197,6 +197,9 @@ class ScoringConfig:
     comparison_confidence_level: float  # compare_airports: margin of error for On-Time figures (0.95)
     comparison_size_ratio_note: float   # compare_airports: note when departures differ by more than this ratio
     commentary_restricted_tools: tuple[str, ...]  # commentary limited to caveats and next steps
+    commentary_min_words: int      # shorter leftovers after a removal are fragments (dropped)
+    commentary_fallback: str       # shown when the checks removed everything
+    commentary_removed_note: str   # caption template: {count} sentences removed, distinct {reasons}
     census_dataset: str          # Census Data API dataset path, e.g. acs/acs5
     census_variable: str         # population variable, e.g. B01003_001E
     census_vintage: int          # population vintage scored (demand_context)
@@ -288,6 +291,9 @@ def load_scoring(path: Path) -> ScoringConfig:
             comparison_confidence_level=_share("comparison.confidence_level", raw["comparison"]["confidence_level"]),
             comparison_size_ratio_note=_ratio("comparison.size_ratio_note", raw["comparison"]["size_ratio_note"]),
             commentary_restricted_tools=tuple(str(t) for t in raw["commentary"]["restricted_tools"] or ()),
+            commentary_min_words=_positive_int("commentary.min_words", raw["commentary"]["min_words"]),
+            commentary_fallback=_text("commentary.fallback", raw["commentary"]["fallback"]),
+            commentary_removed_note=_text("commentary.removed_note", raw["commentary"]["removed_note"]),
             census_dataset=str(raw["census"]["dataset"]),
             census_variable=str(raw["census"]["variable"]),
             census_vintage=_positive_int("census.vintage", raw["census"]["vintage"]),

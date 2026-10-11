@@ -52,14 +52,18 @@ def test_sample_question_shows_data_then_commentary(app_env, monkeypatch, scorin
     assert [e.label for e in at.expander] == ["Excluded airports (1)", "Tools called (1)"]
 
 
-def test_ranking_commentary_with_only_figures_and_names_shows_no_commentary_block(app_env, monkeypatch, scoring_cfg):
+def test_ranking_commentary_with_everything_removed_shows_the_fallback_and_one_note(app_env, monkeypatch,
+                                                                                    scoring_cfg):
     fake_build(monkeypatch, scoring_cfg, call("rank_airports", region="new_england", top_n=3),
-               AIMessage("BOS leads with a score of 0.9."))
+               AIMessage("BOS leads with a score of 0.9. BOS is first. The order is:"))
     at = AppTest.from_file(APP, default_timeout=30).run()
     next(b for b in at.sidebar.button if "New England" in b.label).click().run()
     assert not at.exception
     texts = [m.value for m in at.main.markdown]
-    assert "##### Data (from tools)" in texts and "##### Commentary (model)" not in texts
+    assert texts[texts.index("##### Commentary (model)") + 1] == scoring_cfg.commentary_fallback
+    notes = [c.value for c in at.main.caption if c.value.startswith("Commentary check")]
+    assert notes == ["Commentary check: 3 sentence(s) removed (contains a figure; names an airport; "
+                     "fragment left after the removals)."]
 
 
 def test_missing_model_config_shows_a_friendly_error(app_env, monkeypatch):
