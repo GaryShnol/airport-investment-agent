@@ -102,7 +102,7 @@ classDiagram
         <<CLI offline>>
         +load_files()
         +check() Report
-        +download_missing()
+        +update(through, dry_run, yes)
     }
 
     ChatUI --> ReActAgent
