@@ -7,6 +7,8 @@
 #   - Ollama on the host: LLM_PROVIDER=ollama, LLM_MODEL=<pulled model>, LLM_BASE_URL=http://host.docker.internal:11434
 #     (or an OpenAI-compatible server: LLM_PROVIDER=openai, LLM_BASE_URL=http://host.docker.internal:11434/v1).
 #     Docker Desktop (Windows, macOS) resolves host.docker.internal; on Linux the extra_hosts line does.
+name: airport-investment-agent   # fixed, so container and volume names do not depend on the clone folder
+
 services:
   app:
     build: .
