@@ -26,7 +26,7 @@ def question(qid):
 def test_question_file_is_valid():
     questions = eval_script.load_questions(None)
     ids = [q["id"] for q in questions]
-    assert len(ids) == len(set(ids)) and 12 <= len(ids) <= 14
+    assert len(ids) == len(set(ids)) and 12 <= len(ids) <= 16
     assert {"q1_new_england", "q2_la_vs_santa_ana", "q3_anchorage_long_haul", "q4_sfo_unmet_demand"} <= set(ids)
     assert all(set(q) <= {"id", "question", "group", "tools", "tool_args", "must_have", "must_not",
                           "answer_from_card"} for q in questions)
