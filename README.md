@@ -4,6 +4,8 @@ A conversational agent that helps an analyst find US airports where renovation o
 
 Design doc: [docs/design.md](docs/design.md) (methodology, tradeoffs, the four answers). Build plan and definitions: [docs/plan.md](docs/plan.md). Task board and decision log: [TASKS.md](TASKS.md).
 
+![Compare LA and Santa Ana: the compare_airports data card with the per-metric verdicts](docs/img/lax-sna-verdict.jpg)
+
 ## What it answers
 1. Which airports in New England are strong candidates for terminal expansion? (ranking with the weights used, drivers and rank stability)
 2. Compare LA (LAX) and Santa Ana (SNA) congestion. (side by side, with margins of error and a verdict per measure)
@@ -160,13 +162,17 @@ uv run streamlit run app.py
 ```
 The CLI equivalent is `uv run python -m src.agent "<question>"`.
 
-### Optional: a local model (Ollama)
+<details>
+<summary><strong>Optional: a local model (Ollama)</strong></summary>
+
 For development without an API key. The model runs in Ollama on the host, not in the container (the compose file has no Ollama service), and models come from the Ollama registry, not from Docker Hub or the image:
 1. Install Ollama on the host and pull a model with tool calling, for example `ollama pull llama3.1`.
 2. In `.env`: `LLM_PROVIDER=ollama`, `LLM_MODEL=llama3.1`, `LLM_BASE_URL=http://host.docker.internal:11434` (for a local `uv run`, `http://localhost:11434`), and remove or leave empty `OPENAI_API_KEY`. The commented lines in `.env.example` show these settings; `OLLAMA_NUM_CTX=16384` keeps follow-ups inside the context window.
 3. Docker Desktop resolves `host.docker.internal`; on Linux the `extra_hosts` line in `docker-compose.yml` does, and Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0`).
 
 On CPU only, local models are slow: one to four minutes per answer with 8-20B models on a laptop in our runs, and their commentary is less reliable (the data card is not affected). Any OpenAI-compatible server also works: `LLM_PROVIDER=openai` with `LLM_BASE_URL=http://host.docker.internal:11434/v1`.
+
+</details>
 
 ### Voice
 Next to the chat input there is a microphone ("Or ask by voice"). Record a question, stop, and the app transcribes it with the OpenAI audio transcription API, shows it as your message ("You said: ...") so you can see what was understood, and answers it exactly like a typed question (same agent, same `MAX_INPUT_CHARS` limit).
@@ -209,7 +215,9 @@ A missing component (no On-Time coverage, no CBSA) renormalizes the remaining we
 - `uv run ruff check`: lint.
 - `uv run python scripts/eval.py`: the eval harness and model-comparison tool. It asks the questions in [eval/questions.yaml](eval/questions.yaml) (the four exam questions, follow-ups in one conversation, single airports, an unknown airport, an unsupported region, an out-of-scope question and a prompt-injection attempt) to the real agent with the model set in `.env`, and checks per question: tools called (and their arguments) vs expected, must-have facts, forbidden text in what the user sees (the rendered cards and the commentary after the figure check), the commentary figure check, an empty or cut-off reply, and the time taken; every failed question gets a reason. Results are appended to `eval/results/<timestamp>-<model>.jsonl` (not committed) and a markdown table is printed. `--only q3_anchorage_long_haul,q4_sfo_unmet_demand` runs some questions; `--report <file>.jsonl` re-prints a saved run. Not in CI: it needs a model and the real DB.
 
-## Updating the data
+<details>
+<summary><strong>Updating the data</strong></summary>
+
 Ingest runs offline, never during a chat, and is idempotent (a month already loaded is skipped; a changed On-Time file reloads its month only).
 ```bash
 uv run python -m src.ingest           # load the files in RAW_DATA_DIR (default data/raw) into DB_PATH
@@ -243,6 +251,8 @@ Freshness, per source and overall, from the last `--check` (stored in the DB, sh
 - **stale (upstream has YYYY-MM)**: a newer month exists; answers still use the loaded data and say so. The shipped seed is stale on purpose: it holds a complete calendar year, and BTS has published later months since.
 - **unknown**: never checked, or the check could not reach upstream.
 
+</details>
+
 ## Known limits
 - The score is a capacity-pressure proxy: load factor and delays show where demand presses, not how much terminal space is missing.
 - "Unmet demand" is a labeled proxy (passengers above a target load level per route and month, with a range), never an observed value: there is no booking or spill data.
@@ -251,9 +261,11 @@ Freshness, per source and overall, from the last `--check` (stored in the DB, sh
 - Percentiles are relative to the peer set, and the passenger floor that defines it is a policy line (airports just under it are listed as excluded, with the reason).
 - The shipped seed stops at 2025-12. `ingest --update` loads newer BTS months on demand, but a loaded month is never reloaded (BTS revisions are missed), and it depends on the BTS download form, which can change without notice (manual files in `data/raw` are the fallback).
 - The chat UI is in English; answers follow the language of the question.
-- Voice input was tested with a stubbed transcription call and once against the OpenAI API with a synthesized WAV clip, not with a live microphone in a browser; a silent recording is caught only when the model returns no text.
+- Voice input was tested with a live microphone in a browser; transcription accuracy depends on accent and audio quality (the transcript is shown as "You said: ..." before the answer). A silent recording is caught only when the model returns no text.
 
-## Maintainers: publishing a new seed DB
+<details>
+<summary><strong>Maintainers: publishing a new seed DB</strong></summary>
+
 The seed DB is a GitHub Release asset, not a file in git. Each data version gets its own release tag, so an old URL keeps serving the data it was published with.
 1. Refresh the data: `uv run python -m src.ingest` (raw files in `data/raw`), then `uv run python -m src.ingest --check`.
 2. Rebuild the seed: `uv run python -m src.seed build` writes `data/seed/airport.db.gz` and `airport.db.gz.sha256` and prints the sizes (it stops above `SEED_MAX_MB`).
@@ -263,6 +275,8 @@ The seed DB is a GitHub Release asset, not a file in git. Each data version gets
      --title "Seed data 2026-07" --notes "Aggregated SQLite seed DB, window ending 2026-07. sha256 in airport.db.gz.sha256."
    ```
 4. Point `SEED_DB_URL` in `.env.example` to `https://github.com/<owner>/<repo>/releases/download/<tag>/airport.db.gz` and commit. Existing volumes keep their DB until it is invalid (bump `store.SCHEMA_VERSION` when the schema changes) or the volume is removed (`docker compose down -v`).
+
+</details>
 
 ## Project layout
 ```
