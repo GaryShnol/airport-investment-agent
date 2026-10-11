@@ -102,7 +102,7 @@ classDiagram
         <<CLI offline>>
         +load_files()
         +check() Report
-        +download_missing()
+        +update(through, dry_run, yes)
     }
 
     ChatUI --> ReActAgent
@@ -277,6 +277,7 @@ Freshness, per source and overall, from the last `--check` (stored in the DB, sh
 - The shipped seed stops at 2025-12. `ingest --update` loads newer BTS months on demand, but a loaded month is never reloaded (BTS revisions are missed), and it depends on the BTS download form, which can change without notice (manual files in `data/raw` are the fallback).
 - The chat UI is in English; answers follow the language of the question.
 - Voice input was tested with a live microphone in a browser; transcription accuracy depends on accent and audio quality (the transcript is shown as "You said: ..." before the answer). A silent recording is caught only when the model returns no text.
+- If the microphone widget shows "An error has occurred" and nothing appears in the logs, the browser upload was rejected, usually by a stale localhost XSRF cookie left by another Streamlit app: open a private window or http://127.0.0.1:8501, or clear the localhost cookies.
 
 <details>
 <summary><strong>Maintainers: publishing a new seed DB</strong></summary>
