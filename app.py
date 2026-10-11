@@ -4,19 +4,23 @@ Each answer shows the data first, rendered by code from the tool envelopes (src/
 the model's text labeled as commentary, then the raw tool calls. Streamlit reruns this script on
 every interaction, so the agent (and its in-memory conversation store) lives in st.cache_resource
 and the thread_id and messages live in st.session_state. Tools open SQLite read-only per call.
-Voice input (src/voice.py) turns a recording into text that then takes the typed-text path.
+Voice input (src/voice.py) turns a recording into an editable transcript; Send puts it on the typed-text path.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from contextlib import closing
 
 import streamlit as st
+from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 from src import agent as agent_mod
 from src import census, render, store, tools, voice
 from src.config import ConfigError, Settings, get_settings, load_scoring
 from src.llm import llm_error_message
+
+log = logging.getLogger(__name__)
 
 SAMPLE_QUESTIONS = [
     "Which airports in New England are strong candidates for terminal expansion?",
@@ -101,25 +105,61 @@ def show_user(msg: dict) -> None:
     st.markdown(f"You said: {msg['content']}" if msg.get("voice") else msg["content"])
 
 
-def voice_input(settings: Settings) -> str | None:
-    """Microphone above the chat input; the transcript of a new recording, or None.
+def send_draft() -> None:
+    """Send button: the reviewed (possibly edited) transcript becomes the question of the next run."""
+    st.session_state.voice_sent = st.session_state.pop("voice_draft", "").strip()
+    st.session_state.voice_n += 1
 
-    Each recording is read once: the widget key changes after use, so the next run shows an empty
-    microphone and Streamlit drops the old widget and its audio from the session state."""
+
+def discard_draft() -> None:
+    """Discard button: drop the transcript and show a fresh microphone."""
+    st.session_state.pop("voice_draft", None)
+    st.session_state.voice_n += 1
+
+
+def transcribe_recording(settings: Settings, recording: UploadedFile) -> None:
+    """Process one new recording: any earlier transcript is dropped first, then this one sets the draft.
+
+    No speech or an error shows one line in this run and leaves no draft, so an old result never survives."""
+    st.session_state.pop("voice_draft", None)
+    st.session_state.voice_seen = recording.file_id
+    try:
+        with st.spinner("Transcribing..."):
+            text = voice.transcribe(settings, recording.getvalue())
+    except voice.VoiceError as exc:
+        st.error(str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001 - a bug here must reach the log, not end as a blank error
+        log.exception("Voice input failed")
+        st.error(f"Transcription failed ({type(exc).__name__}): see the app logs for details.")
+        return
+    if text:
+        st.session_state.voice_draft = text   # set before the text area exists in this run
+    else:
+        st.warning(voice.NO_SPEECH)
+
+
+def voice_input(settings: Settings) -> str | None:
+    """Microphone above the chat input; the reviewed transcript once the user presses Send, else None.
+
+    A new recording is transcribed into an editable draft with Send and Discard; nothing reaches the agent
+    until Send. Each recording is processed once, identified by its upload id (`voice_seen`): a rerun with
+    the same audio does nothing, a new recording replaces whatever was pending. The widget key changes only
+    in the Send and Discard callbacks, before the script runs, so the microphone on screen is always the one
+    the script reads (changing it mid-run left the old widget on screen and lost the next recording)."""
     if reason := voice.unavailable_reason(settings):
         st.caption(reason)
         return None
     n = st.session_state.setdefault("voice_n", 0)
     recording = st.audio_input("Or ask by voice", key=f"voice_{n}")
-    if recording is None:
-        return None
-    st.session_state.voice_n = n + 1
-    try:
-        with st.spinner("Transcribing..."):
-            return voice.transcribe(settings, recording.getvalue())
-    except voice.VoiceError as exc:
-        st.error(str(exc))
-        return None
+    if recording is not None and recording.file_id != st.session_state.get("voice_seen"):
+        transcribe_recording(settings, recording)
+    if "voice_draft" in st.session_state:
+        st.text_area("Review the transcript, then send it", key="voice_draft")
+        send, discard = st.columns(2)
+        send.button("Send", on_click=send_draft, type="primary", width="stretch")
+        discard.button("Discard", on_click=discard_draft, width="stretch")
+    return st.session_state.pop("voice_sent", None) or None
 
 
 def answer(agent: agent_mod.AirportAgent, settings: Settings, question: str) -> dict:
