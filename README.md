@@ -6,6 +6,21 @@ Design doc: [docs/design.md](docs/design.md) (methodology, tradeoffs, the four a
 
 ![Compare LA and Santa Ana: the compare_airports data card with the per-metric verdicts](docs/img/lax-sna-verdict.jpg)
 
+<details>
+<summary><strong>More screenshots and a short demo</strong></summary>
+
+Demo: the LAX vs SNA comparison from question to commentary.
+
+![Demo: asking the app to compare LA and Santa Ana congestion](docs/img/demo-lax-vs-sna.gif)
+
+![Start screen: data period, freshness, model and the four sample questions](docs/img/home.jpg)
+![Compare LA and Santa Ana: the side-by-side table with margins of error and a verdict per metric](docs/img/lax-sna-table.jpg)
+![Compare LA and Santa Ana: the labeled model commentary with one commentary-check note](docs/img/lax-sna-commentary.jpg)
+![New England ranking: the rank_airports data card with the weights used and rank stability](docs/img/new-england-top.jpg)
+![New England ranking: the assumptions and the labeled model commentary with one commentary-check note](docs/img/new-england-commentary.jpg)
+
+</details>
+
 ## What it answers
 1. Which airports in New England are strong candidates for terminal expansion? (ranking with the weights used, drivers and rank stability)
 2. Compare LA (LAX) and Santa Ana (SNA) congestion. (side by side, with margins of error and a verdict per measure)
