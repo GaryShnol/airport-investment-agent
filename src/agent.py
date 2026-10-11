@@ -30,7 +30,7 @@ from src.figure_check import check_commentary, restrict_commentary
 from src.llm import get_chat_model, llm_error_message
 from src.prompts import build_system_prompt
 from src.render import render_reply
-from src.tools import make_tools, unsupported_region
+from src.tools import make_tools, region_named, unsupported_region
 
 log = logging.getLogger(__name__)
 
@@ -261,6 +261,19 @@ def _fallback(raw: str, results: list[Any]) -> str:
 
 REGION_GUARD = ("{state} is not a configured region, so no ranking is shown (the model asked for region "
                 "'{region}'). Ask for the national ranking or about a specific airport.")
+REGION_CAVEAT = ("the question also names {state}, which this {region} ranking does not cover ({state} is not "
+                 "a configured region); ask about a specific {state} airport or the national ranking")
+
+
+def _with_region_caveat(envelope: Any, state: str, region: str) -> Any:
+    """The ranking envelope with a caveat (first assumption and a fact) for a state the question
+    mentions outside the ranked region."""
+    if not isinstance(envelope, dict) or envelope.get("error"):
+        return envelope
+    caveat = REGION_CAVEAT.format(state=state, region=region)
+    return {**envelope, "assumptions": [caveat, *(envelope.get("assumptions") or [])],
+            "facts": [{"label": "Not covered by this ranking", "value": caveat, "required": False},
+                      *(envelope.get("facts") or [])]}
 
 
 def guard_regions(question: str, calls: list[dict], results: list[Any], cfg: ScoringConfig | None,
@@ -269,7 +282,11 @@ def guard_regions(question: str, calls: list[dict], results: list[Any], cfg: Sco
     does not contain (California answered with the national ranking) by the tool's deterministic
     configured-regions envelope for that state. Returns the calls, the results and the fixed
     commentary (None when nothing was replaced). Code, not the prompt: P6.1 showed one model
-    passing a configured region for California and getting a national ranking silently."""
+    passing a configured region for California and getting a national ranking silently.
+
+    Only the question's target region decides: when the question itself names the configured
+    region passed (`region_named`: "Rank the New England airports ... as busy as New York?"), the
+    ranking is kept and the other state gets a caveat instead."""
     if cfg is None or rank_tool is None:
         return calls, results, None
     calls, results, note = list(calls), list(results), None
@@ -278,7 +295,9 @@ def guard_regions(question: str, calls: list[dict], results: list[Any], cfg: Sco
             continue
         passed = str(c["args"].get("region", ""))
         state = unsupported_region(question, passed, cfg)
-        if state:
+        if state and region_named(question, passed, cfg):
+            results[i] = _with_region_caveat(results[i], state, passed)
+        elif state:
             calls[i] = {"name": "rank_airports", "args": {"region": state}}
             results[i] = _parse(rank_tool.invoke({"region": state}))
             note = REGION_GUARD.format(state=state, region=passed)

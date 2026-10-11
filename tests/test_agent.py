@@ -443,6 +443,30 @@ def test_unconfigured_state_never_falls_back_to_another_ranking(settings, connec
     assert "national ranking instead" not in reply.text and reply.figure_check["mode"] == "region_guard"
 
 
+def test_configured_target_region_ranks_and_caveats_another_state(settings, connect, scoring_cfg):
+    # audit H1: a New England question that also names New York kept no ranking at all
+    agent, _ = make(settings, connect, scoring_cfg, call("rank_airports", region="new_england"),
+                    AIMessage("Scores are relative to the national peer set."))
+    reply = agent.ask("Rank the New England airports for terminal expansion. "
+                      "Is any of them as busy as New York?", "t-mixed")
+    assert reply.tool_calls == [{"name": "rank_airports", "args": {"region": "new_england"}}]
+    env = reply.tool_results[0]
+    assert env["data"]["region"] == "new_england" and env["data"]["ranked"]
+    caveat = agent_mod.REGION_CAVEAT.format(state="New York", region="new_england")
+    assert env["assumptions"][0] == caveat
+    assert {f["label"]: f["value"] for f in env["facts"]}["Not covered by this ranking"] == caveat
+    assert reply.figure_check["mode"] == "restricted"   # the normal ranking path, not the guard
+
+
+def test_pure_unconfigured_region_is_still_refused(settings, connect, scoring_cfg):
+    agent, _ = make(settings, connect, scoring_cfg, call("rank_airports", region="new_england"),
+                    AIMessage("Here is the New England ranking instead."))
+    reply = agent.ask("Rank the airports in New York for terminal expansion.", "t-ny")
+    assert reply.tool_calls == [{"name": "rank_airports", "args": {"region": "New York"}}]
+    assert reply.tool_results[0]["error"].startswith("Region 'New York' is not configured.")
+    assert reply.commentary == agent_mod.REGION_GUARD.format(state="New York", region="new_england")
+
+
 def test_region_passed_as_written_gets_the_tool_message_and_model_text(settings, connect, scoring_cfg):
     agent, _ = make(settings, connect, scoring_cfg, call("rank_airports", region="California"),
                     AIMessage("California is not configured; ask for the national ranking instead."))
