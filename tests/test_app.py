@@ -111,38 +111,69 @@ def test_no_key_hides_the_microphone_with_a_caption(app_env, monkeypatch, scorin
     assert "Voice input is off: set OPENAI_API_KEY (or STT_BASE_URL) in .env." in [c.value for c in at.caption]
 
 
-def test_recording_is_transcribed_shown_and_sent_through_the_agent(app_env, monkeypatch, scoring_cfg):
+def voice_app(monkeypatch, scoring_cfg, transcript, *script, env=()):
+    """The app with OpenAI voice on, a scripted model, a stubbed transcription and one recording.
+
+    Returns the AppTest after its first run, the questions the agent was asked and the transcription client."""
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    fake_build(monkeypatch, scoring_cfg, call("rank_airports", region="new_england", top_n=3),
-               AIMessage("Scores are relative to the peer set."))
+    for name, value in env:
+        monkeypatch.setenv(name, value)
+    fake_build(monkeypatch, scoring_cfg, *script)
     asked = []
     real_ask = agent_mod.AirportAgent.ask
     monkeypatch.setattr(agent_mod.AirportAgent, "ask",
                         lambda self, q, t: asked.append(q) or real_ask(self, q, t))
-    client = FakeClient(text="Which airports in New England are strong candidates?")
+    client = FakeClient(text=transcript)
     monkeypatch.setattr(voice, "_client", lambda settings: client)
-    keys = []
-    fake_microphone(monkeypatch, wav(2), keys)
-    at = AppTest.from_file(APP, default_timeout=30).run()
-    assert not at.exception
-    assert asked == ["Which airports in New England are strong candidates?"] and len(client.calls) == 1
-    texts = [m.value for m in at.main.markdown]
-    assert "You said: Which airports in New England are strong candidates?" in texts
-    assert "##### Data (from tools)" in texts
+    fake_microphone(monkeypatch, wav(2), [])
+    return AppTest.from_file(APP, default_timeout=30).run(), asked, client
+
+
+def button(at, label):
+    return next(b for b in at.button if b.label == label)
+
+
+def test_recording_is_shown_for_review_and_not_sent_until_send(app_env, monkeypatch, scoring_cfg):
+    at, asked, client = voice_app(monkeypatch, scoring_cfg, "Which airports in New England are candidates?",
+                                  call("rank_airports", region="new_england", top_n=3),
+                                  AIMessage("Scores are relative to the peer set."))
+    assert not at.exception and len(client.calls) == 1 and asked == []
+    assert at.text_area[0].value == "Which airports in New England are candidates?"
+    assert [b.label for b in at.button if b.label in ("Send", "Discard")] == ["Send", "Discard"]
+    assert not any(m.value.startswith("You said:") for m in at.main.markdown)
     assert at.session_state.voice_n == 1        # the recording is read once; the next run has a fresh widget
+
+    at.text_area[0].input("Which New England airports are strong candidates?")
+    button(at, "Send").click().run()
+    assert not at.exception and len(client.calls) == 1
+    assert asked == ["Which New England airports are strong candidates?"]      # the edited text, once
+    texts = [m.value for m in at.main.markdown]
+    assert "You said: Which New England airports are strong candidates?" in texts
+    assert "##### Data (from tools)" in texts
+    assert not at.text_area                    # the review box is gone after sending
     at.run()
-    assert keys == ["voice_0", "voice_1"] and len(client.calls) == 1 and len(asked) == 1
+    assert len(asked) == 1
+
+
+def test_discard_clears_the_draft_and_resets_the_microphone(app_env, monkeypatch, scoring_cfg):
+    at, asked, _ = voice_app(monkeypatch, scoring_cfg, "Compare LA and Santa Ana congestion.")
+    button(at, "Discard").click().run()
+    assert not at.exception and asked == [] and not at.text_area
+    assert at.session_state.voice_n == 2 and "voice_draft" not in at.session_state
+    assert not any(m.value.startswith("You said:") for m in at.main.markdown)
+
+
+def test_prompt_echo_shows_a_short_message_and_sends_nothing(app_env, monkeypatch, scoring_cfg):
+    at, asked, _ = voice_app(monkeypatch, scoring_cfg, config.STT_PROMPT)
+    assert not at.exception and asked == [] and not at.text_area
+    assert [w.value for w in at.warning] == [voice.NO_SPEECH]
 
 
 def test_long_transcript_hits_the_input_guard(app_env, monkeypatch, scoring_cfg):
-    monkeypatch.setenv("LLM_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.setenv("MAX_INPUT_CHARS", "20")
-    fake_build(monkeypatch, scoring_cfg)
-    monkeypatch.setattr(voice, "_client", lambda settings: FakeClient(text="a spoken question that is too long"))
-    fake_microphone(monkeypatch, wav(2), [])
-    at = AppTest.from_file(APP, default_timeout=30).run()
+    at, asked, _ = voice_app(monkeypatch, scoring_cfg, "a spoken question that is too long",
+                             env=[("MAX_INPUT_CHARS", "20")])
+    button(at, "Send").click().run()
     assert not at.exception
     assert at.error[0].value == "The question is too long (34 characters; the limit is 20)."
 

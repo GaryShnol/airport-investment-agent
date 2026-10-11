@@ -3,17 +3,23 @@
 The transcript then takes the typed-text path (`AirportAgent.ask`, with the MAX_INPUT_CHARS guard), so
 voice adds no second way into the agent. The audio is held in memory for one call only: it is never
 written to disk or kept in the session state. Problems become a `VoiceError` with one line naming the
-setting to fix, never a traceback. STT_PROMPT (a vocabulary hint: airport codes and domain words) is sent
-with each recording when set, so accented speech is read as "Santa Ana congestion", not as similar sounds.
+setting to fix, never a traceback. STT_LANGUAGE fixes the language (an accent is not read as Spanish) and
+STT_PROMPT, a one-sentence vocabulary hint, is sent with each recording when set. On silence a model can
+answer with the hint itself, so a transcript that is empty or repeats the hint counts as no speech: the
+result is "" and nothing reaches the agent. The app shows the transcript for review before it is sent.
 """
 from __future__ import annotations
 
 import io
+import re
 import wave
 from typing import Any
 
 from .config import Settings
 from .llm import CONNECTION_ERRORS, error_chain
+
+
+NO_SPEECH = "Didn't catch that - please try again."
 
 
 class VoiceError(ValueError):
@@ -81,6 +87,17 @@ def error_message(s: Settings, exc: BaseException) -> str:
             "in .env.")
 
 
+def normalize(text: str) -> str:
+    """Lowercase words without punctuation, single-spaced: the form compared by the echo guard."""
+    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
+
+
+def is_no_speech(text: str, prompt: str) -> bool:
+    """True when a transcript holds no question: empty, or equal to / containing the vocabulary hint."""
+    said = normalize(text)
+    return not said or bool(prompt and normalize(prompt) in said)
+
+
 def _client(s: Settings) -> Any:
     from openai import OpenAI
 
@@ -88,18 +105,19 @@ def _client(s: Settings) -> Any:
 
 
 def transcribe(s: Settings, audio: bytes | None, client: Any = None) -> str:
-    """The text of one recording; raises VoiceError for anything the user has to act on."""
+    """The text of one recording, "" when no speech was detected; raises VoiceError for anything the user has to
+    act on."""
     if reason := unavailable_reason(s):
         raise VoiceError(reason)
     check_recording(audio, s.stt_max_seconds)
     client = client or _client(s)
     try:
-        hint = {"prompt": s.stt_prompt} if s.stt_prompt else {}   # STT_PROMPT: vocabulary hint, optional
+        options = {"prompt": s.stt_prompt} if s.stt_prompt else {}     # STT_PROMPT: vocabulary hint, optional
+        if s.stt_language:                                              # STT_LANGUAGE: "" = auto-detect
+            options["language"] = s.stt_language
         result = client.audio.transcriptions.create(model=s.stt_model, file=("recording.wav", audio, "audio/wav"),
-                                                    **hint)
+                                                    **options)
     except Exception as exc:  # noqa: BLE001 - every failure becomes one line naming the setting
         raise VoiceError(error_message(s, exc)) from exc
     text = (getattr(result, "text", None) or "").strip()
-    if not text:
-        raise VoiceError("No speech was recognized (silent recording?): record again, closer to the microphone.")
-    return text
+    return "" if is_no_speech(text, s.stt_prompt) else text

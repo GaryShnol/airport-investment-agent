@@ -4,7 +4,7 @@ Each answer shows the data first, rendered by code from the tool envelopes (src/
 the model's text labeled as commentary, then the raw tool calls. Streamlit reruns this script on
 every interaction, so the agent (and its in-memory conversation store) lives in st.cache_resource
 and the thread_id and messages live in st.session_state. Tools open SQLite read-only per call.
-Voice input (src/voice.py) turns a recording into text that then takes the typed-text path.
+Voice input (src/voice.py) turns a recording into an editable transcript; Send puts it on the typed-text path.
 """
 from __future__ import annotations
 
@@ -101,25 +101,46 @@ def show_user(msg: dict) -> None:
     st.markdown(f"You said: {msg['content']}" if msg.get("voice") else msg["content"])
 
 
-def voice_input(settings: Settings) -> str | None:
-    """Microphone above the chat input; the transcript of a new recording, or None.
+def send_draft() -> None:
+    """Send button: the reviewed (possibly edited) transcript becomes the question of the next run."""
+    st.session_state.voice_sent = st.session_state.pop("voice_draft", "").strip()
 
-    Each recording is read once: the widget key changes after use, so the next run shows an empty
-    microphone and Streamlit drops the old widget and its audio from the session state."""
+
+def discard_draft() -> None:
+    """Discard button: drop the transcript and show a fresh microphone."""
+    st.session_state.pop("voice_draft", None)
+    st.session_state.voice_n += 1
+
+
+def voice_input(settings: Settings) -> str | None:
+    """Microphone above the chat input; the reviewed transcript once the user presses Send, else None.
+
+    A new recording is transcribed into an editable draft with Send and Discard; nothing reaches the agent
+    until Send. Each recording is read once: the widget key changes after use, so the next run shows an
+    empty microphone and Streamlit drops the old widget and its audio from the session state."""
     if reason := voice.unavailable_reason(settings):
         st.caption(reason)
         return None
     n = st.session_state.setdefault("voice_n", 0)
     recording = st.audio_input("Or ask by voice", key=f"voice_{n}")
-    if recording is None:
-        return None
-    st.session_state.voice_n = n + 1
-    try:
-        with st.spinner("Transcribing..."):
-            return voice.transcribe(settings, recording.getvalue())
-    except voice.VoiceError as exc:
-        st.error(str(exc))
-        return None
+    if recording is not None:
+        st.session_state.voice_n = n + 1
+        try:
+            with st.spinner("Transcribing..."):
+                text = voice.transcribe(settings, recording.getvalue())
+        except voice.VoiceError as exc:
+            st.error(str(exc))
+            text = None
+        if text == "":
+            st.warning(voice.NO_SPEECH)
+        elif text:
+            st.session_state.voice_draft = text   # set before the text area exists in this run
+    if "voice_draft" in st.session_state:
+        st.text_area("Review the transcript, then send it", key="voice_draft")
+        send, discard = st.columns(2)
+        send.button("Send", on_click=send_draft, type="primary", width="stretch")
+        discard.button("Discard", on_click=discard_draft, width="stretch")
+    return st.session_state.pop("voice_sent", None) or None
 
 
 def answer(agent: agent_mod.AirportAgent, settings: Settings, question: str) -> dict:

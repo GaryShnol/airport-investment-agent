@@ -8,7 +8,7 @@ import openai
 import pytest
 
 from src.config import ConfigError, Settings
-from src.voice import VoiceError, recording_seconds, stt_url, transcribe, unavailable_reason
+from src.voice import VoiceError, is_no_speech, recording_seconds, stt_url, transcribe, unavailable_reason
 
 OPENAI = Settings.from_env({"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test", "STT_MODEL": "stt-test",
                             "STT_MAX_SECONDS": "5"})
@@ -60,9 +60,19 @@ def test_unreadable_audio_is_one_line():
         transcribe(OPENAI, b"not a wav file", FakeClient(text="never"))
 
 
-def test_silent_audio_gives_an_empty_transcript_and_a_message():
-    with pytest.raises(VoiceError, match="No speech was recognized"):
-        transcribe(OPENAI, wav(2), FakeClient(text="   "))
+@pytest.mark.parametrize("text", ["", "   ", " ... "])
+def test_silence_gives_an_empty_result(text):
+    assert transcribe(OPENAI, wav(3), FakeClient(text=text)) == ""
+
+
+def test_a_transcript_that_echoes_the_vocabulary_hint_is_no_speech():
+    # Manual test: 3 s of silence came back as the hint itself and was sent to the agent as a question.
+    hint = OPENAI.stt_prompt
+    for echo in (hint, hint.upper().replace(",", "").replace(":", " "), f"{hint} Thank you."):
+        assert transcribe(OPENAI, wav(3), FakeClient(text=echo)) == "", echo
+    assert not is_no_speech("Compare LAX and SNA congestion.", hint)          # a question naming the codes
+    assert not is_no_speech("Compare LAX and SNA congestion.", "")            # no hint: only empty is no speech
+    assert is_no_speech("Airport questions: LAX, SNA.", "airport questions -- LAX SNA")
 
 
 def test_too_long_recording_names_the_setting_and_sends_nothing():
@@ -118,8 +128,22 @@ def test_vocabulary_hint_is_sent_when_set_and_omitted_when_empty():
     assert off.stt_prompt == "" and "prompt" not in client.calls[2]
 
 
+def test_language_is_sent_by_default_and_omitted_when_empty():
+    client = FakeClient(text="Compare LA and Santa Ana congestion.")
+    transcribe(OPENAI, wav(1), client)
+    assert client.calls[0]["language"] == "en"
+    auto = Settings.from_env({"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test", "STT_LANGUAGE": ""})
+    transcribe(auto, wav(1), client)
+    assert "language" not in client.calls[1]
+
+
 def test_stt_settings_have_defaults_and_are_validated():
     s = Settings.from_env({})
-    assert (s.stt_model, s.stt_max_seconds, s.stt_base_url) == ("gpt-4o-mini-transcribe", 60.0, None)
+    assert (s.stt_model, s.stt_max_seconds, s.stt_base_url, s.stt_language) == ("gpt-4o-mini-transcribe", 60.0,
+                                                                                  None, "en")
+    assert len(s.stt_prompt) <= 120 and s.stt_prompt.count(".") == 1       # one short sentence
+    assert Settings.from_env({"STT_LANGUAGE": " ES "}).stt_language == "es"
     with pytest.raises(ConfigError, match="STT_MAX_SECONDS"):
         Settings.from_env({"STT_MAX_SECONDS": "0"})
+    with pytest.raises(ConfigError, match="STT_LANGUAGE"):
+        Settings.from_env({"STT_LANGUAGE": "english"})
