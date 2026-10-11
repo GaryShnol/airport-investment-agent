@@ -1,4 +1,5 @@
 """Smoke test of app.py with Streamlit's AppTest, a scripted fake model and the tiny test DB."""
+import logging
 import sqlite3
 from types import SimpleNamespace
 
@@ -188,3 +189,20 @@ def test_transcription_error_is_one_line(app_env, monkeypatch, scoring_cfg):
     assert not at.exception
     assert [e.value for e in at.error] == ["The recording is 3 s long; the limit is 1 s (STT_MAX_SECONDS in .env)."]
     assert not any(m.value.startswith("You said:") for m in at.main.markdown)
+
+
+
+def test_an_unexpected_voice_failure_is_logged_and_shown_as_one_line(app_env, monkeypatch, scoring_cfg, caplog):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    fake_build(monkeypatch, scoring_cfg)
+    fake_microphone(monkeypatch, wav(1), [])
+
+    def broken(*args, **kwargs):
+        raise KeyError("voice_draft")
+    monkeypatch.setattr(voice, "transcribe", broken)
+    with caplog.at_level(logging.ERROR):
+        at = AppTest.from_file(APP, default_timeout=30).run()
+    assert not at.exception
+    assert [e.value for e in at.error] == ["Transcription failed (KeyError): see the app logs for details."]
+    assert "Voice input failed" in caplog.text and "KeyError: 'voice_draft'" in caplog.text

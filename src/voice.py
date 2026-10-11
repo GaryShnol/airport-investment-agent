@@ -3,14 +3,15 @@
 The transcript then takes the typed-text path (`AirportAgent.ask`, with the MAX_INPUT_CHARS guard), so
 voice adds no second way into the agent. The audio is held in memory for one call only: it is never
 written to disk or kept in the session state. Problems become a `VoiceError` with one line naming the
-setting to fix, never a traceback. STT_LANGUAGE fixes the language (an accent is not read as Spanish) and
-STT_PROMPT, a one-sentence vocabulary hint, is sent with each recording when set. On silence a model can
-answer with the hint itself, so a transcript that is empty or repeats the hint counts as no speech: the
-result is "" and nothing reaches the agent. The app shows the transcript for review before it is sent.
+setting to fix, never a traceback (that goes to the log). STT_LANGUAGE fixes the language (an accent is
+not read as Spanish) and STT_PROMPT, a one-sentence vocabulary hint, is sent with each recording when set.
+On silence a model can answer with the hint itself, so a transcript that is empty or repeats the hint
+counts as no speech: the result is "" and nothing reaches the agent. The app shows the transcript for review before it is sent.
 """
 from __future__ import annotations
 
 import io
+import logging
 import re
 import wave
 from typing import Any
@@ -20,6 +21,7 @@ from .llm import CONNECTION_ERRORS, error_chain
 
 
 NO_SPEECH = "Didn't catch that - please try again."
+log = logging.getLogger(__name__)
 
 
 class VoiceError(ValueError):
@@ -73,18 +75,28 @@ def check_recording(audio: bytes | None, max_seconds: float) -> float:
 
 
 def error_message(s: Settings, exc: BaseException) -> str:
-    """One line for a failed transcription call, naming the .env setting to fix."""
+    """"Transcription failed: <cause>" for a failed transcription call, naming the .env setting to fix.
+
+    The cause is read from the exception type, the HTTP status and the API's error text; the traceback goes
+    to the log (see `transcribe`), never to the user."""
     chain = error_chain(exc)
     status = next((getattr(e, "status_code") for e in chain if isinstance(getattr(e, "status_code", None), int)), None)
-    if any(type(e).__name__ in CONNECTION_ERRORS or isinstance(e, (ConnectionError, TimeoutError)) for e in chain):
-        return (f"Cannot reach the transcription server at {stt_url(s)}: check the network and STT_BASE_URL "
-                "(or LLM_BASE_URL) in .env.")
-    if status in (401, 403) or any(type(e).__name__ == "AuthenticationError" for e in chain):
-        return "The transcription API rejected the key: check OPENAI_API_KEY in .env."
-    if status in (400, 404) or any(type(e).__name__ in ("NotFoundError", "BadRequestError") for e in chain):
-        return f"The transcription API refused the request for model '{s.stt_model}': check STT_MODEL in .env."
-    return (f"Transcription failed ({type(exc).__name__}): check STT_MODEL, OPENAI_API_KEY and STT_BASE_URL "
-            "in .env.")
+    names = {type(e).__name__ for e in chain}
+    text = " ".join(str(e) for e in chain).lower()
+    if names & CONNECTION_ERRORS or any(isinstance(e, (ConnectionError, TimeoutError)) for e in chain):
+        return (f"Transcription failed: network error, cannot reach {stt_url(s)}. Check the network and "
+                "STT_BASE_URL (or LLM_BASE_URL) in .env.")
+    if status in (401, 403) or "AuthenticationError" in names or "PermissionDeniedError" in names:
+        return "Transcription failed: invalid API key. Check OPENAI_API_KEY in .env."
+    if status == 404 or "NotFoundError" in names or (status == 400 and "model" in text):
+        return f"Transcription failed: model '{s.stt_model}' not available. Check STT_MODEL in .env."
+    if status == 400 and "language" in text:
+        return (f"Transcription failed: invalid STT_LANGUAGE '{s.stt_language}'. Use a supported two-letter code "
+                "or leave it empty to auto-detect.")
+    if status == 413 or (status == 400 and any(w in text for w in ("audio", "duration", "too long", "file"))):
+        return (f"Transcription failed: audio too long or empty. Record again "
+                f"(limit STT_MAX_SECONDS={s.stt_max_seconds:g} s).")
+    return f"Transcription failed ({type(exc).__name__}): see the app logs for details."
 
 
 def normalize(text: str) -> str:
@@ -117,7 +129,8 @@ def transcribe(s: Settings, audio: bytes | None, client: Any = None) -> str:
             options["language"] = s.stt_language
         result = client.audio.transcriptions.create(model=s.stt_model, file=("recording.wav", audio, "audio/wav"),
                                                     **options)
-    except Exception as exc:  # noqa: BLE001 - every failure becomes one line naming the setting
+    except Exception as exc:  # noqa: BLE001 - logged in full, shown to the user as one line naming the cause
+        log.exception("Transcription call failed (model %s, server %s)", s.stt_model, stt_url(s))
         raise VoiceError(error_message(s, exc)) from exc
     text = (getattr(result, "text", None) or "").strip()
     return "" if is_no_speech(text, s.stt_prompt) else text

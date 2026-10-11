@@ -8,6 +8,7 @@ Voice input (src/voice.py) turns a recording into an editable transcript; Send p
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from contextlib import closing
 
@@ -17,6 +18,8 @@ from src import agent as agent_mod
 from src import census, render, store, tools, voice
 from src.config import ConfigError, Settings, get_settings, load_scoring
 from src.llm import llm_error_message
+
+log = logging.getLogger(__name__)
 
 SAMPLE_QUESTIONS = [
     "Which airports in New England are strong candidates for terminal expansion?",
@@ -130,6 +133,10 @@ def voice_input(settings: Settings) -> str | None:
                 text = voice.transcribe(settings, recording.getvalue())
         except voice.VoiceError as exc:
             st.error(str(exc))
+            text = None
+        except Exception as exc:  # noqa: BLE001 - a bug here must reach the log, not end as a blank error
+            log.exception("Voice input failed")
+            st.error(f"Transcription failed ({type(exc).__name__}): see the app logs for details.")
             text = None
         if text == "":
             st.warning(voice.NO_SPEECH)

@@ -1,5 +1,6 @@
 """Voice input (P8.1): a recording becomes text through a stubbed transcription call; problems are one line."""
 import io
+import logging
 import wave
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import httpx
 import openai
 import pytest
 
+from src import config
 from src.config import ConfigError, Settings
 from src.voice import VoiceError, is_no_speech, recording_seconds, stt_url, transcribe, unavailable_reason
 
@@ -99,21 +101,54 @@ def test_other_provider_hides_the_control_unless_an_stt_endpoint_is_set():
     assert unavailable_reason(OPENAI) is None and stt_url(OPENAI) == "https://api.openai.com/v1"
 
 
+def api_error(cls, status, message):
+    return cls(message, response=httpx.Response(status, request=REQUEST), body=None)
+
+
 @pytest.mark.parametrize("error, expected", [
     (openai.APIConnectionError(request=REQUEST),
-     "Cannot reach the transcription server at https://api.openai.com/v1: check the network and STT_BASE_URL "
-     "(or LLM_BASE_URL) in .env."),
-    (openai.AuthenticationError("bad key", response=httpx.Response(401, request=REQUEST), body=None),
-     "The transcription API rejected the key: check OPENAI_API_KEY in .env."),
-    (openai.NotFoundError("no model", response=httpx.Response(404, request=REQUEST), body=None),
-     "The transcription API refused the request for model 'stt-test': check STT_MODEL in .env."),
+     "Transcription failed: network error, cannot reach https://api.openai.com/v1. Check the network and "
+     "STT_BASE_URL (or LLM_BASE_URL) in .env."),
+    (api_error(openai.AuthenticationError, 401, "Incorrect API key provided"),
+     "Transcription failed: invalid API key. Check OPENAI_API_KEY in .env."),
+    (api_error(openai.PermissionDeniedError, 403, "Project does not have access"),
+     "Transcription failed: invalid API key. Check OPENAI_API_KEY in .env."),
+    (api_error(openai.NotFoundError, 404, "no model"),
+     "Transcription failed: model 'stt-test' not available. Check STT_MODEL in .env."),
+    (api_error(openai.BadRequestError, 400, "Invalid model stt-test for transcription"),
+     "Transcription failed: model 'stt-test' not available. Check STT_MODEL in .env."),
+    (api_error(openai.BadRequestError, 400, "Invalid language 'xx'. Language parameter must be ISO-639-1"),
+     "Transcription failed: invalid STT_LANGUAGE 'en'. Use a supported two-letter code or leave it empty to "
+     "auto-detect."),
+    (api_error(openai.BadRequestError, 400, "Audio file is too short. Minimum audio length is 0.1 seconds."),
+     "Transcription failed: audio too long or empty. Record again (limit STT_MAX_SECONDS=5 s)."),
+    (api_error(openai.APIStatusError, 413, "Maximum content size limit exceeded"),
+     "Transcription failed: audio too long or empty. Record again (limit STT_MAX_SECONDS=5 s)."),
     (RuntimeError("boom"),
-     "Transcription failed (RuntimeError): check STT_MODEL, OPENAI_API_KEY and STT_BASE_URL in .env."),
+     "Transcription failed (RuntimeError): see the app logs for details."),
 ])
-def test_api_errors_become_one_line_naming_the_setting(error, expected):
+def test_api_errors_become_one_line_naming_the_cause(error, expected):
     with pytest.raises(VoiceError) as err:
         transcribe(OPENAI, wav(1), FakeClient(error=error))
     assert str(err.value) == expected and "Traceback" not in str(err.value)
+
+
+def test_a_failed_call_is_logged_with_its_traceback_but_no_key_or_audio(caplog):
+    audio = wav(1)
+    with caplog.at_level(logging.ERROR, logger="src.voice"), pytest.raises(VoiceError):
+        transcribe(OPENAI, audio, FakeClient(error=RuntimeError("boom")))
+    [record] = caplog.records
+    assert record.exc_info and "RuntimeError: boom" in caplog.text and "stt-test" in caplog.text
+    assert "sk-test" not in caplog.text and repr(audio[:16]) not in caplog.text
+
+
+def test_the_shipped_defaults_send_model_language_and_hint_without_error():
+    defaults = Settings.from_env({"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test"})
+    client = FakeClient(text="Compare LA and Santa Ana congestion.")
+    assert transcribe(defaults, wav(1), client) == "Compare LA and Santa Ana congestion."
+    [kwargs] = client.calls
+    assert kwargs["model"] == "gpt-4o-mini-transcribe" and kwargs["language"] == "en"
+    assert kwargs["prompt"] == config.STT_PROMPT and kwargs["file"][0] == "recording.wav"
 
 
 def test_vocabulary_hint_is_sent_when_set_and_omitted_when_empty():
