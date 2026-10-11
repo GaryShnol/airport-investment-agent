@@ -843,3 +843,20 @@ def test_ranking_uses_demand_context_in_weights_and_drivers(db_full, scoring_cfg
 ])
 def test_unsupported_region_reads_the_question(scoring_cfg, question, region, expected):
     assert tools.unsupported_region(question, region, scoring_cfg) == expected
+
+
+@pytest.mark.parametrize("question, region, expected", [
+    # the target region is named: another state in the question is a side mention (audit H1)
+    ("Rank the New England airports for terminal expansion. Is any of them as busy as New York?",
+     "new_england", True),
+    ("Rank new-england airports", "New England", True),
+    ("Rank all US airports. Is Washington Dulles near the top?", "national", True),
+    ("Which airports nationwide should expand, e.g. in Texas?", "national", True),
+    # the target region is not named: the passed region stands in for the state
+    ("Rank the airports in California for terminal expansion.", "new_england", False),
+    ("Rank the airports in California for terminal expansion.", "national", False),
+    ("Rank the airports in New York.", "new_england", False),
+    ("Rank the airports in California", "California", False),   # not configured
+])
+def test_region_named_finds_the_target_region(scoring_cfg, question, region, expected):
+    assert tools.region_named(question, region, scoring_cfg) is expected

@@ -590,6 +590,25 @@ def unsupported_region(question: str, region: str, cfg: ScoringConfig) -> str | 
     return None
 
 
+# Words that name the national ranking as the target ("rank all US airports", "nationwide").
+_NATIONAL_WORDS = re.compile(r"\b(?:national(?:ly)?|nationwide|United States|country)\b|\bU\.?S\.?(?!\w)",
+                             re.IGNORECASE)
+
+
+def region_named(question: str, region: str, cfg: ScoringConfig) -> bool:
+    """True when the question itself names the configured region passed ("New England", or for
+    the national ranking "national", "US", "nationwide"). The ranking's target is then a configured
+    region, and a state named elsewhere in the question ("as busy as New York?") is a side mention
+    to caveat, not a request for an unconfigured region."""
+    key = _region_key(region)
+    if key == scoring.NATIONAL:
+        return bool(_NATIONAL_WORDS.search(question or ""))
+    if key not in cfg.regions:
+        return False
+    words = r"[\s_-]+".join(map(re.escape, key.split("_")))
+    return bool(re.search(rf"\b{words}\b", question or "", re.IGNORECASE))
+
+
 SortBy = Literal["score", "growth", "load_factor", "passengers"]
 SORT_VALUES = get_args(SortBy)
 SORT_LABELS = {"score": "expansion score", "growth": "passenger growth", "load_factor": "load factor",
